@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { supabase } from "../../lib/supabase";
+import Toast from "../components/Toast";
 
 export default function RewritePage() {
   const [message, setMessage] = useState("");
@@ -20,22 +21,28 @@ export default function RewritePage() {
     clear: "",
   });
 
+  const [toast, setToast] = useState("");
+
+  // ---------------------------------------------------------
+  // ✅ FIXED HANDLE REWRITE (added missing try { })
+  // ---------------------------------------------------------
   async function handleRewrite() {
     setError("");
     setLimitReached(false);
     setResults({ soft: "", calm: "", clear: "" });
     setLoading(true);
 
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-
-    if (!token) {
-      setError("You must be logged in to use ToneMender.");
-      setLoading(false);
-      return;
-    }
-
     try {
+      const { data } = await supabase.auth.getSession();
+      console.log("SESSION:", data);
+      const token = data.session?.access_token;
+
+      if (!token) {
+        setError("You must be logged in to use ToneMender.");
+        setLoading(false);
+        return;
+      }
+
       const res = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -74,7 +81,7 @@ export default function RewritePage() {
 
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
-    alert("Copied!");
+    setToast("Copied!");
   }
 
   function useThis(text: string) {
@@ -82,6 +89,36 @@ export default function RewritePage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  // ---------------------------------------------------------
+  // ✅ SAVE MESSAGE WORKS
+  // ---------------------------------------------------------
+  async function saveMessage(text: string, tone: "soft" | "calm" | "clear") {
+    const { data } = await supabase.auth.getSession();
+    const user = data.session?.user;
+
+    if (!user) {
+      alert("You must be logged in to save messages.");
+      return;
+    }
+
+    const { error } = await supabase.from("messages").insert({
+      user_id: user.id,
+      original: message,
+      rewritten: text,
+      tone,
+    });
+
+    if (error) {
+      console.error(error);
+      alert("Failed to save message.");
+    } else {
+      alert("Saved!");
+    }
+  }
+
+  // ---------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------
   return (
     <main className="max-w-2xl mx-auto p-5">
       <h1 className="text-3xl font-bold mb-5">Rewrite Your Message</h1>
@@ -126,16 +163,26 @@ export default function RewritePage() {
       <button
         onClick={handleRewrite}
         disabled={loading || !message}
-        className="bg-blue-600 text-white w-full p-3 mt-4 rounded disabled:bg-gray-400"
+        className="bg-blue-600 text-white w-full p-3 mt-4 rounded disabled:bg-gray-400 flex items-center justify-center gap-2"
       >
-        {loading ? "Rewriting..." : "Rewrite Message"}
+        {loading ? (
+          <>
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            Processing...
+          </>
+        ) : (
+          "Rewrite Message"
+        )}
       </button>
 
       {results.soft && (
         <div className="mt-8 space-y-6">
           {(["soft", "calm", "clear"] as const).map((toneKey) => (
-            <div key={toneKey} className="border p-4 rounded-lg bg-gray-50">
-              <h2 className="text-xl font-semibold capitalize mb-2">
+            <div
+              key={toneKey}
+              className="border p-4 rounded-lg bg-gray-50 shadow-sm"
+            >
+              <h2 className="text-xl font-semibold capitalize mb-2 text-blue-700">
                 {toneKey} Version
               </h2>
 
@@ -164,11 +211,20 @@ export default function RewritePage() {
                 >
                   Edit
                 </button>
+
+                <button
+                  onClick={() => saveMessage(results[toneKey], toneKey)}
+                  className="border px-3 py-1 rounded bg-green-600 text-white"
+                >
+                  Save
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      {toast && <Toast text={toast} />}
     </main>
   );
 }
