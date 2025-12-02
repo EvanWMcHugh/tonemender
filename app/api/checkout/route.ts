@@ -2,59 +2,48 @@ import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
+// Required for Stripe webhooks in Next.js App Router
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-// Supabase server client for verifying sessions
+// Supabase client (service role required)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // requires service role
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
 export async function POST(req: Request) {
+  const rawBody = await req.text(); // NEW: must use req.text()
+  const signature = req.headers.get("stripe-signature")!;
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
   try {
-    // Validate Supabase user session
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return NextResponse.json({ error: "Missing Authorization" }, { status: 401 });
+    // Construct webhook event
+    const event = stripe.webhooks.constructEvent(
+      rawBody,
+      signature,
+      endpointSecret
+    );
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as any;
+      const userId = session.metadata.userId;
+
+      // Mark user as PRO
+      await supabase
+        .from("profiles")
+        .update({ is_pro: true })
+        .eq("id", userId);
     }
 
-    const token = authHeader.replace("Bearer ", "");
-
-    const { data: sessionData } = await supabase.auth.getUser(token);
-
-    if (!sessionData?.user) {
-      return NextResponse.json({ error: "Invalid session" }, { status: 401 });
-    }
-
-    const user = sessionData.user;
-
-    // Read plan (monthly or yearly)
-    const { plan } = await req.json();
-
-    // Replace with YOUR price IDs:
-    const MONTHLY_PRICE = "price_1SZiAFJEOSJcI2obrBnaFsAo";
-    const YEARLY_PRICE = "price_1SZiAqJEOSJcI2obGRN9PSnn";
-
-    const priceId = plan === "yearly" ? YEARLY_PRICE : MONTHLY_PRICE;
-
-    // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer_email: user.email!,
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/success`,
-      cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/cancel`,
-      metadata: { userId: user.id },
-    });
-
-    return NextResponse.json({ url: session.url });
+    return NextResponse.json({ received: true });
   } catch (err: any) {
-    console.error("Checkout error:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error("Webhook error:", err.message);
+    return NextResponse.json(
+      { error: `Webhook Error: ${err.message}` },
+      { status: 400 }
+    );
   }
 }
