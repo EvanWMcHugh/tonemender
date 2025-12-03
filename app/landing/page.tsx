@@ -71,7 +71,6 @@ export default function LandingPage() {
         For customer support: support@tonemender.app
       </p>
 
-      {/* Sign In / Sign Up CTA (optional but helpful) */}
       <div style={{ marginTop: "40px" }}>
         <Link
           href="/sign-in"
