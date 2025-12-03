@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "../../lib/supabase";   // ✅ FIXED PATH
+import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -16,10 +16,12 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
+
+    console.log("LOGIN RESPONSE:", { data, error });
 
     if (error) {
       setError(error.message);
@@ -27,7 +29,7 @@ export default function LoginPage() {
       return;
     }
 
-    // ✅ Redirect to your real homepage
+    // Successful login → go to landing page
     router.replace("/landing");
   }
 
@@ -36,7 +38,7 @@ export default function LoginPage() {
       <div className="w-[360px]">
         <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
 
-        {error && <p className="text-red-500">{error}</p>}
+        {error && <p className="text-red-500 mb-2">{error}</p>}
 
         <form onSubmit={handleLogin} className="flex flex-col gap-3">
           <input
@@ -65,6 +67,13 @@ export default function LoginPage() {
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>
+
+        <p className="mt-4 text-center text-sm">
+          Don’t have an account?{" "}
+          <a href="/sign-up" className="text-blue-600 underline">
+            Sign Up
+          </a>
+        </p>
       </div>
     </main>
   );

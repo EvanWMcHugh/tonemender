@@ -12,37 +12,33 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   async function handleSignup(e: React.FormEvent) {
-  e.preventDefault();
-  setLoading(true);
-  setError("");
+    e.preventDefault();
+    setLoading(true);
+    setError("");
 
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-  });
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    });
 
-  if (error) {
-    setError(error.message);
-    setLoading(false);
-    return;
+    console.log("SIGNUP RESPONSE:", { data, error });
+
+    if (error) {
+      setError(error.message);
+      setLoading(false);
+      return;
+    }
+
+    // Account created → redirect to login
+    router.replace("/sign-in");
   }
-
-  // ⚠️ Dev mode: Supabase automatically logs users in after signup
-  if (data.session) {
-    router.push("/");
-    return;
-  }
-
-  // If email verification ever becomes enabled
-  router.push("/auth/login");
-}
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
         <h1 className="text-2xl font-bold mb-4 text-center">Create Account</h1>
 
-        {error && <p className="text-red-500">{error}</p>}
+        {error && <p className="text-red-500 mb-2">{error}</p>}
 
         <form onSubmit={handleSignup} className="flex flex-col gap-3">
           <input
@@ -64,12 +60,20 @@ export default function SignupPage() {
           />
 
           <button
+            type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded"
+            className="bg-green-600 text-white p-2 rounded"
           >
             {loading ? "Creating..." : "Sign Up"}
           </button>
         </form>
+
+        <p className="mt-4 text-center text-sm">
+          Already have an account?{" "}
+          <a href="/sign-in" className="text-blue-600 underline">
+            Sign In
+          </a>
+        </p>
       </div>
     </main>
   );
