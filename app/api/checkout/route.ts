@@ -4,41 +4,28 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
+// Stripe client (NO apiVersion override)
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-// Server-side Supabase client using service role key
-const supabaseServer = createClient(
+// Supabase server client
+const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!, // service role key (server only)
-  { auth: { persistSession: false } }
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 export async function POST(req: Request) {
   try {
-    const { type, token } = await req.json();
+    const { type } = await req.json();
 
-    if (!token) {
-      return NextResponse.json(
-        { error: "Not authenticated" },
-        { status: 401 }
-      );
+    // Get logged in user server-side
+    const { data: authData } = await supabase.auth.getUser();
+    const user = authData?.user;
+
+    if (!user) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 🔐 Validate user from token (server-safe)
-    const {
-      data: auth,
-      error: authError,
-    } = await supabaseServer.auth.getUser(token);
-
-    if (authError || !auth?.user) {
-      return NextResponse.json(
-        { error: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-
-    const user = auth.user;
-
+    // Choose price ID
     const priceId =
       type === "yearly"
         ? process.env.STRIPE_PRICE_YEARLY
@@ -46,20 +33,23 @@ export async function POST(req: Request) {
 
     if (!priceId) {
       return NextResponse.json(
-        { error: "Missing Stripe price ID" },
+        { error: "Stripe price ID missing" },
         { status: 400 }
       );
     }
 
+    // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
+
       success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/account?success=true`,
       cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/upgrade?canceled=true`,
-      customer_email: user.email ?? undefined,
+
+      // 👇 This is crucial
       metadata: {
-        userId: user.id, // 👈 used by webhook to set is_pro
+        userId: user.id,
       },
     });
 
