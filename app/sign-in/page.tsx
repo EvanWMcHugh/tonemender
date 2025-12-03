@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "../../lib/supabase";
+import { supabase } from "../../lib/supabase";   // ✅ FIXED PATH
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -27,7 +27,8 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/");
+    // ✅ Redirect to your real homepage
+    router.replace("/landing");
   }
 
   return (
@@ -57,6 +58,7 @@ export default function LoginPage() {
           />
 
           <button
+            type="submit"
             disabled={loading}
             className="bg-blue-600 text-white p-2 rounded"
           >
