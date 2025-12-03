@@ -14,44 +14,37 @@ export default function AccountPage() {
 
   useEffect(() => {
     async function load() {
-      // -------------------------
-      // GET USER SESSION
-      // -------------------------
-      const { data } = await supabase.auth.getSession();
-      const user = data.session?.user;
-
-      if (!user) {
-        router.replace("/sign-in?error=not-authenticated");
+      // GET USER
+      const { data } = await supabase.auth.getUser();
+      if (!data.user) {
+        router.push("/sign-in");
         return;
       }
 
-      setEmail(user.email);
+      setEmail(data.user.email);
 
-      // -------------------------
-      // GET PRO STATUS
-      // -------------------------
+      // GET PROFILE (is_pro, plan type, stripe customer id)
       const { data: profile } = await supabase
         .from("profiles")
-        .select("is_pro")
-        .eq("id", user.id)
+        .select("is_pro, plan_type")
+        .eq("id", data.user.id)
         .single();
 
-      setIsPro(profile?.is_pro ?? false);
+      if (profile?.is_pro) setIsPro(true);
 
-      // -------------------------
-      // GET REWRITE COUNTS
-      // from rewrite_usage table
-      // -------------------------
+      // GET REWRITE STATS
       const todayStr = new Date().toISOString().split("T")[0];
 
-      const { data: usage } = await supabase
+      const { data: messages } = await supabase
         .from("rewrite_usage")
         .select("*")
-        .eq("user_id", user.id);
+        .eq("user_id", data.user.id);
 
-      const total = usage?.length || 0;
-      const today =
-        usage?.filter((u) => u.created_at.startsWith(todayStr)).length || 0;
+      const today = messages?.filter((m) =>
+        m.created_at.startsWith(todayStr)
+      ).length || 0;
+
+      const total = messages?.length || 0;
 
       setStats({ today, total });
       setLoading(false);
@@ -60,121 +53,83 @@ export default function AccountPage() {
     load();
   }, [router]);
 
-  // -------------------------
-  // LOGOUT
-  // -------------------------
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.replace("/");
+    router.push("/");
   }
 
-  if (loading) return <p className="p-6">Loading account...</p>;
+  async function openBillingPortal() {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
 
-  // -------------------------
-  // UI
-  // -------------------------
+    const res = await fetch("/api/portal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+
+    const json = await res.json();
+
+    if (json.url) {
+      window.location.href = json.url;
+    } else {
+      alert("Could not open billing portal.");
+    }
+  }
+
+  if (loading) return <p className="p-5">Loading account...</p>;
+
   return (
     <main className="max-w-xl mx-auto p-6">
-      <h1 className="text-3xl font-bold mb-4">Your Account</h1>
+      <button
+        onClick={() => router.push("/")}
+        className="mb-4 text-blue-600 underline"
+      >
+        ← Back to Home
+      </button>
 
-      {/* PROFILE INFO */}
-      <div className="border p-4 rounded mb-6 bg-white shadow">
+      <h1 className="text-3xl font-bold mb-6">Your Account</h1>
+
+      <div className="border p-4 rounded mb-6 bg-white">
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
 
-        <p className="mb-2">
+        <p className="text-gray-700 mb-2">
           <strong>Email:</strong> {email}
         </p>
 
-        <p className="mb-2">
-          <strong>Role:</strong>{" "}
-          {isPro ? (
-            <span className="text-green-600 font-semibold">Pro User</span>
-          ) : (
-            <span className="text-gray-700">Free User</span>
-          )}
+        <p className="text-gray-700 mb-2">
+          <strong>Status:</strong>{" "}
+          {isPro ? "🚀 Pro Member" : "Free User"}
         </p>
+
+        {isPro && (
+          <button
+            onClick={openBillingPortal}
+            className="mt-3 bg-purple-600 text-white px-4 py-2 rounded"
+          >
+            Manage Subscription
+          </button>
+        )}
       </div>
 
-      {/* USAGE INFO */}
-      <div className="border p-4 rounded mb-6 bg-white shadow">
+      <div className="border p-4 rounded mb-6 bg-white">
         <h2 className="text-xl font-semibold mb-2">Usage</h2>
 
-        <p>
-          <strong>Rewrites Today:</strong> {stats.today}
-        </p>
-        <p>
-          <strong>Total Rewrites:</strong> {stats.total}
-        </p>
+        <p><strong>Rewrites Today:</strong> {stats.today}</p>
+        <p><strong>Total Rewrites:</strong> {stats.total}</p>
       </div>
 
-      {/* SECURITY */}
-      <div className="border p-4 rounded mb-6 bg-white shadow">
-        <h2 className="text-xl font-semibold mb-2">Security</h2>
-
-        <button
-          onClick={handleLogout}
-          className="bg-gray-800 text-white px-4 py-2 rounded"
-        >
-          Logout
-        </button>
-      </div>
-
-      {/* DANGER ZONE */}
-      <div className="border p-4 rounded bg-white shadow">
+      <div className="border p-4 rounded bg-white">
         <h2 className="text-xl font-semibold mb-2 text-red-600">
           Danger Zone
         </h2>
 
         <button
-          onClick={async () => {
-            const ok = confirm("This will delete all your saved drafts. Continue?");
-            if (!ok) return;
-
-            const { data } = await supabase.auth.getSession();
-            const user = data.session?.user;
-            if (!user) return;
-
-            await supabase
-              .from("messages")
-              .delete()
-              .eq("user_id", user.id);
-
-            alert("All drafts deleted.");
-            location.reload();
-          }}
-          className="border border-red-500 text-red-600 px-4 py-2 rounded mr-3"
+          onClick={handleLogout}
+          className="bg-gray-800 text-white px-4 py-2 rounded mr-3"
         >
-          Delete All Messages
+          Logout
         </button>
-
-        <button
-          onClick={async () => {
-            const ok = confirm("This will delete your ENTIRE account. Continue?");
-            if (!ok) return;
-
-            const { data } = await supabase.auth.getSession();
-            const user = data.session?.user;
-            if (!user) return;
-
-            await supabase.auth.admin.deleteUser(user.id);
-
-            alert("Account deleted.");
-            router.replace("/");
-          }}
-          className="bg-red-600 text-white px-4 py-2 rounded"
-        >
-          Delete Account
-        </button>
-      </div>
-
-      {/* BACK BUTTON */}
-      <div className="mt-6">
-        <a
-          href="/"
-          className="inline-block px-4 py-2 bg-gray-200 rounded text-sm"
-        >
-          ⬅ Back to Home
-        </a>
       </div>
     </main>
   );
