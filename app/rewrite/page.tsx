@@ -8,7 +8,7 @@ import Toast from "../components/Toast";
 export default function RewritePage() {
   const router = useRouter();
 
-  // Auth state
+  // Auth
   const [ready, setReady] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
 
@@ -18,49 +18,49 @@ export default function RewritePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
+
   const [results, setResults] = useState({
     soft: "",
     calm: "",
     clear: "",
   });
+
   const [toast, setToast] = useState("");
 
   // ---------------------------------------------------------
-  // AUTH CHECK (WORKS 100% — waits for session load)
+  // AUTH CHECK
   // ---------------------------------------------------------
   useEffect(() => {
     let mounted = true;
 
-    async function checkSession() {
+    async function check() {
       const { data } = await supabase.auth.getSession();
 
       if (!mounted) return;
 
-      // If session instantly available
       if (data.session) {
         setLoggedIn(true);
         setReady(true);
         return;
       }
 
-      // If not → wait for Supabase to restore localStorage session
+      // Give Supabase time to restore from localStorage
       setTimeout(async () => {
         const { data: retry } = await supabase.auth.getSession();
-
         if (!mounted) return;
 
         if (retry.session) {
           setLoggedIn(true);
           setReady(true);
         } else {
-          router.replace("/sign-in");
+          router.replace("/sign-in?error=not-authenticated");
         }
       }, 300);
     }
 
-    checkSession();
+    check();
 
-    // Listen for login/logout
+    // listen for login/logout
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setLoggedIn(!!session);
@@ -73,12 +73,8 @@ export default function RewritePage() {
     };
   }, [router]);
 
-  // UI while checking auth
-  if (!ready) {
+  if (!ready)
     return <main className="p-8 text-center">Checking authentication…</main>;
-  }
-
-  // If somehow loggedOut after ready:
   if (!loggedIn) return null;
 
   // ---------------------------------------------------------
@@ -146,8 +142,8 @@ export default function RewritePage() {
 
     const { error } = await supabase.from("messages").insert({
       user_id: user.id,
-      original: message,
-      rewritten: text,
+      original_text: message,
+      rewritten_text: text,
       tone,
     });
 
@@ -158,12 +154,20 @@ export default function RewritePage() {
     }
   }
 
+  // ---------------------------------------------------------
+  // UTIL
+  // ---------------------------------------------------------
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
     setToast("Copied!");
   }
 
   function useThis(text: string) {
+    setMessage(text);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function editVersion(text: string) {
     setMessage(text);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -230,6 +234,7 @@ export default function RewritePage() {
 
               <p className="whitespace-pre-wrap">{results[toneKey]}</p>
 
+              {/* ALL 4 BUTTONS */}
               <div className="flex gap-3 mt-4">
                 <button
                   onClick={() => copyToClipboard(results[toneKey])}
@@ -243,6 +248,13 @@ export default function RewritePage() {
                   className="border px-3 py-1 rounded"
                 >
                   Use This
+                </button>
+
+                <button
+                  onClick={() => editVersion(results[toneKey])}
+                  className="border px-3 py-1 rounded"
+                >
+                  Edit
                 </button>
 
                 <button
