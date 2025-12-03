@@ -3,56 +3,47 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export default function AccountPage() {
   const router = useRouter();
+
   const [email, setEmail] = useState<string | null>(null);
   const [stats, setStats] = useState({ today: 0, total: 0 });
+
   const [loading, setLoading] = useState(true);
-  const [isPro, setIsPro] = useState(false);
 
   useEffect(() => {
     async function load() {
-      const { data: auth } = await supabase.auth.getUser();
-      if (!auth.user) {
+      const { data } = await supabase.auth.getUser();
+      const user = data.user;
+
+      if (!user) {
         router.replace("/sign-in");
         return;
       }
 
-      const userId = auth.user.id;
-      setEmail(auth.user.email);
+      setEmail(user.email);
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("is_pro")
-        .eq("id", userId)
-        .single();
+      const todayStr = new Date().toISOString().split("T")[0];
 
-      setIsPro(profile?.is_pro === true);
+      const { data: messages } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("user_id", user.id);
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = messages?.filter(
+        (m) => m.created_at.startsWith(todayStr)
+      ).length || 0;
 
-      const { count: todayCount } = await supabase
-        .from("rewrite_usage")
-        .select("id", { count: "exact" })
-        .eq("user_id", userId)
-        .gte("created_at", today);
+      const total = messages?.length || 0;
 
-      const { count: totalCount } = await supabase
-        .from("rewrite_usage")
-        .select("id", { count: "exact" })
-        .eq("user_id", userId);
-
-      setStats({
-        today: todayCount ?? 0,
-        total: totalCount ?? 0,
-      });
-
+      setStats({ today, total });
       setLoading(false);
     }
 
     load();
-  }, []);
+  }, [router]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -60,43 +51,56 @@ export default function AccountPage() {
   }
 
   async function handleDeleteData() {
-    const ok = confirm("Delete ALL saved messages?");
+    const ok = confirm("Delete ALL messages? This cannot be undone.");
     if (!ok) return;
 
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) return;
+    const { data } = await supabase.auth.getUser();
+    const user = data.user;
+    if (!user) return;
 
-    await supabase.from("messages").delete().eq("user_id", auth.user.id);
-    location.reload();
+    await supabase.from("messages").delete().eq("user_id", user.id);
+    alert("All messages deleted.");
   }
 
   async function handleDeleteAccount() {
     const ok = confirm("Delete your ENTIRE account?");
     if (!ok) return;
 
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) return;
+    const { data } = await supabase.auth.getUser();
+    const user = data.user;
+    if (!user) return;
 
-    await supabase.auth.admin.deleteUser(auth.user.id);
-    router.replace("/");
+    await supabase.auth.admin.deleteUser(user.id);
+    alert("Account deleted.");
+    router.push("/");
   }
 
-  if (loading) return <main className="p-5">Loading...</main>;
+  if (loading) return <main className="p-6">Loading account…</main>;
 
   return (
     <main className="max-w-xl mx-auto p-6">
+
+      {/* BACK BUTTON */}
+      <Link
+        href="/"
+        className="inline-block mb-4 bg-gray-200 px-4 py-2 rounded"
+      >
+        ← Back
+      </Link>
+
       <h1 className="text-3xl font-bold mb-4">Your Account</h1>
 
       <div className="border p-4 rounded mb-6">
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
+
         <p><strong>Email:</strong> {email}</p>
-        <p><strong>Plan:</strong> {isPro ? "Pro" : "Free"}</p>
+        <p><strong>Role:</strong> Free User</p>
       </div>
 
       <div className="border p-4 rounded mb-6">
-        <h2 className="text-xl font-semibold mb-2">Rewrite Usage</h2>
+        <h2 className="text-xl font-semibold mb-2">Usage</h2>
         <p><strong>Rewrites Today:</strong> {stats.today}</p>
-        <p><strong>Total Rewrites:</strong> {stats.total}</p>
+        <p><strong>Total:</strong> {stats.total}</p>
       </div>
 
       <div className="border p-4 rounded mb-6">
@@ -110,7 +114,7 @@ export default function AccountPage() {
       </div>
 
       <div className="border p-4 rounded">
-        <h2 className="text-xl font-semibold mb-2 text-red-600">
+        <h2 className="text-xl font-semibold text-red-600 mb-2">
           Danger Zone
         </h2>
 

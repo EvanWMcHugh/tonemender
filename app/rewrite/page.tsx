@@ -3,16 +3,15 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Toast from "../components/Toast";
 
 export default function RewritePage() {
   const router = useRouter();
 
-  // Auth
   const [ready, setReady] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
 
-  // Rewrite state
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("partner");
   const [loading, setLoading] = useState(false);
@@ -27,15 +26,12 @@ export default function RewritePage() {
 
   const [toast, setToast] = useState("");
 
-  // ---------------------------------------------------------
   // AUTH CHECK
-  // ---------------------------------------------------------
   useEffect(() => {
     let mounted = true;
 
     async function check() {
       const { data } = await supabase.auth.getSession();
-
       if (!mounted) return;
 
       if (data.session) {
@@ -44,7 +40,6 @@ export default function RewritePage() {
         return;
       }
 
-      // Give Supabase time to restore from localStorage
       setTimeout(async () => {
         const { data: retry } = await supabase.auth.getSession();
         if (!mounted) return;
@@ -53,14 +48,13 @@ export default function RewritePage() {
           setLoggedIn(true);
           setReady(true);
         } else {
-          router.replace("/sign-in?error=not-authenticated");
+          router.replace("/sign-in");
         }
       }, 300);
     }
 
     check();
 
-    // listen for login/logout
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setLoggedIn(!!session);
@@ -73,13 +67,12 @@ export default function RewritePage() {
     };
   }, [router]);
 
-  if (!ready)
-    return <main className="p-8 text-center">Checking authentication…</main>;
+  if (!ready) return <main className="p-8 text-center">Checking...</main>;
   if (!loggedIn) return null;
 
-  // ---------------------------------------------------------
-  // HANDLE REWRITE
-  // ---------------------------------------------------------
+  // ---------------------------
+  // REWRITE MESSAGE
+  // ---------------------------
   async function handleRewrite() {
     setError("");
     setLimitReached(false);
@@ -91,7 +84,7 @@ export default function RewritePage() {
       const token = data.session?.access_token;
 
       if (!token) {
-        setError("You must be logged in to use ToneMender.");
+        setError("You must be logged in.");
         setLoading(false);
         return;
       }
@@ -117,76 +110,51 @@ export default function RewritePage() {
       }
 
       setResults({
-        soft: json.soft || "",
-        calm: json.calm || "",
-        clear: json.clear || "",
+        soft: json.soft,
+        calm: json.calm,
+        clear: json.clear,
       });
-    } catch {
-      setError("Network error. Try again.");
     } finally {
       setLoading(false);
     }
   }
 
-  // ---------------------------------------------------------
   // SAVE MESSAGE
-  // ---------------------------------------------------------
   async function saveMessage(text: string, tone: "soft" | "calm" | "clear") {
     const { data } = await supabase.auth.getSession();
     const user = data.session?.user;
 
-    if (!user) {
-      alert("You must be logged in to save messages.");
-      return;
-    }
+    if (!user) return alert("Must be logged in.");
 
     const { error } = await supabase.from("messages").insert({
       user_id: user.id,
-      original_text: message,
-      rewritten_text: text,
+      original: message,
+      soft: results.soft,
+      calm: results.calm,
+      clear: results.clear,
       tone,
     });
 
-    if (error) {
-      alert("Failed to save message.");
-    } else {
-      alert("Saved!");
-    }
+    if (error) alert("Failed to save.");
+    else alert("Saved!");
   }
 
-  // ---------------------------------------------------------
-  // UTIL
-  // ---------------------------------------------------------
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
-    setToast("Copied!");
-  }
-
-  function useThis(text: string) {
-    setMessage(text);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function editVersion(text: string) {
-    setMessage(text);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  // ---------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------
   return (
     <main className="max-w-2xl mx-auto p-5">
+
+      {/* BACK BUTTON */}
+      <Link
+        href="/"
+        className="inline-block mb-4 bg-gray-200 px-4 py-2 rounded"
+      >
+        ← Back
+      </Link>
+
       <h1 className="text-3xl font-bold mb-5">Rewrite Your Message</h1>
 
       {limitReached && (
         <div className="mb-4 p-4 rounded bg-yellow-100 border border-yellow-300">
-          <p className="font-semibold mb-2">
-            You’ve used all 3 free rewrites for today.
-          </p>
-          <p className="mb-2 text-sm">
-            Upgrade to ToneMender Pro to unlock unlimited rewrites.
-          </p>
+          <p className="font-semibold mb-2">You've reached your free limit.</p>
           <a
             href="/upgrade"
             className="inline-block bg-purple-600 text-white px-4 py-2 rounded text-sm"
@@ -210,7 +178,7 @@ export default function RewritePage() {
         value={recipient}
         onChange={(e) => setRecipient(e.target.value)}
       >
-        <option value="partner">Romantic Partner</option>
+        <option value="partner">Partner</option>
         <option value="friend">Friend</option>
         <option value="family">Family</option>
         <option value="coworker">Coworker</option>
@@ -219,46 +187,38 @@ export default function RewritePage() {
       <button
         onClick={handleRewrite}
         disabled={loading || !message}
-        className="bg-blue-600 text-white w-full p-3 mt-4 rounded disabled:bg-gray-400"
+        className="bg-blue-600 text-white w-full p-3 mt-4 rounded"
       >
-        {loading ? "Processing…" : "Rewrite Message"}
+        {loading ? "Working…" : "Rewrite Message"}
       </button>
 
       {results.soft && (
         <div className="mt-8 space-y-6">
-          {(["soft", "calm", "clear"] as const).map((toneKey) => (
-            <div key={toneKey} className="border p-4 rounded-lg bg-gray-50">
-              <h2 className="text-xl font-semibold capitalize text-blue-700 mb-2">
-                {toneKey} Version
+          {(["soft", "calm", "clear"] as const).map((tone) => (
+            <div key={tone} className="border p-4 rounded bg-gray-50">
+              <h2 className="text-xl font-semibold mb-2 capitalize">
+                {tone} Version
               </h2>
 
-              <p className="whitespace-pre-wrap">{results[toneKey]}</p>
+              <p className="whitespace-pre-wrap">{results[tone]}</p>
 
-              {/* ALL 4 BUTTONS */}
               <div className="flex gap-3 mt-4">
                 <button
-                  onClick={() => copyToClipboard(results[toneKey])}
+                  onClick={() => navigator.clipboard.writeText(results[tone])}
                   className="border px-3 py-1 rounded"
                 >
                   Copy
                 </button>
 
                 <button
-                  onClick={() => useThis(results[toneKey])}
-                  className="border px-3 py-1 rounded"
-                >
-                  Use This
-                </button>
-
-                <button
-                  onClick={() => editVersion(results[toneKey])}
+                  onClick={() => setMessage(results[tone])}
                   className="border px-3 py-1 rounded"
                 >
                   Edit
                 </button>
 
                 <button
-                  onClick={() => saveMessage(results[toneKey], toneKey)}
+                  onClick={() => saveMessage(results[tone], tone)}
                   className="border px-3 py-1 rounded bg-green-600 text-white"
                 >
                   Save
