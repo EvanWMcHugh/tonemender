@@ -1,47 +1,38 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-export async function POST(req: Request) {
-  const rawBody = await req.text();
-  const signature = req.headers.get("stripe-signature")!;
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-
+export async function GET(req: Request) {
   try {
-    const event = stripe.webhooks.constructEvent(
-      rawBody,
-      signature,
-      endpointSecret
-    );
+    const { searchParams } = new URL(req.url);
+    const price = searchParams.get("price");
 
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object as any;
-      const userId = session.metadata.userId;
+    // Choose correct price ID
+    const priceId =
+      price === "yearly"
+        ? process.env.STRIPE_PRICE_YEARLY
+        : process.env.STRIPE_PRICE_MONTHLY;
 
-      // 🔥 FIX: dynamically import AND initialize Supabase inside function
-      const { createClient } = await import("@supabase/supabase-js");
-
-      const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SECRET_KEY!
+    if (!priceId) {
+      return NextResponse.json(
+        { error: "Missing Stripe price ID" },
+        { status: 400 }
       );
-
-      await supabase
-        .from("profiles")
-        .update({ is_pro: true })
-        .eq("id", userId);
     }
 
-    return NextResponse.json({ received: true });
+    // Create checkout session
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      payment_method_types: ["card"],
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/account?success=true`,
+      cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/upgrade?canceled=true`,
+    });
+
+    return NextResponse.json({ url: session.url });
   } catch (err: any) {
-    console.error("Webhook error:", err.message);
-    return NextResponse.json(
-      { error: `Webhook Error: ${err.message}` },
-      { status: 400 }
-    );
+    console.error("CHECKOUT ERROR:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
