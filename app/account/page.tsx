@@ -14,7 +14,6 @@ export default function AccountPage() {
 
   useEffect(() => {
     async function load() {
-      // GET USER
       const { data } = await supabase.auth.getUser();
       if (!data.user) {
         router.push("/sign-in");
@@ -23,28 +22,28 @@ export default function AccountPage() {
 
       setEmail(data.user.email);
 
-      // GET PROFILE (is_pro, plan type, stripe customer id)
+      // Load profile data
       const { data: profile } = await supabase
         .from("profiles")
-        .select("is_pro, plan_type")
+        .select("is_pro")
         .eq("id", data.user.id)
         .single();
 
       if (profile?.is_pro) setIsPro(true);
 
-      // GET REWRITE STATS
+      // Load usage stats
       const todayStr = new Date().toISOString().split("T")[0];
 
-      const { data: messages } = await supabase
+      const { data: usage } = await supabase
         .from("rewrite_usage")
         .select("*")
         .eq("user_id", data.user.id);
 
-      const today = messages?.filter((m) =>
-        m.created_at.startsWith(todayStr)
+      const today = usage?.filter((u) =>
+        u.created_at.startsWith(todayStr)
       ).length || 0;
 
-      const total = messages?.length || 0;
+      const total = usage?.length || 0;
 
       setStats({ today, total });
       setLoading(false);
@@ -55,6 +54,32 @@ export default function AccountPage() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
+    router.push("/");
+  }
+
+  async function deleteAllMessages() {
+    const ok = confirm("Delete ALL saved messages? This cannot be undone.");
+    if (!ok) return;
+
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) return;
+
+    await supabase.from("messages").delete().eq("user_id", user.user.id);
+    alert("All messages deleted.");
+    location.reload();
+  }
+
+  async function deleteAccount() {
+    const ok = confirm(
+      "Delete your ENTIRE account? This action is permanent."
+    );
+    if (!ok) return;
+
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) return;
+
+    await supabase.auth.admin.deleteUser(user.user.id);
+    alert("Your account has been deleted.");
     router.push("/");
   }
 
@@ -90,14 +115,11 @@ export default function AccountPage() {
 
       <h1 className="text-3xl font-bold mb-6">Your Account</h1>
 
+      {/* PROFILE CARD */}
       <div className="border p-4 rounded mb-6 bg-white">
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
-
-        <p className="text-gray-700 mb-2">
-          <strong>Email:</strong> {email}
-        </p>
-
-        <p className="text-gray-700 mb-2">
+        <p className="mb-2"><strong>Email:</strong> {email}</p>
+        <p className="mb-2">
           <strong>Status:</strong>{" "}
           {isPro ? "🚀 Pro Member" : "Free User"}
         </p>
@@ -112,23 +134,43 @@ export default function AccountPage() {
         )}
       </div>
 
+      {/* USAGE */}
       <div className="border p-4 rounded mb-6 bg-white">
         <h2 className="text-xl font-semibold mb-2">Usage</h2>
-
         <p><strong>Rewrites Today:</strong> {stats.today}</p>
         <p><strong>Total Rewrites:</strong> {stats.total}</p>
       </div>
 
-      <div className="border p-4 rounded bg-white">
-        <h2 className="text-xl font-semibold mb-2 text-red-600">
-          Danger Zone
-        </h2>
+      {/* SECURITY */}
+      <div className="border p-4 rounded mb-6 bg-white">
+        <h2 className="text-xl font-semibold mb-2">Security</h2>
 
         <button
           onClick={handleLogout}
           className="bg-gray-800 text-white px-4 py-2 rounded mr-3"
         >
           Logout
+        </button>
+      </div>
+
+      {/* DANGER ZONE */}
+      <div className="border p-4 rounded bg-white">
+        <h2 className="text-xl font-semibold text-red-600 mb-3">
+          Danger Zone
+        </h2>
+
+        <button
+          onClick={deleteAllMessages}
+          className="border border-red-500 text-red-600 px-4 py-2 rounded mr-3"
+        >
+          Delete All Messages
+        </button>
+
+        <button
+          onClick={deleteAccount}
+          className="bg-red-600 text-white px-4 py-2 rounded"
+        >
+          Delete Account
         </button>
       </div>
     </main>
