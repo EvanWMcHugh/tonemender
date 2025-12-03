@@ -8,12 +8,13 @@ import Link from "next/link";
 export default function LandingPage() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [isPro, setIsPro] = useState(false);
+  const [authReady, setAuthReady] = useState(false); // ← NEW
 
   useEffect(() => {
     async function load() {
       const { data } = await supabase.auth.getUser();
-      const user = data.user;
 
+      const user = data.user;
       setLoggedIn(!!user);
 
       if (user) {
@@ -25,14 +26,24 @@ export default function LandingPage() {
 
         if (profile?.is_pro) setIsPro(true);
       }
+
+      setAuthReady(true); // ← WE WAIT UNTIL EVERYTHING IS LOADED
     }
 
     load();
   }, []);
 
+  // Don’t render UI depending on login state until session is loaded
+  if (!authReady) {
+    return (
+      <main className="p-8 text-center">
+        Loading...
+      </main>
+    );
+  }
+
   return (
     <main style={{ padding: "40px", maxWidth: "600px", margin: "auto" }}>
-      {/* Show logout only when logged in */}
       {loggedIn && (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <LogoutButton />
@@ -46,51 +57,45 @@ export default function LandingPage() {
         relationship-safe communication.
       </p>
 
-      {/* Show main navigation ONLY when logged in */}
-      {loggedIn && (
-        <div style={{ marginTop: "40px", display: "flex", gap: "16px" }}>
-          <Link
-            href="/rewrite"
-            style={{
-              padding: "10px 16px",
-              background: "#2563eb",
-              color: "white",
-              borderRadius: "6px",
-              textDecoration: "none",
-            }}
-          >
-            Rewrite Message
-          </Link>
+      <div style={{ marginTop: "40px", display: "flex", gap: "16px" }}>
+        <Link
+          href="/rewrite"
+          style={{
+            padding: "10px 16px",
+            background: "#2563eb",
+            color: "white",
+            borderRadius: "6px",
+          }}
+        >
+          Rewrite Message
+        </Link>
 
-          <Link
-            href="/drafts"
-            style={{
-              padding: "10px 16px",
-              background: "#6b7280",
-              color: "white",
-              borderRadius: "6px",
-              textDecoration: "none",
-            }}
-          >
-            Drafts
-          </Link>
+        <Link
+          href="/drafts"
+          style={{
+            padding: "10px 16px",
+            background: "#6b7280",
+            color: "white",
+            borderRadius: "6px",
+          }}
+        >
+          Drafts
+        </Link>
 
-          <Link
-            href="/account"
-            style={{
-              padding: "10px 16px",
-              background: "#4f46e5",
-              color: "white",
-              borderRadius: "6px",
-              textDecoration: "none",
-            }}
-          >
-            Account
-          </Link>
-        </div>
-      )}
+        <Link
+          href="/account"
+          style={{
+            padding: "10px 16px",
+            background: "#4f46e5",
+            color: "white",
+            borderRadius: "6px",
+          }}
+        >
+          Account
+        </Link>
+      </div>
 
-      {/* Show upgrade ONLY if logged-in AND NOT pro */}
+      {/* Show Upgrade button ONLY if logged in AND not Pro */}
       {loggedIn && !isPro && (
         <div style={{ marginTop: "30px" }}>
           <Link
@@ -108,7 +113,7 @@ export default function LandingPage() {
         </div>
       )}
 
-      {/* Logged-out visitors see ONLY Sign-in + Sign-up */}
+      {/* Show login/signup only if logged OUT */}
       {!loggedIn && (
         <div style={{ marginTop: "40px" }}>
           <Link
@@ -119,7 +124,6 @@ export default function LandingPage() {
               background: "#111827",
               color: "white",
               borderRadius: "6px",
-              textDecoration: "none",
             }}
           >
             Sign In
@@ -132,7 +136,6 @@ export default function LandingPage() {
               background: "#10b981",
               color: "white",
               borderRadius: "6px",
-              textDecoration: "none",
             }}
           >
             Sign Up
