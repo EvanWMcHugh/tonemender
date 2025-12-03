@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { supabase } from "../../../lib/supabase";
+import { createClient } from "@supabase/supabase-js";
+
+// 🔒 Server-side Supabase client (service role key required)
+const supabaseServer = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SECRET_KEY!, // service key for server only
+  { auth: { persistSession: false } }
+);
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -11,33 +18,45 @@ export async function POST(request: Request) {
     const { token, message, recipient } = await request.json();
 
     if (!token) {
-      return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Missing auth token" },
+        { status: 401 }
+      );
     }
 
-    const { data: authData } = await supabase.auth.getUser(token);
-    const user = authData?.user;
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // -------- AUTH CHECK (SERVER SAFE) --------
+    const {
+      data: auth,
+      error: authError,
+    } = await supabaseServer.auth.getUser(token);
+
+    if (authError || !auth?.user) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    // 📌 CHECK FREE LIMITS
-    const { data: profile } = await supabase
+    const user = auth.user;
+
+    // -------- CHECK PRO STATUS --------
+    const { data: profile } = await supabaseServer
       .from("profiles")
       .select("is_pro")
       .eq("id", user.id)
       .single();
 
+    // -------- FREE LIMIT CHECK --------
     if (!profile?.is_pro) {
-      // count rewrites done today from rewrite_usage
       const today = new Date().toISOString().split("T")[0];
 
-      const { data: usage } = await supabase
+      const { data: usage } = await supabaseServer
         .from("rewrite_usage")
         .select("*")
         .eq("user_id", user.id)
         .gte("created_at", today);
 
-      if ((usage?.length || 0) >= 3) {
+      if ((usage?.length ?? 0) >= 3) {
         return NextResponse.json(
           { error: "Daily limit reached" },
           { status: 429 }
@@ -45,7 +64,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // ------- AI Rewrite -------
+    // -------- PERFORM AI REWRITE --------
     const prompt = `
 Rewrite the following message into 3 versions for a ${recipient}:
 
@@ -55,7 +74,7 @@ CLEAR:
 
 Message: "${message}"
 
-Return ONLY:
+Return EXACTLY:
 
 SOFT: <soft>
 CALM: <calm>
@@ -79,8 +98,8 @@ CLEAR: <clear>
     const calm = extract("CALM");
     const clear = extract("CLEAR");
 
-    // 📌 RECORD REWRITE IN rewrite_usage
-    await supabase.from("rewrite_usage").insert({
+    // -------- LOG REWRITE USAGE --------
+    await supabaseServer.from("rewrite_usage").insert({
       user_id: user.id,
     });
 
