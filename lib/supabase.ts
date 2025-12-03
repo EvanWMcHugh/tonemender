@@ -1,3 +1,5 @@
+// lib/supabase.ts
+
 import { createClient } from "@supabase/supabase-js";
 
 export const supabase = createClient(
@@ -6,8 +8,11 @@ export const supabase = createClient(
   {
     auth: {
       persistSession: true,
-      storage: typeof window !== "undefined" ? window.localStorage : undefined,
       autoRefreshToken: true,
+
+      // Only enable localStorage on the client
+      storage:
+        typeof window !== "undefined" ? window.localStorage : undefined,
     },
   }
 );

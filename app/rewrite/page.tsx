@@ -11,11 +11,7 @@ export default function RewritePage() {
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
 
-  const [results, setResults] = useState<{
-    soft: string;
-    calm: string;
-    clear: string;
-  }>({
+  const [results, setResults] = useState({
     soft: "",
     calm: "",
     clear: "",
@@ -24,7 +20,7 @@ export default function RewritePage() {
   const [toast, setToast] = useState("");
 
   // ---------------------------------------------------------
-  // ✅ FIXED HANDLE REWRITE (added missing try { })
+  // HANDLE REWRITE
   // ---------------------------------------------------------
   async function handleRewrite() {
     setError("");
@@ -34,7 +30,6 @@ export default function RewritePage() {
 
     try {
       const { data } = await supabase.auth.getSession();
-      console.log("SESSION:", data);
       const token = data.session?.access_token;
 
       if (!token) {
@@ -46,16 +41,12 @@ export default function RewritePage() {
       const res = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          message,
-          recipient,
-        }),
+        body: JSON.stringify({ token, message, recipient }),
       });
 
       const json = await res.json();
 
-      if (res.status === 429 && json.error === "Daily limit reached") {
+      if (res.status === 429) {
         setLimitReached(true);
         setLoading(false);
         return;
@@ -90,7 +81,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // ✅ SAVE MESSAGE WORKS
+  // SAVE MESSAGE
   // ---------------------------------------------------------
   async function saveMessage(text: string, tone: "soft" | "calm" | "clear") {
     const { data } = await supabase.auth.getSession();

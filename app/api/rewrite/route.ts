@@ -17,14 +17,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser(token);
+    const { data: authData, error: authError } =
+      await supabase.auth.getUser(token);
 
-    if (authError || !user) {
+    if (authError || !authData.user) {
       return NextResponse.json(
-        { error: "Unauthorized", detail: authError?.message },
+        { error: "Unauthorized" },
         { status: 401 }
       );
     }
@@ -38,13 +36,11 @@ CLEAR:
 
 Message: "${message}"
 
-Return your answer ONLY in this format:
+Return ONLY:
 
-SOFT: <soft rewrite>
-
-CALM: <calm rewrite>
-
-CLEAR: <clear rewrite>
+SOFT: <soft>
+CALM: <calm>
+CLEAR: <clear>
 `;
 
     const completion = await client.chat.completions.create({
@@ -54,18 +50,17 @@ CLEAR: <clear rewrite>
 
     const raw: string = completion.choices[0].message.content ?? "";
 
-    // FIXED extract function
     const extractBlock = (label: string): string => {
       const regex = new RegExp(`${label}:([\\s\\S]*?)(?=\\n[A-Z]+:|$)`, "i");
       const match = raw.match(regex);
       return match ? match[1].trim() : "";
     };
 
-    const soft = extractBlock("SOFT");
-    const calm = extractBlock("CALM");
-    const clear = extractBlock("CLEAR");
-
-    return NextResponse.json({ soft, calm, clear });
+    return NextResponse.json({
+      soft: extractBlock("SOFT"),
+      calm: extractBlock("CALM"),
+      clear: extractBlock("CLEAR"),
+    });
   } catch (err: any) {
     console.error(err);
     return NextResponse.json({ error: err.message }, { status: 500 });
