@@ -13,15 +13,13 @@ export default function LoginPage() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
     setError("");
+    setLoading(true);
 
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
-
-    console.log("LOGIN RESPONSE:", { data, error });
 
     if (error) {
       setError(error.message);
@@ -29,8 +27,10 @@ export default function LoginPage() {
       return;
     }
 
-    // Successful login → go to landing page
-    router.replace("/landing");
+    // Redirect to home page (landing)
+    setTimeout(() => {
+      router.replace("/");
+    }, 200);
   }
 
   return (
@@ -38,7 +38,7 @@ export default function LoginPage() {
       <div className="w-[360px]">
         <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
 
-        {error && <p className="text-red-500 mb-2">{error}</p>}
+        {error && <p className="text-red-500">{error}</p>}
 
         <form onSubmit={handleLogin} className="flex flex-col gap-3">
           <input
@@ -60,20 +60,12 @@ export default function LoginPage() {
           />
 
           <button
-            type="submit"
             disabled={loading}
             className="bg-blue-600 text-white p-2 rounded"
           >
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>
-
-        <p className="mt-4 text-center text-sm">
-          Don’t have an account?{" "}
-          <a href="/sign-up" className="text-blue-600 underline">
-            Sign Up
-          </a>
-        </p>
       </div>
     </main>
   );
