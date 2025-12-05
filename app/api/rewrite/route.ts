@@ -42,21 +42,28 @@ export async function POST(request: Request) {
     // -------- CHECK PRO STATUS --------
     const { data: profile } = await supabaseServer
       .from("profiles")
-      .select("is_pro")
+      .select("is_pro, free_rewrites_remaining, last_reset_date") // ⭐ NEW
       .eq("id", user.id)
       .single();
 
-    // -------- FREE LIMIT CHECK --------
+    // -------- MIDNIGHT RESET CHECK (LOCAL DAILY RESET) --------
     if (!profile?.is_pro) {
       const today = new Date().toISOString().split("T")[0];
 
-      const { data: usage } = await supabaseServer
-        .from("rewrite_usage")
-        .select("*")
-        .eq("user_id", user.id)
-        .gte("created_at", today);
+      // If last reset was NOT today → reset counter
+      if (profile.last_reset_date !== today) {
+        await supabaseServer
+          .from("profiles")
+          .update({
+            free_rewrites_remaining: 3,   // ⭐ NEW
+            last_reset_date: today,       // ⭐ NEW
+          })
+          .eq("id", user.id);
+        profile.free_rewrites_remaining = 3;  // ⭐ update local value
+      }
 
-      if ((usage?.length ?? 0) >= 3) {
+      // -------- DAILY LIMIT ENFORCEMENT --------
+      if (profile.free_rewrites_remaining <= 0) {
         return NextResponse.json(
           { error: "Daily limit reached" },
           { status: 429 }
@@ -102,6 +109,16 @@ CLEAR: <clear>
     await supabaseServer.from("rewrite_usage").insert({
       user_id: user.id,
     });
+
+    // ⭐ NEW: decrement free rewrite count only for non-pro users
+    if (!profile?.is_pro) {
+      await supabaseServer
+        .from("profiles")
+        .update({
+          free_rewrites_remaining: profile.free_rewrites_remaining - 1,
+        })
+        .eq("id", user.id);
+    }
 
     return NextResponse.json({ soft, calm, clear });
   } catch (err: any) {
