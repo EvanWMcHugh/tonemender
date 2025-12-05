@@ -57,7 +57,6 @@ export async function POST(request: Request) {
     if (profile && !profile.is_pro) {
       const today = new Date().toISOString().split("T")[0];
 
-      // If last reset was NOT today → reset counter
       if (profile.last_reset_date !== today) {
         await supabaseServer
           .from("profiles")
@@ -70,7 +69,6 @@ export async function POST(request: Request) {
         profile.free_rewrites_remaining = 3;
       }
 
-      // -------- DAILY LIMIT ENFORCEMENT --------
       if (profile.free_rewrites_remaining <= 0) {
         return NextResponse.json(
           { error: "Daily limit reached" },
@@ -97,75 +95,50 @@ export async function POST(request: Request) {
       }
     })();
 
-    const primaryToneHint = (() => {
-      if (!tone || tone === "default") return "";
-      if (tone === "soft") {
-        return "The user’s primary preference is SOFT. Make that version especially gentle, reassuring and emotionally safe while keeping boundaries.";
-      }
-      if (tone === "calm") {
-        return "The user’s primary preference is CALM. Make that version especially neutral, steady and balanced, without sounding cold.";
-      }
-      if (tone === "clear") {
-        return "The user’s primary preference is CLEAR. Make that version especially direct and honest, but still respectful and not attacking.";
-      }
-      return "";
-    })();
+    const primaryToneHint =
+      tone === "soft"
+        ? "The user's preferred tone is SOFT — extra gentle and emotionally safe."
+        : tone === "calm"
+        ? "The user's preferred tone is CALM — neutral and grounded."
+        : tone === "clear"
+        ? "The user's preferred tone is CLEAR — direct but respectful."
+        : "";
 
-    // -------- PERFORM AI REWRITE (IMPROVED PROMPT + SCORE + EMOTION) --------
+    // -------- AI PROMPT (REWRITES + SCORE + EMOTION) --------
     const prompt = `
-You are an expert relationship and communication coach. Your job is to rewrite emotionally charged messages so they are safe, clear and honest, without losing the original point.
+You are an expert communication and relationship coach. Rewrite the user's message into healthier versions and analyze emotional tone.
 
 User context:
-- They are sending this to ${recipientDescription}.
-- The goal is to reduce conflict, avoid blame, and increase understanding while still expressing how they feel.
+- Recipient: ${recipientDescription}
 ${primaryToneHint}
 
-You will create THREE versions of the message using these exact tone definitions:
+Your tasks:
 
-SOFT:
-- Very gentle and compassionate.
-- Uses "I" statements, empathy, and softness.
-- De-escalates tension and reassures the other person.
-- Good when the situation is sensitive and the user wants to avoid conflict.
+1️⃣ REWRITE the message into three tones:
+SOFT — gentle, empathetic, emotionally safe  
+CALM — neutral, steady, grounded  
+CLEAR — direct but respectful  
 
-CALM:
-- Neutral and steady.
-- Clear but not sharp.
-- Removes drama, accusations, and exaggeration.
-- Good for day-to-day misunderstandings or when the user wants to sound mature.
+2️⃣ SCORE THE ORIGINAL MESSAGE  
+Give a "Tone Score" from **0–100**, where:
+0 = extremely harsh / risky  
+100 = very healthy and clear  
+The score MUST be just a number.
 
-CLEAR:
-- Direct and straightforward, but still respectful.
-- States needs, boundaries, or problems plainly.
-- Avoids insults, name-calling, and threats.
-- Good when the user needs to be firm without being cruel.
+3️⃣ EMOTIONAL IMPACT PREDICTION  
+Predict in **1–2 natural sentences** how the *rewritten* message is likely to make the recipient feel.
+Use emojis to enhance the emotional meaning (😊😟😬❤️ etc.).
 
-You will ALSO:
-1) Give a TONE_SCORE from 0–100 for the ORIGINAL message, where:
-   - 0 = extremely harsh / attacking
-   - 100 = extremely calm, kind and safe
-2) Briefly describe how the ORIGINAL message is likely to make the other person feel (EMOTION_PREDICTION), in 1 short sentence (for example: "They may feel blamed and defensive.").
-
-IMPORTANT RULES:
-- Keep the original intent and meaning of the user’s message, but remove blamey wording, swearing, or insults in the rewrites.
-- NEVER add fake details or change the situation.
-- Do NOT mention that you are an AI or that this is a rewrite.
-- Do NOT include headers, bullet points, or explanations outside of the required format.
-- Each version should sound like a natural text message someone would actually send.
-- TONE_SCORE must be a single integer from 0 to 100.
-- EMOTION_PREDICTION must be one short plain sentence.
-
-Here is the original message:
-
+Original message:
 "${trimmedMessage}"
 
-Return your answer in EXACTLY this format with no extra text before or after:
+Return EXACTLY in this format:
 
-SOFT: <soft version as a single or multi-sentence message>
-CALM: <calm version as a single or multi-sentence message>
-CLEAR: <clear version as a single or multi-sentence message>
-TONE_SCORE: <integer from 0 to 100 for the ORIGINAL message>
-EMOTION_PREDICTION: <one short sentence about how the ORIGINAL message may make them feel>
+SOFT: <soft message>
+CALM: <calm message>
+CLEAR: <clear message>
+TONE_SCORE: <0-100 only>
+EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
 `.trim();
 
     const completion = await client.chat.completions.create({
@@ -185,25 +158,17 @@ EMOTION_PREDICTION: <one short sentence about how the ORIGINAL message may make 
     const soft = extract("SOFT");
     const calm = extract("CALM");
     const clear = extract("CLEAR");
-
     const toneScoreRaw = extract("TONE_SCORE");
-    let toneScore: number | null = null;
-    const scoreMatch = toneScoreRaw.match(/\d+/);
-    if (scoreMatch) {
-      const parsed = parseInt(scoreMatch[0], 10);
-      if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 100) {
-        toneScore = parsed;
-      }
-    }
+    const emotionImpact = extract("EMOTION_IMPACT");
 
-    const emotionPrediction = extract("EMOTION_PREDICTION");
+    const tone_score = parseInt(toneScoreRaw, 10) || 0;
 
     // -------- LOG REWRITE USAGE --------
     await supabaseServer.from("rewrite_usage").insert({
       user_id: user.id,
     });
 
-    // Decrement free rewrite count only for non-pro users WITH a profile
+    // Decrement free rewrite count only for non-pro users
     if (profile && !profile.is_pro) {
       await supabaseServer
         .from("profiles")
@@ -217,8 +182,8 @@ EMOTION_PREDICTION: <one short sentence about how the ORIGINAL message may make 
       soft,
       calm,
       clear,
-      toneScore,
-      emotionPrediction,
+      tone_score,
+      emotion_prediction: emotionImpact,
     });
   } catch (err: any) {
     console.error("REWRITE ERROR:", err);

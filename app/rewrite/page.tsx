@@ -24,15 +24,17 @@ export default function RewritePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
+
   const [results, setResults] = useState({
     soft: "",
     calm: "",
     clear: "",
   });
+
+  const [toneScore, setToneScore] = useState<number | null>(null);
+  const [emotion, setEmotion] = useState("");
+
   const [toast, setToast] = useState("");
-  // NEW: tone score + emotion prediction
-const [toneScore, setToneScore] = useState<number | null>(null);
-const [emotionPrediction, setEmotionPrediction] = useState("");
 
   // For Before/After share card
   const [originalForCard, setOriginalForCard] = useState("");
@@ -63,7 +65,6 @@ const [emotionPrediction, setEmotionPrediction] = useState("");
           .single();
 
         setIsPro(profile?.is_pro === true);
-
         return;
       }
 
@@ -117,8 +118,12 @@ const [emotionPrediction, setEmotionPrediction] = useState("");
   async function handleRewrite() {
     setError("");
     setLimitReached(false);
+    setToneScore(null);
+    setEmotion("");
     setResults({ soft: "", calm: "", clear: "" });
     setLoading(true);
+
+    const trimmedMessage = message.trim();
 
     try {
       const { data } = await supabase.auth.getSession();
@@ -130,15 +135,12 @@ const [emotionPrediction, setEmotionPrediction] = useState("");
         return;
       }
 
-      const trimmedMessage = message.trim();
-
       if (!trimmedMessage) {
         setError("Please paste a message to rewrite.");
         setLoading(false);
         return;
       }
 
-      // For free users, force "default" options
       const finalRecipient = isPro ? recipient : "default";
       const finalTone = isPro ? tone : "default";
 
@@ -168,17 +170,17 @@ const [emotionPrediction, setEmotionPrediction] = useState("");
       }
 
       const newResults = {
-        soft: (json.soft || "").trim(),
-        calm: (json.calm || "").trim(),
-        clear: (json.clear || "").trim(),
+        soft: json.soft?.trim() || "",
+        calm: json.calm?.trim() || "",
+        clear: json.clear?.trim() || "",
       };
-      // NEW: capture additional API fields
-setToneScore(json.toneScore ?? null);
-setEmotionPrediction((json.emotionPrediction || "").trim());
 
       setResults(newResults);
 
-      // Store Before/After snapshot for share card
+      // ⭐ NEW: Tone Score + Emotion
+      setToneScore(json.tone_score ?? null);
+      setEmotion(json.emotion_prediction || "");
+
       const chosenToneKey = isPro ? (finalTone === "default" ? "soft" : finalTone) : "soft";
       const chosenText =
         (newResults as any)[chosenToneKey] ||
@@ -244,7 +246,7 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
   }
 
   // ---------------------------------------------------------
-  // SHARE HANDLERS
+  // SHARE HANDLERS (unchanged)
   // ---------------------------------------------------------
   async function shareApp() {
     const url = "https://tone13.vercel.app";
@@ -260,9 +262,7 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
         await navigator.clipboard.writeText(url);
         setToast("App link copied!");
       }
-    } catch {
-      // user cancelled or share failed – no need to spam
-    }
+    } catch {}
   }
 
   async function shareRewrite() {
@@ -286,9 +286,7 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
         await navigator.clipboard.writeText(shareText);
         setToast("Rewrite copied to clipboard!");
       }
-    } catch {
-      // ignore cancel
-    }
+    } catch {}
   }
 
   async function shareBeforeAfterImage() {
@@ -310,7 +308,6 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
         type: "image/png",
       });
 
-      // If device supports file sharing
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
           files: [file],
@@ -318,7 +315,6 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
           text: "Before vs After using ToneMender",
         });
       } else {
-        // Fallback: download image
         const link = document.createElement("a");
         link.href = dataUrl;
         link.download = "tonemender-before-after.png";
@@ -334,13 +330,11 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
   }
 
   // ---------------------------------------------------------
-  // UI
+  // UI — FINAL RENDER
   // ---------------------------------------------------------
-  const rawDisplayKey = isPro ? tone || "soft" : "soft";
-  const rawDisplayText =
-    (rawDisplayKey && (results as any)[rawDisplayKey]) || results.soft;
-  const displayKey = rawDisplayKey || "soft";
-  const displayText = (rawDisplayText || "").trim();
+  const displayKey = isPro ? tone || "soft" : "soft";
+  const displayText =
+    (displayKey && (results as any)[displayKey]) || results.soft;
 
   return (
     <main className="max-w-2xl mx-auto p-5">
@@ -353,15 +347,11 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
 
       <h1 className="text-3xl font-bold mb-2">Rewrite Your Message</h1>
       <p className="text-sm text-gray-600 mb-4">
-        Paste the message you’re nervous to send. ToneMender keeps your point,
-        but removes the blame and heat so you don’t start a fight by accident.
+        Paste the message you’re worried about sending. ToneMender keeps your
+        meaning but removes the heat so you don’t start a fight by accident.
       </p>
 
-      {/* Share app button */}
-      <button
-        onClick={shareApp}
-        className="mb-5 border px-3 py-2 rounded text-sm"
-      >
+      <button onClick={shareApp} className="mb-5 border px-3 py-2 rounded text-sm">
         Share ToneMender
       </button>
 
@@ -385,6 +375,7 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
 
       {error && <p className="text-red-500 mb-3">{error}</p>}
 
+      {/* Original Message */}
       <label className="block mb-2 text-sm font-medium text-gray-700">
         Your original message
       </label>
@@ -394,12 +385,8 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
         value={message}
         onChange={(e) => setMessage(e.target.value)}
       />
-      <p className="text-xs text-gray-500 mt-1">
-        Tip: Paste exactly what you were going to send — ToneMender will keep
-        your meaning but make it safer.
-      </p>
 
-      {/* Relationship dropdown (Pro-only) */}
+      {/* Relationship dropdown */}
       <div className="mt-4">
         <label className="block mb-1 text-sm font-medium text-gray-700">
           Who is this message for?
@@ -420,13 +407,9 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
           <option value="family">Family</option>
           <option value="coworker">Coworker</option>
         </select>
-        <p className="text-xs text-gray-500 mt-1">
-          Pro users get rewrites tailored for partners, friends, family and
-          coworkers. Free users get a general safe rewrite.
-        </p>
       </div>
 
-      {/* Tone dropdown (Pro-only) */}
+      {/* Tone dropdown */}
       <div className="mt-4">
         <label className="block mb-1 text-sm font-medium text-gray-700">
           How do you want to sound?
@@ -444,13 +427,8 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
           <option value="calm">Calm & Neutral</option>
           <option value="clear">Clear & Direct</option>
         </select>
-        <p className="text-xs text-gray-500 mt-1">
-          SOFT is extra gentle, CALM is neutral and steady, CLEAR is more direct
-          but still respectful.
-        </p>
       </div>
 
-      {/* Free users do NOT need recipient/tone selected */}
       <button
         onClick={handleRewrite}
         disabled={loading || !message.trim() || (isPro && (!recipient || !tone))}
@@ -459,10 +437,38 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
         {loading ? "Processing…" : "Rewrite Message"}
       </button>
 
-      {/* Result & Share Area */}
+      {/* RESULT SECTION */}
       {displayText && (
-        <div className="mt-8 space-y-6">
-          {/* This block is used to generate the Before/After image */}
+        <div className="mt-10 space-y-6">
+          {/* ⭐ NEW: Tone Score + Emotion Prediction ABOVE the result card */}
+          {(toneScore !== null || emotion) && (
+            <div className="space-y-4">
+              {/* Tone Score Circle */}
+              {toneScore !== null && (
+                <div className="flex justify-center">
+                  <div
+                    className="w-24 h-24 rounded-full flex items-center justify-center text-xl font-bold"
+                    style={{
+                      background: "#e0f2fe",
+                      border: "4px solid #38bdf8",
+                      color: "#0369a1",
+                    }}
+                  >
+                    {toneScore}
+                  </div>
+                </div>
+              )}
+
+              {/* Emotion Prediction */}
+              {emotion && (
+                <div className="text-center text-lg bg-blue-50 border border-blue-200 p-3 rounded-lg">
+                  {emotion}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Before/After hidden share card */}
           {originalForCard && rewrittenForCard && (
             <div
               ref={shareCardRef}
@@ -491,12 +497,6 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
               <p className="text-[10px] text-gray-400 mt-3">
                 Generated with tone13.vercel.app
               </p>
-              {/* NEW — Optional: show tone score + emotion prediction in share image */}
-{toneScore !== null && (
-  <p className="text-[10px] text-gray-500 mt-1">
-    Tone Score: {toneScore}/100 — {emotionPrediction}
-  </p>
-)}
             </div>
           )}
 
@@ -507,45 +507,6 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
             </h2>
 
             <p className="whitespace-pre-wrap">{displayText}</p>
-            {/* NEW — Tone Score */}
-{toneScore !== null && (
-  <div className="mt-4">
-    <p className="text-sm font-medium text-gray-700">
-      Tone Score: {toneScore}/100
-    </p>
-
-    <div className="w-full h-2 bg-gray-300 rounded mt-1">
-      <div
-        className="h-full rounded"
-        style={{
-          width: `${toneScore}%`,
-          backgroundColor:
-            toneScore > 70
-              ? "#16a34a" // green (safe)
-              : toneScore > 40
-              ? "#facc15" // yellow (neutral)
-              : "#dc2626", // red (harsh)
-        }}
-      />
-    </div>
-
-    <p className="text-xs text-gray-500 mt-1">
-      Higher score = calmer, safer tone. Lower score = message may sound harsh, blaming, or emotional.
-    </p>
-  </div>
-)}
-
-{/* NEW — Emotional Prediction */}
-{emotionPrediction && (
-  <div className="mt-4">
-    <p className="text-sm font-medium text-gray-700 mb-1">
-      How your original message may make them feel:
-    </p>
-    <p className="text-sm bg-white border rounded p-2 text-gray-700">
-      {emotionPrediction}
-    </p>
-  </div>
-)}
 
             <div className="flex flex-wrap gap-3 mt-4">
               <button
@@ -574,10 +535,7 @@ setEmotionPrediction((json.emotionPrediction || "").trim());
                 Save
               </button>
 
-              <button
-                onClick={shareRewrite}
-                className="border px-3 py-1 rounded"
-              >
+              <button onClick={shareRewrite} className="border px-3 py-1 rounded">
                 Share Text
               </button>
 
