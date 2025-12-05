@@ -13,7 +13,7 @@ export default function RewritePage() {
   const [ready, setReady] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
 
-  // track PRO status
+  // Pro status
   const [isPro, setIsPro] = useState(false);
 
   // Rewrite state
@@ -36,7 +36,7 @@ export default function RewritePage() {
 
   const [toast, setToast] = useState("");
 
-  // For Before/After share card
+  // Before/After share card
   const [originalForCard, setOriginalForCard] = useState("");
   const [rewrittenForCard, setRewrittenForCard] = useState("");
   const shareCardRef = useRef<HTMLDivElement | null>(null);
@@ -177,7 +177,7 @@ export default function RewritePage() {
 
       setResults(newResults);
 
-      // ⭐ NEW: Tone Score + Emotion
+      // Tone score + emotion
       setToneScore(json.tone_score ?? null);
       setEmotion(json.emotion_prediction || "");
 
@@ -246,7 +246,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // SHARE HANDLERS (unchanged)
+  // SHARE HANDLERS
   // ---------------------------------------------------------
   async function shareApp() {
     const url = "https://tone13.vercel.app";
@@ -262,7 +262,9 @@ export default function RewritePage() {
         await navigator.clipboard.writeText(url);
         setToast("App link copied!");
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   async function shareRewrite() {
@@ -286,7 +288,9 @@ export default function RewritePage() {
         await navigator.clipboard.writeText(shareText);
         setToast("Rewrite copied to clipboard!");
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   async function shareBeforeAfterImage() {
@@ -337,220 +341,241 @@ export default function RewritePage() {
     (displayKey && (results as any)[displayKey]) || results.soft;
 
   return (
-    <main className="max-w-2xl mx-auto p-5">
-      <button
-        onClick={() => router.push("/")}
-        className="mb-4 text-blue-600 underline"
-      >
-        ← Back to Home
-      </button>
-
-      <h1 className="text-3xl font-bold mb-2">Rewrite Your Message</h1>
-      <p className="text-sm text-gray-600 mb-4">
-        Paste the message you’re worried about sending. ToneMender keeps your
-        meaning but removes the heat so you don’t start a fight by accident.
-      </p>
-
-      <button onClick={shareApp} className="mb-5 border px-3 py-2 rounded text-sm">
-        Share ToneMender
-      </button>
-
-      {limitReached && (
-        <div className="mb-4 p-4 rounded bg-yellow-100 border border-yellow-300">
-          <p className="font-semibold mb-2">
-            You’ve used all 3 free rewrites for today.
-          </p>
-          <p className="mb-2 text-sm">
-            Upgrade to ToneMender Pro to unlock tone control, relationship types,
-            and unlimited rewrites.
-          </p>
-          <a
-            href="/upgrade"
-            className="inline-block bg-purple-600 text-white px-4 py-2 rounded text-sm"
+    <main className="w-full max-w-2xl">
+      <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
+        {/* Header row */}
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={() => router.push("/")}
+            className="text-sm text-slate-500 hover:text-slate-700 flex items-center gap-1"
           >
-            Upgrade to Pro
-          </a>
+            <span>←</span>
+            <span>Back</span>
+          </button>
+
+          <button
+            onClick={shareApp}
+            className="text-xs sm:text-sm border border-slate-300 rounded-full px-3 py-1.5 text-slate-700 hover:bg-slate-50"
+          >
+            Share ToneMender
+          </button>
         </div>
-      )}
 
-      {error && <p className="text-red-500 mb-3">{error}</p>}
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2">
+          Rewrite your message
+        </h1>
+        <p className="text-sm text-slate-600 mb-4">
+          Paste the message you&apos;re worried about sending. ToneMender keeps
+          your meaning but removes the heat so you don&apos;t start a fight by accident.
+        </p>
 
-      {/* Original Message */}
-      <label className="block mb-2 text-sm font-medium text-gray-700">
-        Your original message
-      </label>
-      <textarea
-        className="border p-3 w-full rounded min-h-[120px]"
-        placeholder='Example: "I’m so tired of you ignoring my texts."'
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-      />
-
-      {/* Relationship dropdown */}
-      <div className="mt-4">
-        <label className="block mb-1 text-sm font-medium text-gray-700">
-          Who is this message for?
-        </label>
-        <select
-          className="border p-2 rounded w-full"
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          disabled={!isPro}
-        >
-          <option value="" disabled>
-            {isPro
-              ? "Select Relationship Type"
-              : "Pro Required: Relationship Type Locked"}
-          </option>
-          <option value="partner">Romantic Partner</option>
-          <option value="friend">Friend</option>
-          <option value="family">Family</option>
-          <option value="coworker">Coworker</option>
-        </select>
-      </div>
-
-      {/* Tone dropdown */}
-      <div className="mt-4">
-        <label className="block mb-1 text-sm font-medium text-gray-700">
-          How do you want to sound?
-        </label>
-        <select
-          className="border p-2 rounded w-full"
-          value={tone}
-          onChange={(e) => setTone(e.target.value)}
-          disabled={!isPro}
-        >
-          <option value="" disabled>
-            {isPro ? "Select Tone Type" : "Pro Required: Tone Type Locked"}
-          </option>
-          <option value="soft">Soft & Gentle</option>
-          <option value="calm">Calm & Neutral</option>
-          <option value="clear">Clear & Direct</option>
-        </select>
-      </div>
-
-      <button
-        onClick={handleRewrite}
-        disabled={loading || !message.trim() || (isPro && (!recipient || !tone))}
-        className="bg-blue-600 text-white w-full p-3 mt-4 rounded disabled:bg-gray-400"
-      >
-        {loading ? "Processing…" : "Rewrite Message"}
-      </button>
-
-      {/* RESULT SECTION */}
-      {displayText && (
-        <div className="mt-10 space-y-6">
-          {/* ⭐ NEW: Tone Score + Emotion Prediction ABOVE the result card */}
-          {(toneScore !== null || emotion) && (
-            <div className="space-y-4">
-              {/* Tone Score Circle */}
-              {toneScore !== null && (
-                <div className="flex justify-center">
-                  <div
-                    className="w-24 h-24 rounded-full flex items-center justify-center text-xl font-bold"
-                    style={{
-                      background: "#e0f2fe",
-                      border: "4px solid #38bdf8",
-                      color: "#0369a1",
-                    }}
-                  >
-                    {toneScore}
-                  </div>
-                </div>
-              )}
-
-              {/* Emotion Prediction */}
-              {emotion && (
-                <div className="text-center text-lg bg-blue-50 border border-blue-200 p-3 rounded-lg">
-                  {emotion}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Before/After hidden share card */}
-          {originalForCard && rewrittenForCard && (
-            <div
-              ref={shareCardRef}
-              className="border p-4 rounded-lg bg-gray-50 max-w-xl mx-auto"
-              style={{ maxWidth: 600 }}
+        {limitReached && (
+          <div className="mb-4 p-4 rounded-2xl bg-yellow-50 border border-yellow-200">
+            <p className="font-semibold mb-1 text-slate-800">
+              You’ve used all 3 free rewrites for today.
+            </p>
+            <p className="mb-2 text-xs text-slate-600">
+              Upgrade to ToneMender Pro to unlock tone control, relationship types,
+              and unlimited rewrites.
+            </p>
+            <a
+              href="/upgrade"
+              className="inline-flex items-center justify-center bg-purple-600 text-white px-3 py-1.5 rounded-full text-xs font-medium hover:bg-purple-500"
             >
-              <h3 className="text-lg font-semibold mb-3 text-gray-800">
-                ToneMender — Before & After
-              </h3>
-              <div className="mb-3">
-                <p className="text-xs font-semibold uppercase text-gray-500">
-                  Before
-                </p>
-                <p className="whitespace-pre-wrap text-sm bg-white border rounded p-2 mt-1">
-                  {originalForCard}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase text-gray-500">
-                  After
-                </p>
-                <p className="whitespace-pre-wrap text-sm bg-white border rounded p-2 mt-1">
-                  {rewrittenForCard}
-                </p>
-              </div>
-              <p className="text-[10px] text-gray-400 mt-3">
-                Generated with tone13.vercel.app
-              </p>
-            </div>
-          )}
+              Upgrade to Pro
+            </a>
+          </div>
+        )}
 
-          {/* Visible result card */}
-          <div className="border p-4 rounded-lg bg-gray-50">
-            <h2 className="text-xl font-semibold capitalize text-blue-700 mb-2">
-              {isPro ? displayKey : "soft"} Version
-            </h2>
+        {error && <p className="text-red-500 mb-3 text-sm">{error}</p>}
 
-            <p className="whitespace-pre-wrap">{displayText}</p>
+        {/* Original message */}
+        <div className="mb-4">
+          <label className="block mb-2 text-sm font-medium text-slate-700">
+            Your original message
+          </label>
+          <textarea
+            className="border border-slate-300 bg-slate-50 focus:bg-white focus:border-blue-500 transition-colors p-3 w-full rounded-2xl min-h-[130px] text-sm"
+            placeholder='Example: "I’m so tired of you ignoring my texts."'
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </div>
 
-            <div className="flex flex-wrap gap-3 mt-4">
-              <button
-                onClick={() => copyToClipboard(displayText)}
-                className="border px-3 py-1 rounded"
-              >
-                Copy
-              </button>
+        {/* Relationship & Tone */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+          <div>
+            <label className="block mb-1 text-sm font-medium text-slate-700">
+              Who is this for?
+            </label>
+            <select
+              className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              disabled={!isPro}
+            >
+              <option value="" disabled>
+                {isPro
+                  ? "Select relationship"
+                  : "Pro Required: Locked"}
+              </option>
+              <option value="partner">Romantic Partner</option>
+              <option value="friend">Friend</option>
+              <option value="family">Family</option>
+              <option value="coworker">Coworker</option>
+            </select>
+          </div>
 
-              <button
-                onClick={() => useThis(displayText)}
-                className="border px-3 py-1 rounded"
-              >
-                Use This
-              </button>
-
-              <button
-                onClick={() =>
-                  saveMessage(
-                    displayText,
-                    (isPro ? displayKey : "soft") as any
-                  )
-                }
-                className="border px-3 py-1 rounded bg-green-600 text-white"
-              >
-                Save
-              </button>
-
-              <button onClick={shareRewrite} className="border px-3 py-1 rounded">
-                Share Text
-              </button>
-
-              <button
-                onClick={shareBeforeAfterImage}
-                className="border px-3 py-1 rounded"
-              >
-                Share Before/After Card
-              </button>
-            </div>
+          <div>
+            <label className="block mb-1 text-sm font-medium text-slate-700">
+              How do you want to sound?
+            </label>
+            <select
+              className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
+              value={tone}
+              onChange={(e) => setTone(e.target.value)}
+              disabled={!isPro}
+            >
+              <option value="" disabled>
+                {isPro ? "Select tone" : "Pro Required: Locked"}
+              </option>
+              <option value="soft">Soft & Gentle</option>
+              <option value="calm">Calm & Neutral</option>
+              <option value="clear">Clear & Direct</option>
+            </select>
           </div>
         </div>
-      )}
 
-      {toast && <Toast text={toast} />}
+        {/* Rewrite button */}
+        <button
+          onClick={handleRewrite}
+          disabled={loading || !message.trim() || (isPro && (!recipient || !tone))}
+          className="w-full rounded-2xl bg-blue-600 text-white py-3 text-sm font-semibold mt-1 disabled:bg-slate-400 disabled:cursor-not-allowed shadow-sm hover:bg-blue-500 transition"
+        >
+          {loading ? "Rewriting…" : "Rewrite my message"}
+        </button>
+
+        {/* Results */}
+        {displayText && (
+          <div className="mt-8 space-y-6">
+            {/* Tone score + emotion block (above card) */}
+            {(toneScore !== null || emotion) && (
+              <div className="space-y-4">
+                {toneScore !== null && (
+                  <div className="flex flex-col items-center">
+                    <div
+                      className="w-24 h-24 rounded-full flex items-center justify-center text-2xl font-bold shadow-sm"
+                      style={{
+                        background: "#e0f2fe",
+                        border: "4px solid #38bdf8",
+                        color: "#0369a1",
+                      }}
+                    >
+                      {toneScore}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Tone Score — higher means calmer, clearer, safer to send.
+                    </p>
+                  </div>
+                )}
+
+                {emotion && (
+                  <div className="text-center text-sm bg-blue-50 border border-blue-100 text-blue-900 px-4 py-3 rounded-2xl">
+                    {emotion}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Hidden Before/After card used for image sharing */}
+            {originalForCard && rewrittenForCard && (
+              <div
+                ref={shareCardRef}
+                className="border p-4 rounded-2xl bg-gray-50 max-w-xl mx-auto"
+                style={{ maxWidth: 600 }}
+              >
+                <h3 className="text-lg font-semibold mb-3 text-gray-800">
+                  ToneMender — Before & After
+                </h3>
+                <div className="mb-3">
+                  <p className="text-xs font-semibold uppercase text-gray-500">
+                    Before
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm bg-white border rounded-lg p-2 mt-1">
+                    {originalForCard}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase text-gray-500">
+                    After
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm bg-white border rounded-lg p-2 mt-1">
+                    {rewrittenForCard}
+                  </p>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-3">
+                  Generated with tone13.vercel.app
+                </p>
+              </div>
+            )}
+
+            {/* Visible result card */}
+            <div className="border border-slate-200 p-4 rounded-2xl bg-slate-50">
+              <h2 className="text-base font-semibold text-blue-800 mb-2">
+                {(isPro ? displayKey : "soft").toUpperCase()} rewrite
+              </h2>
+
+              <p className="whitespace-pre-wrap text-sm text-slate-800">
+                {displayText}
+              </p>
+
+              <div className="flex flex-wrap gap-3 mt-4">
+                <button
+                  onClick={() => copyToClipboard(displayText)}
+                  className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                >
+                  Copy
+                </button>
+
+                <button
+                  onClick={() => useThis(displayText)}
+                  className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                >
+                  Use This
+                </button>
+
+                <button
+                  onClick={() =>
+                    saveMessage(
+                      displayText,
+                      (isPro ? displayKey : "soft") as any
+                    )
+                  }
+                  className="border border-emerald-500 px-3 py-1.5 rounded-full text-xs text-white bg-emerald-500 hover:bg-emerald-400"
+                >
+                  Save
+                </button>
+
+                <button
+                  onClick={shareRewrite}
+                  className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                >
+                  Share Text
+                </button>
+
+                <button
+                  onClick={shareBeforeAfterImage}
+                  className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                >
+                  Share Before/After Card
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {toast && <Toast text={toast} />}
+      </div>
     </main>
   );
 }

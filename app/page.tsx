@@ -33,118 +33,102 @@ export default function LandingPage() {
     load();
   }, []);
 
-  // ⏳ Avoid flicker — show nothing until auth is loaded
   if (!authReady) return null;
 
   return (
-    <main style={{ padding: "40px", maxWidth: "600px", margin: "auto" }}>
-      {/* Show logout only when logged in */}
-      {loggedIn && (
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <LogoutButton />
-        </div>
-      )}
-
-      <h1 style={{ fontSize: "36px", fontWeight: "bold" }}>ToneMender</h1>
-
-      <p style={{ marginTop: "20px", fontSize: "18px", lineHeight: "1.6" }}>
-        ToneMender transforms emotionally charged texts into calm, clear, relationship-safe messages — so you can say what you mean without starting a fight.
-      </p>
-
-      <p style={{ marginTop: "12px", fontSize: "14px", lineHeight: "1.6", color: "#4b5563" }}>
-        Paste the text you're worried about sending. Choose how you want to sound, and ToneMender rewrites it into a version that's honest, safe, and easy to receive.
-      </p>
-
-      {/* 🚫 Logged OUT → only show Sign In / Sign Up */}
-      {!loggedIn && (
-        <div style={{ marginTop: "40px" }}>
-          <Link
-            href="/sign-in"
-            style={{
-              marginRight: "16px",
-              padding: "8px 14px",
-              background: "#111827",
-              color: "white",
-              borderRadius: "6px",
-            }}
-          >
-            Sign In
-          </Link>
-
-          <Link
-            href="/sign-up"
-            style={{
-              padding: "8px 14px",
-              background: "#10b981",
-              color: "white",
-              borderRadius: "6px",
-            }}
-          >
-            Sign Up Free
-          </Link>
-        </div>
-      )}
-
-      {/* ✅ Logged IN → show app navigation */}
-      {loggedIn && (
-        <>
-          <div style={{ marginTop: "40px", display: "flex", gap: "16px" }}>
-            <Link
-              href="/rewrite"
-              style={{
-                padding: "10px 16px",
-                background: "#2563eb",
-                color: "white",
-                borderRadius: "6px",
-              }}
-            >
-              Rewrite Message
-            </Link>
-
-            <Link
-              href="/drafts"
-              style={{
-                padding: "10px 16px",
-                background: "#6b7280",
-                color: "white",
-                borderRadius: "6px",
-              }}
-            >
-              Drafts
-            </Link>
-
-            <Link
-              href="/account"
-              style={{
-                padding: "10px 16px",
-                background: "#4f46e5",
-                color: "white",
-                borderRadius: "6px",
-              }}
-            >
-              Account
-            </Link>
+    <main className="w-full max-w-xl">
+      <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
+        {/* Top bar */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-lg font-bold">
+              T
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">
+                ToneMender
+              </h1>
+              <p className="text-xs text-slate-500">
+                Say it better. Save it together.
+              </p>
+            </div>
           </div>
 
-          {/* Only show Upgrade if NOT Pro */}
-          {!isPro && (
-            <div style={{ marginTop: "30px" }}>
+          {loggedIn && <LogoutButton />}
+        </div>
+
+        <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
+          ToneMender transforms emotionally charged texts into calm, clear,
+          relationship-safe messages — so you can say what you mean without
+          starting a fight.
+        </p>
+
+        <p className="mt-3 text-xs sm:text-sm text-slate-500 leading-relaxed">
+          Paste the text you're worried about sending. Choose how you want to
+          sound, and ToneMender rewrites it into a version that's honest, safe,
+          and easier to receive.
+        </p>
+
+        {/* Logged out */}
+        {!loggedIn && (
+          <div className="mt-8 flex flex-col sm:flex-row gap-3">
+            <Link
+              href="/sign-in"
+              className="inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-4 py-2.5 text-sm font-medium shadow-sm hover:bg-slate-800 transition"
+            >
+              Sign In
+            </Link>
+            <Link
+              href="/sign-up"
+              className="inline-flex items-center justify-center rounded-xl border border-slate-300 text-slate-900 px-4 py-2.5 text-sm font-medium bg-white hover:bg-slate-50 transition"
+            >
+              Sign Up Free
+            </Link>
+          </div>
+        )}
+
+        {/* Logged in */}
+        {loggedIn && (
+          <>
+            <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Link
-                href="/upgrade"
-                style={{
-                  padding: "10px 16px",
-                  background: "#10b981",
-                  color: "white",
-                  borderRadius: "6px",
-                  textDecoration: "none",
-                }}
+                href="/rewrite"
+                className="rounded-xl bg-blue-600 text-white px-4 py-3 text-sm font-medium text-center shadow-sm hover:bg-blue-500 transition"
               >
-                Upgrade to Pro
+                Rewrite Message
+              </Link>
+
+              <Link
+                href="/drafts"
+                className="rounded-xl bg-slate-800 text-white px-4 py-3 text-sm font-medium text-center hover:bg-slate-700 transition"
+              >
+                Drafts
+              </Link>
+
+              <Link
+                href="/account"
+                className="rounded-xl bg-indigo-600 text-white px-4 py-3 text-sm font-medium text-center hover:bg-indigo-500 transition"
+              >
+                Account
               </Link>
             </div>
-          )}
-        </>
-      )}
+
+            {!isPro && (
+              <div className="mt-6">
+                <Link
+                  href="/upgrade"
+                  className="inline-flex items-center justify-center w-full rounded-xl bg-emerald-500 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-emerald-400 transition"
+                >
+                  Upgrade to Pro
+                </Link>
+                <p className="mt-2 text-xs text-slate-500 text-center">
+                  Unlock unlimited rewrites, tone control, and relationship-specific guidance.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </main>
   );
 }
