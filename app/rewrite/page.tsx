@@ -14,10 +14,12 @@ export default function RewritePage() {
 
   // Rewrite state
   const [message, setMessage] = useState("");
-  const [recipient, setRecipient] = useState("partner");
 
-  // ⭐ NEW: Tone Selector state
-  const [tone, setTone] = useState("soft");
+  // ⭐ CHANGED: no default selection
+  const [recipient, setRecipient] = useState("");  
+
+  // ⭐ CHANGED: no default selection
+  const [tone, setTone] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -86,8 +88,6 @@ export default function RewritePage() {
   async function handleRewrite() {
     setError("");
     setLimitReached(false);
-
-    // ⭐ Still clear all results — but we'll *only display* selected tone
     setResults({ soft: "", calm: "", clear: "" });
     setLoading(true);
 
@@ -104,7 +104,7 @@ export default function RewritePage() {
       const res = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, message, recipient, tone }),  // ⭐ NEW
+        body: JSON.stringify({ token, message, recipient, tone }), // uses tone
       });
 
       const json = await res.json();
@@ -218,37 +218,45 @@ export default function RewritePage() {
         onChange={(e) => setMessage(e.target.value)}
       />
 
+      {/* ⭐ CHANGED: Relationship dropdown now has a placeholder */}
       <select
         className="border p-2 rounded mt-3 w-full"
         value={recipient}
         onChange={(e) => setRecipient(e.target.value)}
       >
+        <option value="" disabled>
+          Select Relationship Type
+        </option>
         <option value="partner">Romantic Partner</option>
         <option value="friend">Friend</option>
         <option value="family">Family</option>
         <option value="coworker">Coworker</option>
       </select>
 
-      {/* ⭐ NEW: TONE SELECTOR UI */}
+      {/* ⭐ CHANGED: Tone dropdown now has a placeholder */}
       <select
         className="border p-2 rounded mt-3 w-full"
         value={tone}
         onChange={(e) => setTone(e.target.value)}
       >
+        <option value="" disabled>
+          Select Tone Type
+        </option>
         <option value="soft">Soft & Gentle</option>
         <option value="calm">Calm & Neutral</option>
         <option value="clear">Clear & Direct</option>
       </select>
 
+      {/* ⭐ CHANGED: Button is disabled unless tone + relationship selected */}
       <button
         onClick={handleRewrite}
-        disabled={loading || !message}
+        disabled={loading || !message || !recipient || !tone}
         className="bg-blue-600 text-white w-full p-3 mt-4 rounded disabled:bg-gray-400"
       >
         {loading ? "Processing…" : "Rewrite Message"}
       </button>
 
-      {/* ⭐ NEW: Only display the selected tone */}
+      {/* Only display the chosen tone */}
       {results[tone] && (
         <div className="mt-8 space-y-6">
           <div className="border p-4 rounded-lg bg-gray-50">
