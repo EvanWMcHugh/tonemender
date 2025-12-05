@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Toast from "../components/Toast";
+import html2canvas from "html2canvas";
 
 export default function RewritePage() {
   const router = useRouter();
@@ -12,13 +13,11 @@ export default function RewritePage() {
   const [ready, setReady] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
 
-  // ⭐ NEW: track PRO status
+  // track PRO status
   const [isPro, setIsPro] = useState(false);
 
   // Rewrite state
   const [message, setMessage] = useState("");
-
-  // Dropdowns start empty
   const [recipient, setRecipient] = useState("");
   const [tone, setTone] = useState("");
 
@@ -31,6 +30,11 @@ export default function RewritePage() {
     clear: "",
   });
   const [toast, setToast] = useState("");
+
+  // For Before/After share card
+  const [originalForCard, setOriginalForCard] = useState("");
+  const [rewrittenForCard, setRewrittenForCard] = useState("");
+  const shareCardRef = useRef<HTMLDivElement | null>(null);
 
   // ---------------------------------------------------------
   // AUTH CHECK + FETCH PRO STATUS
@@ -49,7 +53,6 @@ export default function RewritePage() {
 
         const user = data.session.user;
 
-        // ⭐ NEW: Fetch is_pro
         const { data: profile } = await supabase
           .from("profiles")
           .select("is_pro")
@@ -72,7 +75,6 @@ export default function RewritePage() {
 
           const user = retry.session.user;
 
-          // ⭐ NEW: Fetch is_pro
           const { data: profile } = await supabase
             .from("profiles")
             .select("is_pro")
@@ -125,7 +127,7 @@ export default function RewritePage() {
         return;
       }
 
-      // ⭐ NEW: For free users, force "default" options
+      // For free users, force "default" options
       const finalRecipient = isPro ? recipient : "default";
       const finalTone = isPro ? tone : "default";
 
@@ -154,11 +156,25 @@ export default function RewritePage() {
         return;
       }
 
-      setResults({
+      const newResults = {
         soft: json.soft || "",
         calm: json.calm || "",
         clear: json.clear || "",
-      });
+      };
+
+      setResults(newResults);
+
+      // Store Before/After snapshot for share card
+      const chosenToneKey = isPro ? (tone || "soft") : "soft";
+      const chosenText =
+        (newResults as any)[chosenToneKey] ||
+        newResults.soft ||
+        newResults.calm ||
+        newResults.clear ||
+        "";
+
+      setOriginalForCard(message);
+      setRewrittenForCard(chosenText);
     } catch {
       setError("Network error. Try again.");
     } finally {
@@ -167,7 +183,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // SAVE, COPY, USE (UNCHANGED)
+  // SAVE, COPY, USE
   // ---------------------------------------------------------
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
@@ -209,8 +225,102 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
+  // SHARE HANDLERS
+  // ---------------------------------------------------------
+  async function shareApp() {
+    const url = "https://tone13.vercel.app";
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "ToneMender",
+          text: "I’m using ToneMender to rewrite texts more safely. Check it out:",
+          url,
+        });
+      } else {
+        await navigator.clipboard.writeText(url);
+        setToast("App link copied!");
+      }
+    } catch {
+      // user cancelled or share failed – no need to spam
+    }
+  }
+
+  async function shareRewrite() {
+    const key = isPro ? tone : "soft";
+    const current = key ? (results as any)[key] : results.soft;
+
+    if (!current) {
+      setToast("Rewrite a message first.");
+      return;
+    }
+
+    const shareText = `Before:\n${message}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tone13.vercel.app)`;
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "My ToneMender Rewrite",
+          text: shareText,
+        });
+      } else {
+        await navigator.clipboard.writeText(shareText);
+        setToast("Rewrite copied to clipboard!");
+      }
+    } catch {
+      // ignore cancel
+    }
+  }
+
+  async function shareBeforeAfterImage() {
+    if (!shareCardRef.current) {
+      setToast("Rewrite a message first.");
+      return;
+    }
+
+    try {
+      const canvas = await html2canvas(shareCardRef.current, {
+        backgroundColor: "#f9fafb",
+        scale: 2,
+      });
+
+      const dataUrl = canvas.toDataURL("image/png");
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], "tonemender-before-after.png", {
+        type: "image/png",
+      });
+
+      // If device supports file sharing
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "ToneMender Before & After",
+          text: "Before vs After using ToneMender",
+        });
+      } else {
+        // Fallback: download image
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = "tonemender-before-after.png";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setToast("Before/After image downloaded!");
+      }
+    } catch (err) {
+      console.error(err);
+      setToast("Could not create share image. Try again.");
+    }
+  }
+
+  // ---------------------------------------------------------
   // UI
   // ---------------------------------------------------------
+  const displayKey = isPro ? tone : "soft";
+  const displayText =
+    (displayKey && (results as any)[displayKey]) || results.soft;
+
   return (
     <main className="max-w-2xl mx-auto p-5">
       <button
@@ -220,7 +330,15 @@ export default function RewritePage() {
         ← Back to Home
       </button>
 
-      <h1 className="text-3xl font-bold mb-5">Rewrite Your Message</h1>
+      <h1 className="text-3xl font-bold mb-2">Rewrite Your Message</h1>
+
+      {/* Share app button */}
+      <button
+        onClick={shareApp}
+        className="mb-5 border px-3 py-2 rounded text-sm"
+      >
+        Share ToneMender
+      </button>
 
       {limitReached && (
         <div className="mb-4 p-4 rounded bg-yellow-100 border border-yellow-300">
@@ -228,7 +346,8 @@ export default function RewritePage() {
             You’ve used all 3 free rewrites for today.
           </p>
           <p className="mb-2 text-sm">
-            Upgrade to ToneMender Pro to unlock tone control, relationship types, and unlimited rewrites.
+            Upgrade to ToneMender Pro to unlock tone control, relationship types,
+            and unlimited rewrites.
           </p>
           <a
             href="/upgrade"
@@ -248,7 +367,7 @@ export default function RewritePage() {
         onChange={(e) => setMessage(e.target.value)}
       />
 
-      {/* ⭐ NEW: Relationship dropdown disabled for free users */}
+      {/* Relationship dropdown (Pro-only) */}
       <select
         className="border p-2 rounded mt-3 w-full"
         value={recipient}
@@ -256,7 +375,9 @@ export default function RewritePage() {
         disabled={!isPro}
       >
         <option value="" disabled>
-          {isPro ? "Select Relationship Type" : "Pro Required: Relationship Type Locked"}
+          {isPro
+            ? "Select Relationship Type"
+            : "Pro Required: Relationship Type Locked"}
         </option>
         <option value="partner">Romantic Partner</option>
         <option value="friend">Friend</option>
@@ -264,7 +385,7 @@ export default function RewritePage() {
         <option value="coworker">Coworker</option>
       </select>
 
-      {/* ⭐ NEW: Tone dropdown disabled for free users */}
+      {/* Tone dropdown (Pro-only) */}
       <select
         className="border p-2 rounded mt-3 w-full"
         value={tone}
@@ -279,7 +400,7 @@ export default function RewritePage() {
         <option value="clear">Clear & Direct</option>
       </select>
 
-      {/* ⭐ NEW: Free users do NOT need recipient/tone selected */}
+      {/* Free users do NOT need recipient/tone selected */}
       <button
         onClick={handleRewrite}
         disabled={loading || !message || (isPro && (!recipient || !tone))}
@@ -288,28 +409,59 @@ export default function RewritePage() {
         {loading ? "Processing…" : "Rewrite Message"}
       </button>
 
-      {/* Show only selected tone OR soft for default */}
-      {results[isPro ? tone : "soft"] && (
+      {/* Result & Share Area */}
+      {displayText && (
         <div className="mt-8 space-y-6">
+          {/* This block is used to generate the Before/After image */}
+          {originalForCard && rewrittenForCard && (
+            <div
+              ref={shareCardRef}
+              className="border p-4 rounded-lg bg-gray-50 max-w-xl mx-auto"
+              style={{ maxWidth: 600 }}
+            >
+              <h3 className="text-lg font-semibold mb-3 text-gray-800">
+                ToneMender — Before & After
+              </h3>
+              <div className="mb-3">
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  Before
+                </p>
+                <p className="whitespace-pre-wrap text-sm bg-white border rounded p-2 mt-1">
+                  {originalForCard}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  After
+                </p>
+                <p className="whitespace-pre-wrap text-sm bg-white border rounded p-2 mt-1">
+                  {rewrittenForCard}
+                </p>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-3">
+                Generated with tone13.vercel.app
+              </p>
+            </div>
+          )}
+
+          {/* Visible result card */}
           <div className="border p-4 rounded-lg bg-gray-50">
             <h2 className="text-xl font-semibold capitalize text-blue-700 mb-2">
-              {isPro ? tone : "soft"} Version
+              {isPro ? displayKey || "soft" : "soft"} Version
             </h2>
 
-            <p className="whitespace-pre-wrap">
-              {results[isPro ? tone : "soft"]}
-            </p>
+            <p className="whitespace-pre-wrap">{displayText}</p>
 
-            <div className="flex gap-3 mt-4">
+            <div className="flex flex-wrap gap-3 mt-4">
               <button
-                onClick={() => copyToClipboard(results[isPro ? tone : "soft"])}
+                onClick={() => copyToClipboard(displayText)}
                 className="border px-3 py-1 rounded"
               >
                 Copy
               </button>
 
               <button
-                onClick={() => useThis(results[isPro ? tone : "soft"])}
+                onClick={() => useThis(displayText)}
                 className="border px-3 py-1 rounded"
               >
                 Use This
@@ -318,13 +470,27 @@ export default function RewritePage() {
               <button
                 onClick={() =>
                   saveMessage(
-                    results[isPro ? tone : "soft"],
-                    (isPro ? tone : "soft") as any
+                    displayText,
+                    (isPro ? (displayKey || "soft") : "soft") as any
                   )
                 }
                 className="border px-3 py-1 rounded bg-green-600 text-white"
               >
                 Save
+              </button>
+
+              <button
+                onClick={shareRewrite}
+                className="border px-3 py-1 rounded"
+              >
+                Share Text
+              </button>
+
+              <button
+                onClick={shareBeforeAfterImage}
+                className="border px-3 py-1 rounded"
+              >
+                Share Before/After Card
               </button>
             </div>
           </div>
