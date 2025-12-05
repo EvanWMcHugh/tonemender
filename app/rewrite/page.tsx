@@ -30,6 +30,9 @@ export default function RewritePage() {
     clear: "",
   });
   const [toast, setToast] = useState("");
+  // NEW: tone score + emotion prediction
+const [toneScore, setToneScore] = useState<number | null>(null);
+const [emotionPrediction, setEmotionPrediction] = useState("");
 
   // For Before/After share card
   const [originalForCard, setOriginalForCard] = useState("");
@@ -169,6 +172,9 @@ export default function RewritePage() {
         calm: (json.calm || "").trim(),
         clear: (json.clear || "").trim(),
       };
+      // NEW: capture additional API fields
+setToneScore(json.toneScore ?? null);
+setEmotionPrediction((json.emotionPrediction || "").trim());
 
       setResults(newResults);
 
@@ -485,6 +491,12 @@ export default function RewritePage() {
               <p className="text-[10px] text-gray-400 mt-3">
                 Generated with tone13.vercel.app
               </p>
+              {/* NEW — Optional: show tone score + emotion prediction in share image */}
+{toneScore !== null && (
+  <p className="text-[10px] text-gray-500 mt-1">
+    Tone Score: {toneScore}/100 — {emotionPrediction}
+  </p>
+)}
             </div>
           )}
 
@@ -495,6 +507,45 @@ export default function RewritePage() {
             </h2>
 
             <p className="whitespace-pre-wrap">{displayText}</p>
+            {/* NEW — Tone Score */}
+{toneScore !== null && (
+  <div className="mt-4">
+    <p className="text-sm font-medium text-gray-700">
+      Tone Score: {toneScore}/100
+    </p>
+
+    <div className="w-full h-2 bg-gray-300 rounded mt-1">
+      <div
+        className="h-full rounded"
+        style={{
+          width: `${toneScore}%`,
+          backgroundColor:
+            toneScore > 70
+              ? "#16a34a" // green (safe)
+              : toneScore > 40
+              ? "#facc15" // yellow (neutral)
+              : "#dc2626", // red (harsh)
+        }}
+      />
+    </div>
+
+    <p className="text-xs text-gray-500 mt-1">
+      Higher score = calmer, safer tone. Lower score = message may sound harsh, blaming, or emotional.
+    </p>
+  </div>
+)}
+
+{/* NEW — Emotional Prediction */}
+{emotionPrediction && (
+  <div className="mt-4">
+    <p className="text-sm font-medium text-gray-700 mb-1">
+      How your original message may make them feel:
+    </p>
+    <p className="text-sm bg-white border rounded p-2 text-gray-700">
+      {emotionPrediction}
+    </p>
+  </div>
+)}
 
             <div className="flex flex-wrap gap-3 mt-4">
               <button
