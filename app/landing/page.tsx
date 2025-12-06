@@ -175,23 +175,28 @@ function EmailForm() {
   const [loading, setLoading] = useState(false);
 
   async function joinWaitlist() {
-    if (!email || loading) return;
+  if (!email || loading) return;
 
-    setLoading(true);
+  setLoading(true);
 
-    const res = await fetch("/api/newsletter", {
+  try {
+    await fetch("/api/newsletter", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
     });
 
+    // ✅ Always show confirmation message
+    setSubmitted(true);
+    setEmail("");
+  } catch (err) {
+    console.warn("Newsletter request failed", err);
+    // still show confirmation UX
+    setSubmitted(true);
+  } finally {
     setLoading(false);
-
-    if (res.ok) {
-      setSubmitted(true);
-      setEmail("");
-    }
   }
+}
 
   return !submitted ? (
     <div className="mt-6 flex flex-col sm:flex-row gap-3">
