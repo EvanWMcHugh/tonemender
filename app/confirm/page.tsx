@@ -1,52 +1,54 @@
-import { createClient } from "@supabase/supabase-js"
+"use client";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
-export default async function ConfirmPage({
-  searchParams,
-}: {
-  searchParams: { token?: string }
-}) {
-  if (!searchParams.token) {
-    return <p>Invalid confirmation link.</p>
+export default function ConfirmPage() {
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
+
+  const [status, setStatus] = useState<
+    "loading" | "success" | "error"
+  >("loading");
+
+  useEffect(() => {
+    async function confirm() {
+      if (!token) {
+        setStatus("error");
+        return;
+      }
+
+      const res = await fetch("/api/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+
+      if (res.ok) {
+        setStatus("success");
+      } else {
+        setStatus("error");
+      }
+    }
+
+    confirm();
+  }, [token]);
+
+  if (status === "loading") {
+    return <p className="text-center mt-20">Confirming…</p>;
   }
 
-  const { data, error } = await supabase
-    .from("newsletter_subscribers")
-    .select("*")
-    .eq("confirm_token", searchParams.token)
-    .single()
-
-  if (!data || error) {
-    return <p>This link is invalid or expired.</p>
+  if (status === "success") {
+    return (
+      <p className="text-center mt-20 text-green-600 font-semibold">
+        ✅ You’re in! Thanks for joining ToneMender.
+      </p>
+    );
   }
 
-  await supabase
-    .from("newsletter_subscribers")
-    .update({
-      confirmed: true,
-      confirmed_at: new Date(),
-      confirm_token: null,
-    })
-    .eq("id", data.id)
-
-  // ✅ Send "You're in" email
-  await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: "ToneMender <updates@tonemender.com>",
-      to: data.email,
-      subject: "You’re in 🙌",
-      html: `<p>You’re officially on the ToneMender list 💙</p>`,
-    }),
-  })
-
-  return <p>✅ You’re in! Thanks for joining ToneMender.</p>
+  return (
+    <p className="text-center mt-20 text-red-600 font-semibold">
+      ❌ This confirmation link is invalid or expired.
+    </p>
+  );
 }
