@@ -1,52 +1,33 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { usePathname, useRouter } from "next/navigation";
-import { useRef } from "react";
+import { ReactNode, useRef } from "react";
+import { motion } from "framer-motion";
+import { usePathname } from "next/navigation";
 
 export default function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
 
   const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
   const tracking = useRef(false);
 
-  function maybeVibrate(ms = 20) {
-    if (typeof window !== "undefined" && "vibrate" in navigator) {
-      navigator.vibrate(ms);
-    }
+  function vibrate(ms = 20) {
+    if ("vibrate" in navigator) navigator.vibrate(ms);
   }
 
-  // Swipe-back gesture
   function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
-    if (e.touches.length !== 1) return;
     const t = e.touches[0];
-
-    if (t.clientX > 40) return;
-
-    touchStartX.current = t.clientX;
-    touchStartY.current = t.clientY;
-    tracking.current = true;
+    if (t.clientX < 30) {
+      touchStartX.current = t.clientX;
+      tracking.current = true;
+    }
   }
 
   function handleTouchMove(e: React.TouchEvent<HTMLDivElement>) {
     if (!tracking.current) return;
     const t = e.touches[0];
-    const dx = t.clientX - touchStartX.current;
-    const dy = t.clientY - touchStartY.current;
-
-    if (Math.abs(dy) > 60) {
-      tracking.current = false;
-      return;
-    }
-
-    if (dx > 70) {
-      if (window.history.length > 1) {
-        maybeVibrate(15);
-        router.back();
-      }
+    if (t.clientX - touchStartX.current > 80) {
+      vibrate(15);
+      window.history.back();
       tracking.current = false;
     }
   }
@@ -57,29 +38,20 @@ export default function PageTransition({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className="min-h-screen flex items-start justify-center px-4 sm:px-0 py-8 bg-slate-100 text-slate-900 relative overflow-hidden"
+      className="min-h-screen px-4 py-6 bg-slate-100 overflow-hidden"
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
     >
-      {/* Animate only the inner content, NOT the wrapper div */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={pathname}
-          initial={{ opacity: 0, x: 40, filter: "blur(10px)" }}
-          animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
-          exit={{ opacity: 0, x: -30, filter: "blur(8px)" }}
-          transition={{
-            type: "spring",
-            stiffness: 220,
-            damping: 28,
-            mass: 0.9,
-          }}
-          className="w-full max-w-xl"
-        >
-          {children}
-        </motion.div>
-      </AnimatePresence>
+      <motion.div
+        key={pathname}
+        initial={{ opacity: 0, y: 20, scale: 0.98, filter: "blur(5px)" }}
+        animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+        className="max-w-xl mx-auto"
+      >
+        {children}
+      </motion.div>
     </div>
   );
 }
