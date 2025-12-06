@@ -68,7 +68,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "ToneMender <onboarding@resend.dev>", // ✅ SAFE SENDER
+        from: "ToneMender <updates@tonemender.com>", // ✅ SAFE SENDER
         to: email,
         subject: "Confirm your ToneMender updates",
         html: `
