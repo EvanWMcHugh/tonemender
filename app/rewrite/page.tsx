@@ -21,6 +21,8 @@ export default function RewritePage() {
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
   const [tone, setTone] = useState("");
+ const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
+  const [usedRewrite, setUsedRewrite] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -226,13 +228,29 @@ export default function RewritePage() {
     vibrate(10);
   }
 
-  function useThis(text: string) {
+ function useThis(text: string) {
     if (!text) return;
+
+    if (!usedRewrite) {
+      setOriginalMessageSnapshot(message);
+    }
+
     setMessage(text);
+    setUsedRewrite(true);
+
     window.scrollTo({ top: 0, behavior: "smooth" });
     vibrate(10);
   }
 
+  function revertToOriginal() {
+    if (!originalMessageSnapshot) return;
+
+    setMessage(originalMessageSnapshot);
+    setOriginalMessageSnapshot("");
+    setUsedRewrite(false);
+
+    vibrate(15);
+  }
   async function saveMessage(text: string, tone: "soft" | "calm" | "clear") {
     const { data } = await supabase.auth.getSession();
     const user = data.session?.user;
@@ -426,6 +444,14 @@ export default function RewritePage() {
               value={message}
               onChange={(e) => setMessage(e.target.value)}
             />
+            {usedRewrite && (
+            <button
+              onClick={revertToOriginal}
+              className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
+            >
+              Revert to original message
+            </button>
+          )}
           </div>
 
           {/* Relationship & Tone */}
