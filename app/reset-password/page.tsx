@@ -10,13 +10,14 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+const [ready, setReady] = useState(false);
 
   useEffect(() => {
   const {
     data: { subscription },
   } = supabase.auth.onAuthStateChange((event) => {
     if (event === "PASSWORD_RECOVERY") {
-      // Session is now valid — clear any previous errors
+      setReady(true);   // ✅ session is now available
       setError("");
     }
   });
@@ -27,6 +28,11 @@ export default function ResetPasswordPage() {
   async function handleReset(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+
+    if (!ready) {
+  setError("Preparing secure reset session. Please wait a moment.");
+  return;
+}
 
     if (password.length < 6) {
       setError("Password must be at least 6 characters.");
@@ -80,10 +86,10 @@ export default function ResetPasswordPage() {
             required
           />
 
-          <button
-            disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded"
-          >
+         <button
+  disabled={loading || !ready}
+  className="bg-blue-600 text-white p-2 rounded disabled:opacity-50"
+>
             {loading ? "Updating..." : "Update Password"}
           </button>
         </form>
