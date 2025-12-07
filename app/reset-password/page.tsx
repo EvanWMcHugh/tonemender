@@ -12,12 +12,17 @@ export default function ResetPasswordPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        setError("Invalid or expired recovery link.");
-      }
-    });
-  }, []);
+  const {
+    data: { subscription },
+  } = supabase.auth.onAuthStateChange((event) => {
+    if (event === "PASSWORD_RECOVERY") {
+      // Session is now valid — clear any previous errors
+      setError("");
+    }
+  });
+
+  return () => subscription.unsubscribe();
+}, []);
 
   async function handleReset(e: React.FormEvent) {
     e.preventDefault();
