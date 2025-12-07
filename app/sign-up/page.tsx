@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 
 export default function SignupPage() {
@@ -16,13 +15,24 @@ export default function SignupPage() {
     setLoading(true);
     setError("");
 
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
+    // ✅ Email validation (blocks tonetest123@, user@gmail, etc.)
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!emailRegex.test(email)) {
+      setError("Please enter a valid email address");
+      setLoading(false);
+      return;
+    }
+
+    const res = await fetch("/api/auth/sign-up", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
     });
 
-    if (error) {
-      setError(error.message);
+    const data = await res.json();
+
+    if (!res.ok) {
+      setError(data.error || "Signup failed");
       setLoading(false);
       return;
     }
@@ -56,7 +66,11 @@ export default function SignupPage() {
             required
           />
 
-          <button type="submit" disabled={loading} className="bg-green-600 text-white p-2 rounded">
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-green-600 text-white p-2 rounded"
+          >
             {loading ? "Creating..." : "Sign Up"}
           </button>
         </form>
