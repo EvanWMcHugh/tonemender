@@ -1,3 +1,7 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+
 export const metadata = {
   title: "Privacy Policy | ToneMender",
   description:
@@ -5,9 +9,16 @@ export const metadata = {
 };
 
 export default function PrivacyPage() {
+  const router = useRouter();
   return (
     <main className="bg-white">
       <div className="max-w-3xl mx-auto px-6 py-14 text-gray-800 leading-relaxed">
+        <button
+  onClick={() => router.back()}
+  className="inline-block mb-6 text-sm text-gray-600 hover:underline"
+>
+  ← Back
+</button>
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
         <p className="text-sm text-gray-500 mb-10">
           Last updated: December 2025
