@@ -39,8 +39,8 @@ export default function MarketingLandingPage() {
           transition={{ duration: 0.6 }}
           className="text-5xl sm:text-6xl font-extrabold tracking-tight"
         >
-          Rewrite emotionally charged texts
-          <span className="text-blue-600"> in seconds.</span>
+          An AI relationship message rewriter
+<span className="text-blue-600"> that fixes text tone.</span>
         </motion.h1>
 
         <motion.p
@@ -49,8 +49,8 @@ export default function MarketingLandingPage() {
           transition={{ delay: 0.15, duration: 0.6 }}
           className="mt-6 text-lg sm:text-xl text-slate-600 max-w-3xl mx-auto"
         >
-          ToneMender transforms reactive, messy messages into calm, clear,
-          relationship-safe communication — without losing your meaning.
+          ToneMender rewrites emotionally charged text messages into calm, clear,
+  relationship-safe communication — so conversations don’t turn into arguments.
         </motion.p>
 
         {/* CTA BUTTONS */}

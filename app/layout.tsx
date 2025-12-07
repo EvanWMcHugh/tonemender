@@ -3,8 +3,9 @@ import type { Metadata } from "next";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "ToneMender – AI Relationship & Tone Assistant",
-  description: "ToneMender is an AI-powered relationship and tone assistant. Say it better. Save it together.",
+  title: "ToneMender – AI Relationship Message Rewriter",
+  description:
+    "ToneMender is an AI relationship message rewriter that fixes tone in text messages before you send — helping prevent misunderstandings and arguments.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -20,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               "@type": "SoftwareApplication",
               name: "ToneMender",
               description:
-                "ToneMender is an AI-powered relationship and tone assistant that helps improve communication by rewriting messages more clearly and kindly.",
+                "An AI relationship message rewriter that helps people fix tone in text messages and communicate clearly without starting conflict.",
               applicationCategory: "CommunicationApplication",
               operatingSystem: "Web, iOS, Android",
               url: "https://tonemender.com",
