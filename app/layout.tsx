@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Providers from "./providers";
+import Script from "next/script";
 
 export const metadata: Metadata = {
   title: "ToneMender – AI Relationship Message Rewriter",
@@ -45,9 +46,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
 
       <body className="min-h-screen flex flex-col">
-        <Providers>
-          <main className="flex-1">{children}</main>
-        </Providers>
+  <Script
+    src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+    strategy="afterInteractive"
+  />
+
+  <Providers>
+    <main className="flex-1">{children}</main>
+  </Providers>
 
         {/* ✅ Global Footer */}
         <footer className="border-t py-6 text-sm text-gray-500">
