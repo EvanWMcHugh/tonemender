@@ -3,7 +3,7 @@ import { supabaseServer } from "../../../../lib/supabase-server";
 
 export async function POST(req: Request) {
   try {
-    const { email, password } = await req.json();
+    const { email, password, captchaToken } = await req.json();
 
     if (!email || !password) {
       return NextResponse.json(
@@ -11,6 +11,12 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+    if (!captchaToken) {
+  return NextResponse.json(
+    { error: "Captcha verification required" },
+    { status: 400 }
+  );
+}
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
     if (!emailRegex.test(email)) {
@@ -35,10 +41,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const { error } = await supabaseServer.auth.signUp({
-      email,
-      password,
-    });
+   const { error } = await supabaseServer.auth.signUp({
+  email,
+  password,
+  options: {
+    captchaToken,
+  },
+});
 
     if (error) {
       return NextResponse.json(

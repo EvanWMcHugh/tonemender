@@ -4,6 +4,7 @@ import { useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Turnstile from "react-turnstile";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,6 +12,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [resetSent, setResetSent] = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
@@ -19,9 +21,12 @@ const [resetSent, setResetSent] = useState(false);
     setLoading(true);
 
     const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+  email,
+  password,
+  options: {
+    captchaToken,
+  },
+});
 
     if (error) {
       setError(error.message);
@@ -43,9 +48,10 @@ async function handleResetPassword() {
   setLoading(true);
   setError("");
 
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: "https://tonemender.com/reset-password",
-  });
+ const { error } = await supabase.auth.resetPasswordForEmail(email, {
+  redirectTo: "https://tonemender.com/reset-password",
+  captchaToken,
+});
 
   setLoading(false);
 
@@ -87,8 +93,15 @@ async function handleResetPassword() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
+          <Turnstile
+  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  onSuccess={(token) => setCaptchaToken(token)}
+/>
 
-          <button disabled={loading} className="bg-blue-600 text-white p-2 rounded">
+          <button
+  disabled={loading || !captchaToken}
+  className="bg-blue-600 text-white p-2 rounded"
+>
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>

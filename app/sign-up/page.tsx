@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Turnstile from "react-turnstile";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -10,6 +11,7 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
@@ -27,7 +29,7 @@ export default function SignupPage() {
     const res = await fetch("/api/auth/sign-up", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, captchaToken }),
     });
 
     const data = await res.json();
@@ -72,12 +74,16 @@ export default function SignupPage() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
+          <Turnstile
+  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  onSuccess={(token) => setCaptchaToken(token)}
+/>
 
           <button
-            type="submit"
-            disabled={loading}
-            className="bg-green-600 text-white p-2 rounded"
-          >
+  type="submit"
+  disabled={loading || !captchaToken}
+  className="bg-green-600 text-white p-2 rounded"
+>
             {loading ? "Creating..." : "Sign Up"}
           </button>
         </form>
