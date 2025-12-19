@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
+import Turnstile from "react-turnstile";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -10,6 +11,7 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -46,14 +48,15 @@ const [ready, setReady] = useState(false);
 
     setLoading(true);
 
-    const { error } = await supabase.auth.updateUser({ password });
+  const { error } = await supabase.auth.updateUser({ password });
 
     setLoading(false);
 
-    if (error) {
-      setError(error.message);
-      return;
-    }
+  if (error) {
+  setError(error.message);
+  setCaptchaToken(null); // ⬅ force re-verify
+  return;
+}
 
     router.replace("/sign-in");
   }
@@ -76,6 +79,7 @@ const [ready, setReady] = useState(false);
             onChange={(e) => setPassword(e.target.value)}
             required
           />
+         
 
           <input
             type="password"
@@ -86,8 +90,15 @@ const [ready, setReady] = useState(false);
             required
           />
 
+
+          <Turnstile
+  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  onSuccess={(token) => setCaptchaToken(token)}
+/>
+
          <button
-  disabled={loading || !ready}
+  type="submit"
+  disabled={loading || !captchaToken}
   className="bg-blue-600 text-white p-2 rounded disabled:opacity-50"
 >
             {loading ? "Updating..." : "Update Password"}
