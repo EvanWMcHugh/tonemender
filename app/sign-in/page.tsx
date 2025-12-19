@@ -44,6 +44,10 @@ const [resetSent, setResetSent] = useState(false);
     }, 300);
   }
 async function handleResetPassword() {
+   if (!captchaToken) {
+    setError("Please complete the captcha first.");
+    return;
+  }
   if (!email) {
     setError("Enter your email first.");
     return;
@@ -117,7 +121,8 @@ async function handleResetPassword() {
 <button
   type="button"
   onClick={handleResetPassword}
-  className="mt-3 text-sm text-blue-600 underline text-center w-full"
+  disabled={!captchaToken || loading}
+  className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-50"
 >
   Forgot your password?
 </button>
