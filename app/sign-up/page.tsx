@@ -3,7 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Turnstile from "react-turnstile";
+import dynamic from "next/dynamic";
+
+const Turnstile = dynamic(() => import("react-turnstile"), {
+  ssr: false,
+});
 
 export default function SignupPage() {
   const router = useRouter();
@@ -76,7 +80,11 @@ export default function SignupPage() {
           />
           <Turnstile
   sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  theme="light"
+  size="normal"
   onSuccess={(token) => setCaptchaToken(token)}
+  onExpire={() => setCaptchaToken(null)}
+  onError={() => setCaptchaToken(null)}
 />
 
           <button

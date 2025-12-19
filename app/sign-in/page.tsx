@@ -4,7 +4,11 @@ import { useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import Turnstile from "react-turnstile";
+import dynamic from "next/dynamic";
+
+const Turnstile = dynamic(() => import("react-turnstile"), {
+  ssr: false,
+});
 
 export default function LoginPage() {
   const router = useRouter();
@@ -95,10 +99,15 @@ async function handleResetPassword() {
           />
           <Turnstile
   sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  theme="light"
+  size="normal"
   onSuccess={(token) => setCaptchaToken(token)}
+  onExpire={() => setCaptchaToken(null)}
+  onError={() => setCaptchaToken(null)}
 />
 
           <button
+  type="submit"
   disabled={loading || !captchaToken}
   className="bg-blue-600 text-white p-2 rounded"
 >
