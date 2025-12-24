@@ -44,7 +44,7 @@ if (!reviewer && !captchaToken) {
       );
     }
 
-const { error } = await supabaseServer.auth.signUp({
+const { data, error } = await supabaseServer.auth.signUp({
   email,
   password,
   options: reviewer
@@ -58,6 +58,13 @@ const { error } = await supabaseServer.auth.signUp({
         { status: 400 }
       );
     }
+    
+    if (reviewer && data?.user) {
+  await supabaseServer.auth.admin.updateUserById(
+    data.user.id,
+    { email_confirm: true }
+  );
+}
 
     return NextResponse.json({ success: true });
   } catch (err) {
