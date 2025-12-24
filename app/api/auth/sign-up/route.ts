@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
+import { isReviewer } from "../../../../lib/reviewers";
 
 export async function POST(req: Request) {
   try {
@@ -11,7 +12,9 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    if (!captchaToken) {
+const reviewer = isReviewer(email);
+
+if (!reviewer && !captchaToken) {
   return NextResponse.json(
     { error: "Captcha verification required" },
     { status: 400 }
@@ -41,12 +44,12 @@ export async function POST(req: Request) {
       );
     }
 
-   const { error } = await supabaseServer.auth.signUp({
+const { error } = await supabaseServer.auth.signUp({
   email,
   password,
-  options: {
-    captchaToken,
-  },
+  options: reviewer
+    ? undefined
+    : { captchaToken },
 });
 
     if (error) {
