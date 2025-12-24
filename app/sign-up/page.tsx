@@ -85,14 +85,16 @@ export default function SignupPage() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-          <Turnstile
-  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-  theme="light"
-  size="normal"
-  onSuccess={(token) => setCaptchaToken(token)}
-  onExpire={() => setCaptchaToken(null)}
-  onError={() => setCaptchaToken(null)}
-/>
+          {!isReviewerEmail && (
+  <Turnstile
+    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+    theme="light"
+    size="normal"
+    onSuccess={(token) => setCaptchaToken(token)}
+    onExpire={() => setCaptchaToken(null)}
+    onError={() => setCaptchaToken(null)}
+  />
+)}
 
           <button
   type="submit"

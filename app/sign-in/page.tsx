@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -19,8 +19,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [resetSent, setResetSent] = useState(false);
+const [isReviewerEmail, setIsReviewerEmail] = useState(false);
 
-const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
+useEffect(() => {
+  setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
+}, [email]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -47,10 +50,10 @@ const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
     }, 300);
   }
 async function handleResetPassword() {
-   if (!captchaToken) {
-    setError("Please complete the captcha first.");
-    return;
-  }
+  if (!captchaToken && !isReviewerEmail) {
+  setError("Please complete the captcha first.");
+  return;
+}
   if (!email) {
     setError("Enter your email first.");
     return;
@@ -61,7 +64,7 @@ async function handleResetPassword() {
 
  const { error } = await supabase.auth.resetPasswordForEmail(email, {
   redirectTo: "https://tonemender.com/reset-password",
-  captchaToken,
+  captchaToken: isReviewerEmail ? undefined : captchaToken,
 });
 
   setLoading(false);
@@ -104,14 +107,16 @@ async function handleResetPassword() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-          <Turnstile
-  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-  theme="light"
-  size="normal"
-  onSuccess={(token) => setCaptchaToken(token)}
-  onExpire={() => setCaptchaToken(null)}
-  onError={() => setCaptchaToken(null)}
-/>
+         {!isReviewerEmail && (
+  <Turnstile
+    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+    theme="light"
+    size="normal"
+    onSuccess={(token) => setCaptchaToken(token)}
+    onExpire={() => setCaptchaToken(null)}
+    onError={() => setCaptchaToken(null)}
+  />
+)}
 
           <button
   type="submit"
@@ -124,7 +129,7 @@ async function handleResetPassword() {
 <button
   type="button"
   onClick={handleResetPassword}
-  disabled={!captchaToken || loading}
+  disabled={loading || (!captchaToken && !isReviewerEmail)}
   className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-50"
 >
   Forgot your password?

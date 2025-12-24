@@ -102,11 +102,12 @@ const [isReviewerEmail, setIsReviewerEmail] = useState(false);
           />
 
 
-          <Turnstile
-  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-  onSuccess={(token) => setCaptchaToken(token)}
-/>
-
+          {!isReviewerEmail && (
+  <Turnstile
+    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+    onSuccess={(token) => setCaptchaToken(token)}
+  />
+)}
          <button
   type="submit"
   disabled={loading || (!captchaToken && !isReviewerEmail)}
