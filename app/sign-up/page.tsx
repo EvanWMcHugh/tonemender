@@ -17,13 +17,17 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-
+const [showCaptcha, setShowCaptcha] = useState(false);
   const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setError("");
+setError("");
+
+if (!isReviewerEmail && !captchaToken) {
+  setShowCaptcha(true);
+  return;
+}
 
     // ✅ Email validation (blocks tonetest123@, user@gmail, etc.)
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -85,7 +89,7 @@ export default function SignupPage() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-          {!isReviewerEmail && (
+          {!isReviewerEmail && showCaptcha && (
   <Turnstile
     sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
     theme="light"

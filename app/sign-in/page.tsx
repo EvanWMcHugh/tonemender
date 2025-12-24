@@ -20,15 +20,23 @@ export default function LoginPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [resetSent, setResetSent] = useState(false);
 const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+const [showCaptcha, setShowCaptcha] = useState(false);
 
 useEffect(() => {
   setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
 }, [email]);
 
   async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+   e.preventDefault();
+setError("");
+
+// ⛔ Block until captcha completed (real users only)
+if (!isReviewerEmail && !captchaToken) {
+  setShowCaptcha(true);
+  return;
+}
+
+setLoading(true);
 
     const { error } = await supabase.auth.signInWithPassword({
   email,
@@ -107,7 +115,8 @@ async function handleResetPassword() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-         {!isReviewerEmail && (
+          
+  {!isReviewerEmail && showCaptcha && (
   <Turnstile
     sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
     theme="light"
