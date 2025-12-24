@@ -18,14 +18,20 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-const [resetSent, setResetSent] = useState(false);
-const [isReviewerEmail, setIsReviewerEmail] = useState(false);
-const [showCaptcha, setShowCaptcha] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+  const [showCaptcha, setShowCaptcha] = useState(false);
+  const [pendingSubmit, setPendingSubmit] = useState(false);
 
 useEffect(() => {
   setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
 }, [email]);
-
+useEffect(() => {
+  if (pendingSubmit && captchaToken) {
+    setPendingSubmit(false);
+    handleLogin(new Event("submit") as any);
+  }
+}, [captchaToken]);
   async function handleLogin(e: React.FormEvent) {
    e.preventDefault();
 setError("");
@@ -33,8 +39,10 @@ setError("");
 // ⛔ Block until captcha completed (real users only)
 if (!isReviewerEmail && !captchaToken) {
   setShowCaptcha(true);
+  setPendingSubmit(true);
   return;
 }
+
 
 setLoading(true);
 
@@ -127,9 +135,9 @@ async function handleResetPassword() {
   />
 )}
 
-          <button
+  <button
   type="submit"
-  disabled={loading || (!captchaToken && !isReviewerEmail)}
+  disabled={loading}
   className="bg-blue-600 text-white p-2 rounded"
 >
             {loading ? "Logging in..." : "Login"}
@@ -138,8 +146,8 @@ async function handleResetPassword() {
 <button
   type="button"
   onClick={handleResetPassword}
-  disabled={loading || (!captchaToken && !isReviewerEmail)}
-  className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-50"
+  disabled={loading}
+  className="mt-3 text-sm text-blue-600 underline text-center w-full"
 >
   Forgot your password?
 </button>

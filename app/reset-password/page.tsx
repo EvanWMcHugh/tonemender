@@ -14,8 +14,8 @@ export default function ResetPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [ready, setReady] = useState(false);
-
 const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+const [showCaptcha, setShowCaptcha] = useState(false);
 
   useEffect(() => {
   const {
@@ -44,6 +44,10 @@ const [isReviewerEmail, setIsReviewerEmail] = useState(false);
 
     if (!ready) {
   setError("Preparing secure reset session. Please wait a moment.");
+  return;
+}
+if (!isReviewerEmail && !captchaToken) {
+  setShowCaptcha(true);
   return;
 }
 
@@ -102,16 +106,16 @@ const [isReviewerEmail, setIsReviewerEmail] = useState(false);
           />
 
 
-          {!isReviewerEmail && (
+{!isReviewerEmail && showCaptcha && (
   <Turnstile
     sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
     onSuccess={(token) => setCaptchaToken(token)}
   />
 )}
-         <button
+ <button
   type="submit"
-  disabled={loading || (!captchaToken && !isReviewerEmail)}
-  className="bg-blue-600 text-white p-2 rounded disabled:opacity-50"
+  disabled={loading}
+  className="bg-blue-600 text-white p-2 rounded"
 >
             {loading ? "Updating..." : "Update Password"}
           </button>

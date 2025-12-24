@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -17,15 +17,28 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-const [showCaptcha, setShowCaptcha] = useState(false);
-  const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
+  const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+  const [showCaptcha, setShowCaptcha] = useState(false);
+  const [pendingSubmit, setPendingSubmit] = useState(false);
 
-  async function handleSignup(e: React.FormEvent) {
-    e.preventDefault();
-setError("");
+  useEffect(() => {
+  setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
+}, [email]);
+
+  useEffect(() => {
+  if (pendingSubmit && captchaToken) {
+    setPendingSubmit(false);
+    handleSignup(new Event("submit") as any);
+  }
+}, [captchaToken]);
+async function handleSignup(e: React.FormEvent) {
+  e.preventDefault();
+  setError("");
+  setLoading(true);
 
 if (!isReviewerEmail && !captchaToken) {
   setShowCaptcha(true);
+  setPendingSubmit(true);
   return;
 }
 
@@ -56,6 +69,7 @@ if (!isReviewerEmail && !captchaToken) {
     }
 
     router.replace("/check-email");
+    setLoading(false);
   }
 
   return (
@@ -100,9 +114,9 @@ if (!isReviewerEmail && !captchaToken) {
   />
 )}
 
-          <button
+  <button
   type="submit"
-  disabled={loading || (!captchaToken && !isReviewerEmail)}
+  disabled={loading}
   className="bg-green-600 text-white p-2 rounded"
 >
             {loading ? "Creating..." : "Sign Up"}
