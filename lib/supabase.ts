@@ -26,11 +26,11 @@ const createBrowserStorage = () => {
 
 export const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, // ✅ FIX
   {
     auth: {
       persistSession: true,
-      storage: createBrowserStorage(), // safe for SSR
+      storage: createBrowserStorage(),
       autoRefreshToken: true,
     },
   }
