@@ -34,13 +34,14 @@ export default function SignupPage() {
 async function handleSignup(e: React.FormEvent) {
   e.preventDefault();
   setError("");
-  setLoading(true);
 
 if (!isReviewerEmail && !captchaToken) {
   setShowCaptcha(true);
   setPendingSubmit(true);
   return;
 }
+
+setLoading(true);
 
     // ✅ Email validation (blocks tonetest123@, user@gmail, etc.)
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;

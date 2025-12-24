@@ -47,23 +47,13 @@ if (!reviewer && !captchaToken) {
 const { data, error } = await supabaseServer.auth.signUp({
   email,
   password,
-  options: {
-    captchaToken,
-  },
+  options: reviewer ? {} : { captchaToken },
 });
-
 if (error) {
   return NextResponse.json(
     { error: error.message },
     { status: 400 }
   );
-}
-
-// 🔥 AUTO-CONFIRM REVIEWER ACCOUNTS
-if (isReviewer(email) && data?.user) {
-  await supabaseServer.auth.admin.updateUserById(data.user.id, {
-    email_confirm: true,
-  });
 }
 
     return NextResponse.json({ success: true });
