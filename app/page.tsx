@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import LogoutButton from "./components/LogoutButton";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { isProReviewer } from "../lib/reviewers";
 
 export default function AppHomePage() {
   const router = useRouter();
@@ -33,7 +34,7 @@ export default function AppHomePage() {
         .eq("id", user.id)
         .single();
 
-      setIsPro(profile?.is_pro || false);
+      setIsPro(profile?.is_pro || isProReviewer(user.email));
 
       setAuthReady(true);
     }

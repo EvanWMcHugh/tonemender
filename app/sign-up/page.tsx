@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), {
   ssr: false,
@@ -16,6 +17,8 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+
+  const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
 
   async function handleSignup(e: React.FormEvent) {
     e.preventDefault();
@@ -33,7 +36,11 @@ export default function SignupPage() {
     const res = await fetch("/api/auth/sign-up", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, captchaToken }),
+      body: JSON.stringify({
+  email,
+  password,
+  captchaToken: isReviewerEmail ? null : captchaToken,
+}),
     });
 
     const data = await res.json();
@@ -89,7 +96,7 @@ export default function SignupPage() {
 
           <button
   type="submit"
-  disabled={loading || !captchaToken}
+  disabled={loading || (!captchaToken && !isReviewerEmail)}
   className="bg-green-600 text-white p-2 rounded"
 >
             {loading ? "Creating..." : "Sign Up"}

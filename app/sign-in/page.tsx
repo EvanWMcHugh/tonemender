@@ -5,6 +5,7 @@ import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), {
   ssr: false,
@@ -19,6 +20,8 @@ export default function LoginPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [resetSent, setResetSent] = useState(false);
 
+const isReviewerEmail = ALL_REVIEWER_EMAILS.includes(email);
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -28,7 +31,7 @@ const [resetSent, setResetSent] = useState(false);
   email,
   password,
   options: {
-    captchaToken,
+    captchaToken: isReviewerEmail ? undefined : captchaToken,
   },
 });
 
@@ -112,7 +115,7 @@ async function handleResetPassword() {
 
           <button
   type="submit"
-  disabled={loading || !captchaToken}
+  disabled={loading || (!captchaToken && !isReviewerEmail)}
   className="bg-blue-600 text-white p-2 rounded"
 >
             {loading ? "Logging in..." : "Login"}

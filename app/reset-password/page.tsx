@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Turnstile from "react-turnstile";
+import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -14,12 +15,19 @@ export default function ResetPasswordPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 const [ready, setReady] = useState(false);
 
+const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+
   useEffect(() => {
   const {
     data: { subscription },
-  } = supabase.auth.onAuthStateChange((event) => {
+  } = supabase.auth.onAuthStateChange(async (event) => {
     if (event === "PASSWORD_RECOVERY") {
-      setReady(true);   // ✅ session is now available
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(user?.email ?? ""));
+      setReady(true);
       setError("");
     }
   });
@@ -28,6 +36,9 @@ const [ready, setReady] = useState(false);
 }, []);
 
   async function handleReset(e: React.FormEvent) {
+    const {
+  data: { user },
+} = await supabase.auth.getUser();
     e.preventDefault();
     setError("");
 
@@ -98,7 +109,7 @@ const [ready, setReady] = useState(false);
 
          <button
   type="submit"
-  disabled={loading || !captchaToken}
+  disabled={loading || (!captchaToken && !isReviewerEmail)}
   className="bg-blue-600 text-white p-2 rounded disabled:opacity-50"
 >
             {loading ? "Updating..." : "Update Password"}
