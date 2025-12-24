@@ -1,9 +1,9 @@
 export const REVIEWER_FREE_EMAILS = [
-  "reviewer-free@yourdomain.com",
+  "free@tonemender.com",
 ];
 
 export const REVIEWER_PRO_EMAILS = [
-  "reviewer-pro@yourdomain.com",
+  "pro@tonemender.com",
 ];
 
 export const ALL_REVIEWER_EMAILS = [
