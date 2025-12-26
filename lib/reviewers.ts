@@ -11,10 +11,16 @@ export const ALL_REVIEWER_EMAILS = [
   ...REVIEWER_PRO_EMAILS,
 ];
 
+function normalize(email?: string | null) {
+  return email?.toLowerCase() ?? null;
+}
+
 export function isReviewer(email?: string | null) {
-  return !!email && ALL_REVIEWER_EMAILS.includes(email);
+  const e = normalize(email);
+  return !!e && ALL_REVIEWER_EMAILS.includes(e);
 }
 
 export function isProReviewer(email?: string | null) {
-  return !!email && REVIEWER_PRO_EMAILS.includes(email);
+  const e = normalize(email);
+  return !!e && REVIEWER_PRO_EMAILS.includes(e);
 }

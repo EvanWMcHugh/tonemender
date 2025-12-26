@@ -21,17 +21,13 @@ export default function LoginPage() {
   const [resetSent, setResetSent] = useState(false);
   const [isReviewerEmail, setIsReviewerEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
-  const [pendingSubmit, setPendingSubmit] = useState(false);
-
+  
 useEffect(() => {
   setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
+  setShowCaptcha(false);   // hide captcha when email changes
+  setCaptchaToken(null);    // reset token for new email
 }, [email]);
-useEffect(() => {
-  if (pendingSubmit && captchaToken) {
-    setPendingSubmit(false);
-    handleLogin(new Event("submit") as any);
-  }
-}, [captchaToken]);
+
   async function handleLogin(e: React.FormEvent) {
    e.preventDefault();
 setError("");
@@ -39,8 +35,7 @@ setError("");
 // ⛔ Block until captcha completed (real users only)
 if (!isReviewerEmail && !captchaToken) {
   setShowCaptcha(true);
-  setPendingSubmit(true);
-  return;
+  return; // wait for user to complete captcha
 }
 
 
@@ -63,12 +58,14 @@ setLoading(true);
     // Let Supabase persist the session
     setTimeout(() => {
       router.replace("/");
+      setCaptchaToken(null);
+      setShowCaptcha(false);
     }, 300);
   }
 async function handleResetPassword() {
-  if (!captchaToken && !isReviewerEmail) {
-  setError("Please complete the captcha first.");
-  return;
+  if (!isReviewerEmail && !captchaToken) {
+  setShowCaptcha(true);
+  return; // wait for user to complete captcha
 }
   if (!email) {
     setError("Enter your email first.");
@@ -91,6 +88,8 @@ async function handleResetPassword() {
   }
 
   setResetSent(true);
+  setCaptchaToken(null); // prevent stale token reuse
+  setShowCaptcha(false);  // hide captcha after success
 }
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
@@ -125,14 +124,13 @@ async function handleResetPassword() {
           />
           
   {!isReviewerEmail && showCaptcha && (
-  <Turnstile
-    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-    theme="light"
-    size="normal"
-    onSuccess={(token) => setCaptchaToken(token)}
-    onExpire={() => setCaptchaToken(null)}
-    onError={() => setCaptchaToken(null)}
-  />
+<Turnstile
+  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  theme="light"
+  onSuccess={(token) => setCaptchaToken(token)}
+  onExpire={() => setCaptchaToken(null)}
+  onError={() => setCaptchaToken(null)}
+/>
 )}
 
   <button
