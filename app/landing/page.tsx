@@ -12,22 +12,28 @@ export default function MarketingLandingPage() {
 
   // 🔥 If user is logged in → redirect to main dashboard "/"
   useEffect(() => {
-      const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+  // 1️⃣ Check current session on mount
+  const checkSession = async () => {
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.user) {
+      router.replace("/page"); // redirect to your logged-in page
+    } else {
+      setChecking(false); // show marketing page
+    }
+  };
+
+  checkSession();
+
+  // 2️⃣ Listen for login events
+  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
     if (session?.user) {
-      router.replace("/"); // redirect logged-in users immediately
+      router.replace("/page"); // redirect to logged-in page
     }
   });
 
-  async function check() {
-   const { data: sessionData } = await supabase.auth.getSession();
-if (sessionData?.session?.user) {
-  router.replace("/"); // redirect if already logged in
-  return;
-}
-    setChecking(false); // show marketing page if NOT logged in
-  }
-  check();
-return () => listener.subscription.unsubscribe();
+  return () => {
+    listener.subscription.unsubscribe(); // clean up listener
+  };
 }, [router]);
 
 if (checking) return null; // prevent flicker

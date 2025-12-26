@@ -22,90 +22,98 @@ export default function LoginPage() {
   const [isReviewerEmail, setIsReviewerEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
 
-useEffect(() => {
-  const isReviewer = ALL_REVIEWER_EMAILS.includes(email.trim().toLowerCase());
-  setIsReviewerEmail(isReviewer);
+  useEffect(() => {
+    async function checkSession() {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.user) {
+        router.replace("/page"); // redirect if already logged in
+      }
+    }
+    checkSession();
+  }, [router]);
 
-  // Always reset captcha when email changes
-  setShowCaptcha(false);
-  setCaptchaToken(null);
-}, [email]);
+  useEffect(() => {
+    const isReviewer = ALL_REVIEWER_EMAILS.includes(email.trim().toLowerCase());
+    setIsReviewerEmail(isReviewer);
+
+    // Always reset captcha when email changes
+    setShowCaptcha(false);
+    setCaptchaToken(null);
+  }, [email]);
 
   async function handleLogin(e: React.FormEvent) {
-   e.preventDefault();
-setError("");
+    e.preventDefault();
+    setError("");
 
-// 🔹 Normalize email and check if reviewer
-const normalizedEmail = email.trim().toLowerCase();
-const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+    const normalizedEmail = email.trim().toLowerCase();
+    const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
 
-// ⛔ Block until captcha completed (real users only)
-  if (!isReviewer && !captchaToken) {
-    setShowCaptcha(true);
-    return;
-  }
-
-setLoading(true);
-
-const res = await fetch("/api/auth/sign-in", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ email: normalizedEmail, password, captchaToken }),
-});
-
-const result = await res.json();
-
- if (!res.ok) {
-    if (result.error === "Captcha required") {
-      setShowCaptcha(true);
-      setCaptchaToken(null);
-    }
-    setError(result.error || "Login failed");
-    return;
-  }
-
-    // Let Supabase persist the session
-  setCaptchaToken(null);
-setShowCaptcha(false);
-router.replace("/"); // Redirect to logged-in homepage after successful login
-  }
-async function handleResetPassword() {
-  const normalizedEmail = email.trim().toLowerCase();
-  const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
-
-  if (!isReviewer) {
-    if (!captchaToken) {
+    if (!isReviewer && !captchaToken) {
       setShowCaptcha(true);
       return;
     }
+
+    setLoading(true);
+
+    // ✅ Direct client-side login
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+      options: {
+        captchaToken: isReviewer ? undefined : captchaToken,
+      },
+    });
+
+    if (error) {
+      setError(error.message);
+      setLoading(false);
+      return;
+    }
+
+    // ✅ Redirect after successful login
+    router.replace("/page");
+    setLoading(false);
+    setCaptchaToken(null);
+    setShowCaptcha(false);
   }
-  if (!email) {
-    setError("Enter your email first.");
-    return;
+
+  async function handleResetPassword() {
+    const normalizedEmail = email.trim().toLowerCase();
+    const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+
+    if (!isReviewer && !captchaToken) {
+      setShowCaptcha(true);
+      return;
+    }
+
+    if (!email) {
+      setError("Enter your email first.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: "https://tonemender.com/reset-password",
+      captchaToken: isReviewer ? undefined : captchaToken,
+    });
+
+    setLoading(false);
+    setResetSent(true);
+    setCaptchaToken(null);
+    setShowCaptcha(false);
   }
 
-  setLoading(true);
-  setError("");
-
- const { error } = await supabase.auth.resetPasswordForEmail(email, {
-  redirectTo: "https://tonemender.com/reset-password",
-  captchaToken: isReviewer ? undefined : captchaToken,
-});
-
-  setLoading(false);
-  setResetSent(true);
-  setCaptchaToken(null); // prevent stale token reuse
-  setShowCaptcha(false);  // hide captcha after success
-}
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
         <Link
-  href="/landing"
-  className="inline-block mb-4 text-sm text-slate-600 hover:underline"
->
-  ← Back to home
-</Link>
+          href="/landing"
+          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
+        >
+          ← Back to home
+        </Link>
         <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
 
         {error && <p className="text-red-500">{error}</p>}
@@ -128,39 +136,41 @@ async function handleResetPassword() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-          
-  {!isReviewerEmail && showCaptcha && (
-<Turnstile
-  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-  theme="light"
-  onSuccess={(token) => setCaptchaToken(token)}
-  onExpire={() => setCaptchaToken(null)}
-  onError={() => setCaptchaToken(null)}
-/>
-)}
 
-  <button
-  type="submit"
-  disabled={loading}
-  className="bg-blue-600 text-white p-2 rounded"
->
+          {!isReviewerEmail && showCaptcha && (
+            <Turnstile
+              sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+              theme="light"
+              onSuccess={(token) => setCaptchaToken(token)}
+              onExpire={() => setCaptchaToken(null)}
+              onError={() => setCaptchaToken(null)}
+            />
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-blue-600 text-white p-2 rounded"
+          >
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>
-<button
-  type="button"
-  onClick={handleResetPassword}
-  disabled={loading}
-  className="mt-3 text-sm text-blue-600 underline text-center w-full"
->
-  Forgot your password?
-</button>
 
-{resetSent && (
-  <p className="mt-2 text-sm text-green-600 text-center">
-    ✅ Password reset email sent
-  </p>
-)}
+        <button
+          type="button"
+          onClick={handleResetPassword}
+          disabled={loading}
+          className="mt-3 text-sm text-blue-600 underline text-center w-full"
+        >
+          Forgot your password?
+        </button>
+
+        {resetSent && (
+          <p className="mt-2 text-sm text-green-600 text-center">
+            ✅ Password reset email sent
+          </p>
+        )}
+
         <p className="mt-4 text-center text-sm">
           Don’t have an account?{" "}
           <a href="/sign-up" className="text-blue-600 underline">

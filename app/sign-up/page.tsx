@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabase"; // ✅ import supabase
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -17,13 +18,22 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
-async function handleSignup(e: React.FormEvent) {
-  e.preventDefault();
-  setError("");
+  useEffect(() => {
+    async function checkSession() {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.user) {
+        router.replace("/page"); // redirect if already logged in
+      }
+    }
+    checkSession();
+  }, [router]);
 
-setLoading(true);
+  async function handleSignup(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
 
-    // ✅ Email validation (blocks tonetest123@, user@gmail, etc.)
+    // ✅ Email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
     if (!emailRegex.test(email)) {
       setError("Please enter a valid email address");
@@ -31,37 +41,43 @@ setLoading(true);
       return;
     }
 
-    const res = await fetch("/api/auth/sign-up", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // ✅ Direct client-side signup
+    const { data, error } = await supabase.auth.signUp({
   email,
   password,
-  captchaToken,
-}),
-    });
+  options: {
+    captchaToken,
+    emailRedirectTo: "https://tonemender.com/check-email", // ✅ new correct key
+  },
+});
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      setError(data.error || "Signup failed");
+    if (error) {
+      setError(error.message);
       setLoading(false);
       return;
     }
 
-    router.replace("/check-email");
+    // ✅ If user is immediately logged in (no email confirmation), redirect to main page
+    if (data.user) {
+      router.replace("/page");
+    } else {
+      // If email confirmation required, go to check-email page
+      router.replace("/check-email");
+    }
+
     setLoading(false);
+    setCaptchaToken(null);
   }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
         <Link
-  href="/landing"
-  className="inline-block mb-4 text-sm text-slate-600 hover:underline"
->
-  ← Back to home
-</Link>
+          href="/landing"
+          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
+        >
+          ← Back to home
+        </Link>
         <h1 className="text-2xl font-bold mb-4 text-center">Create Account</h1>
 
         {error && <p className="text-red-500 mb-2">{error}</p>}
@@ -84,20 +100,21 @@ setLoading(true);
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-<Turnstile
-  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-  theme="light"
-  size="normal"
-  onSuccess={(token) => setCaptchaToken(token)}
-  onExpire={() => setCaptchaToken(null)}
-  onError={() => setCaptchaToken(null)}
-/>
 
-  <button
-  type="submit"
-  disabled={loading}
-  className="bg-green-600 text-white p-2 rounded"
->
+          <Turnstile
+            sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+            theme="light"
+            size="normal"
+            onSuccess={(token) => setCaptchaToken(token)}
+            onExpire={() => setCaptchaToken(null)}
+            onError={() => setCaptchaToken(null)}
+          />
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-green-600 text-white p-2 rounded"
+          >
             {loading ? "Creating..." : "Sign Up"}
           </button>
         </form>

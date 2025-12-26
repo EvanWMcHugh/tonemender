@@ -13,17 +13,21 @@ export default function ResetPasswordPage() {
   const [ready, setReady] = useState(false);
   
   useEffect(() => {
-  const {
-    data: { subscription },
-  } = supabase.auth.onAuthStateChange(async (event) => {
+  // Listen for PASSWORD_RECOVERY events
+  const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
     if (event === "PASSWORD_RECOVERY") {
-  setReady(true);
-  setError("");
-}
+      setReady(true);
+      setError("");
+    }
+
+    // Optional: if user somehow logs in during recovery, redirect
+    if (event === "SIGNED_IN" && session?.user) {
+      router.replace("/page"); // replace with your main logged-in page
+    }
   });
 
-  return () => subscription.unsubscribe();
-}, []);
+  return () => listener.subscription.unsubscribe(); // clean up
+}, [router]);
 
   async function handleReset(e: React.FormEvent) {
     e.preventDefault();
