@@ -15,9 +15,9 @@ export default function MarketingLandingPage() {
     async function check() {
       const { data } = await supabase.auth.getUser();
       if (data.user) {
-        router.replace("/");
-        return;
-      }
+      router.replace("/page"); // ✅ redirect signed-in users
+     return;
+    }
       setChecking(false);
     }
     check();

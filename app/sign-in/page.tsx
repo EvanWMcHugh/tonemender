@@ -76,10 +76,10 @@ if (!res.ok) {
 
     // Let Supabase persist the session
     setTimeout(() => {
-      router.replace("/");
-      setCaptchaToken(null);
-      setShowCaptcha(false);
-    }, 300);
+  router.replace("/page");   // ✅ your signed-in page
+  setCaptchaToken(null);
+  setShowCaptcha(false);
+}, 300);
   }
 async function handleResetPassword() {
   const normalizedEmail = email.trim().toLowerCase();
