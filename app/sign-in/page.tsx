@@ -21,24 +21,26 @@ export default function LoginPage() {
   const [resetSent, setResetSent] = useState(false);
   const [isReviewerEmail, setIsReviewerEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
-  const normalizedEmail = email.trim().toLowerCase();
-  
-useEffect(() => {
-  const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
 
+useEffect(() => {
+  const isReviewer = ALL_REVIEWER_EMAILS.includes(email.trim().toLowerCase());
   setIsReviewerEmail(isReviewer);
 
   // Always reset captcha when email changes
   setShowCaptcha(false);
   setCaptchaToken(null);
-}, [normalizedEmail]);
+}, [email]);
 
   async function handleLogin(e: React.FormEvent) {
    e.preventDefault();
 setError("");
 
+// 🔹 Normalize email and check if reviewer
+const normalizedEmail = email.trim().toLowerCase();
+const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+
 // ⛔ Block until captcha completed (real users only)
-if (!isReviewerEmail) {
+if (!isReviewer) {
   if (!captchaToken) {
     setShowCaptcha(true);
     return;
@@ -47,25 +49,30 @@ if (!isReviewerEmail) {
 
 setLoading(true);
 
+// 🔹 Optional debug log
 console.log({
   normalizedEmail,
-  isReviewerEmail,
+  isReviewer,
   captchaToken,
 });
 
-const { error } = await supabase.auth.signInWithPassword({
-  email: normalizedEmail,
-  password,
-  options: isReviewerEmail
-    ? undefined
-    : { captchaToken },
+const res = await fetch("/api/auth/sign-in", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email: normalizedEmail, password, captchaToken }),
 });
 
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-      return;
-    }
+const result = await res.json();
+
+if (!res.ok) {
+  if (result.error === "Captcha required") {
+    setShowCaptcha(true);
+    setCaptchaToken(null);
+  }
+  setError(result.error || "Login failed");
+  setLoading(false);
+  return;
+}
 
     // Let Supabase persist the session
     setTimeout(() => {
@@ -75,12 +82,15 @@ const { error } = await supabase.auth.signInWithPassword({
     }, 300);
   }
 async function handleResetPassword() {
-if (!isReviewerEmail) {
-  if (!captchaToken) {
-    setShowCaptcha(true);
-    return;
+  const normalizedEmail = email.trim().toLowerCase();
+  const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+
+  if (!isReviewer) {
+    if (!captchaToken) {
+      setShowCaptcha(true);
+      return;
+    }
   }
-}
   if (!email) {
     setError("Enter your email first.");
     return;
@@ -91,16 +101,10 @@ if (!isReviewerEmail) {
 
  const { error } = await supabase.auth.resetPasswordForEmail(email, {
   redirectTo: "https://tonemender.com/reset-password",
-  captchaToken: isReviewerEmail ? undefined : captchaToken,
+  captchaToken: isReviewer ? undefined : captchaToken,
 });
 
   setLoading(false);
-
-  if (error) {
-    setError(error.message);
-    return;
-  }
-
   setResetSent(true);
   setCaptchaToken(null); // prevent stale token reuse
   setShowCaptcha(false);  // hide captcha after success
