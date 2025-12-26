@@ -76,7 +76,7 @@ if (!res.ok) {
 
     // Let Supabase persist the session
     setTimeout(() => {
-  router.replace("/page");   // ✅ your signed-in page
+  router.replace("/");   // ✅ your signed-in page
   setCaptchaToken(null);
   setShowCaptcha(false);
 }, 300);
