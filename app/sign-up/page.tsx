@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), {
   ssr: false,
@@ -17,29 +16,10 @@ export default function SignupPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-  const [isReviewerEmail, setIsReviewerEmail] = useState(false);
-  const [showCaptcha, setShowCaptcha] = useState(false);
-  const [pendingSubmit, setPendingSubmit] = useState(false);
 
-  useEffect(() => {
-  setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
-}, [email]);
-
-  useEffect(() => {
-  if (pendingSubmit && captchaToken) {
-    setPendingSubmit(false);
-    handleSignup(new Event("submit") as any);
-  }
-}, [captchaToken]);
 async function handleSignup(e: React.FormEvent) {
   e.preventDefault();
   setError("");
-
-if (!isReviewerEmail && !captchaToken) {
-  setShowCaptcha(true);
-  setPendingSubmit(true);
-  return;
-}
 
 setLoading(true);
 
@@ -57,7 +37,7 @@ setLoading(true);
       body: JSON.stringify({
   email,
   password,
-  captchaToken: isReviewerEmail ? null : captchaToken,
+  captchaToken,
 }),
     });
 
@@ -104,16 +84,14 @@ setLoading(true);
             onChange={(e) => setPassword(e.target.value)}
             required
           />
-          {!isReviewerEmail && showCaptcha && (
-  <Turnstile
-    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-    theme="light"
-    size="normal"
-    onSuccess={(token) => setCaptchaToken(token)}
-    onExpire={() => setCaptchaToken(null)}
-    onError={() => setCaptchaToken(null)}
-  />
-)}
+<Turnstile
+  sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+  theme="light"
+  size="normal"
+  onSuccess={(token) => setCaptchaToken(token)}
+  onExpire={() => setCaptchaToken(null)}
+  onError={() => setCaptchaToken(null)}
+/>
 
   <button
   type="submit"

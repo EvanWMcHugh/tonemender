@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
-import Turnstile from "react-turnstile";
-import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -12,42 +10,27 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-const [ready, setReady] = useState(false);
-const [isReviewerEmail, setIsReviewerEmail] = useState(false);
-const [showCaptcha, setShowCaptcha] = useState(false);
-
+  const [ready, setReady] = useState(false);
+  
   useEffect(() => {
   const {
     data: { subscription },
   } = supabase.auth.onAuthStateChange(async (event) => {
     if (event === "PASSWORD_RECOVERY") {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(user?.email ?? ""));
-      setReady(true);
-      setError("");
-    }
+  setReady(true);
+  setError("");
+}
   });
 
   return () => subscription.unsubscribe();
 }, []);
 
   async function handleReset(e: React.FormEvent) {
-    const {
-  data: { user },
-} = await supabase.auth.getUser();
     e.preventDefault();
     setError("");
 
     if (!ready) {
   setError("Preparing secure reset session. Please wait a moment.");
-  return;
-}
-if (!isReviewerEmail && !captchaToken) {
-  setShowCaptcha(true);
   return;
 }
 
@@ -69,7 +52,6 @@ if (!isReviewerEmail && !captchaToken) {
 
   if (error) {
   setError(error.message);
-  setCaptchaToken(null); // ⬅ force re-verify
   return;
 }
 
@@ -105,13 +87,6 @@ if (!isReviewerEmail && !captchaToken) {
             required
           />
 
-
-{!isReviewerEmail && showCaptcha && (
-  <Turnstile
-    sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-    onSuccess={(token) => setCaptchaToken(token)}
-  />
-)}
  <button
   type="submit"
   disabled={loading}
