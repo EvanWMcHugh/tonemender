@@ -15,11 +15,14 @@ export default function AppHomePage() {
 
   useEffect(() => {
   async function load() {
-    const { data } = await supabase.auth.getUser();
-    if (!data.user) {
-      router.replace("/landing"); // send non-logged-in users away
-      return;
-    }
+    const { data: sessionData } = await supabase.auth.getSession();
+const user = sessionData?.session?.user;
+
+// 🔥 If NO USER → send to landing page
+if (!user) {
+  router.replace("/landing");
+  return;
+}
 
       // Otherwise logged in
       setLoggedIn(true);
@@ -28,10 +31,10 @@ export default function AppHomePage() {
       const { data: profile } = await supabase
       .from("profiles")
       .select("is_pro")
-      .eq("id", data.user.id)
+      .eq("id", user.id)
       .single();
 
-    setIsPro(profile?.is_pro || isProReviewer(data.user.email));
+    setIsPro(profile?.is_pro || isProReviewer(user.email));
     setAuthReady(true);
   }
 

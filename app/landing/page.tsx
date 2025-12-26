@@ -19,9 +19,9 @@ export default function MarketingLandingPage() {
   });
 
   async function check() {
-    const { data: sessionData } = await supabase.auth.getSession();
-if (sessionData.session?.user) {
-  router.replace("/"); // now waits for active session
+   const { data: sessionData } = await supabase.auth.getSession();
+if (sessionData?.session?.user) {
+  router.replace("/"); // redirect if already logged in
   return;
 }
     setChecking(false); // show marketing page if NOT logged in
