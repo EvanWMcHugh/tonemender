@@ -23,9 +23,14 @@ export default function LoginPage() {
   const [showCaptcha, setShowCaptcha] = useState(false);
   
 useEffect(() => {
-  setIsReviewerEmail(ALL_REVIEWER_EMAILS.includes(email));
-  setShowCaptcha(false);   // hide captcha when email changes
-  setCaptchaToken(null);    // reset token for new email
+  const isReviewer = ALL_REVIEWER_EMAILS.includes(email.toLowerCase());
+
+  setIsReviewerEmail(isReviewer);
+
+  if (isReviewer) {
+    setShowCaptcha(false);
+    setCaptchaToken(null);
+  }
 }, [email]);
 
   async function handleLogin(e: React.FormEvent) {
@@ -33,11 +38,12 @@ useEffect(() => {
 setError("");
 
 // ⛔ Block until captcha completed (real users only)
-if (!isReviewerEmail && !captchaToken) {
-  setShowCaptcha(true);
-  return; // wait for user to complete captcha
+if (!isReviewerEmail) {
+  if (!captchaToken) {
+    setShowCaptcha(true);
+    return;
+  }
 }
-
 
 setLoading(true);
 
@@ -63,9 +69,11 @@ setLoading(true);
     }, 300);
   }
 async function handleResetPassword() {
-  if (!isReviewerEmail && !captchaToken) {
-  setShowCaptcha(true);
-  return; // wait for user to complete captcha
+if (!isReviewerEmail) {
+  if (!captchaToken) {
+    setShowCaptcha(true);
+    return;
+  }
 }
   if (!email) {
     setError("Enter your email first.");
