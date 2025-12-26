@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "../../../../lib/supabase-server";
+import { ALL_REVIEWER_EMAILS } from "../../../../lib/reviewers";
 
 export async function POST(req: Request) {
   try {
@@ -12,48 +13,33 @@ export async function POST(req: Request) {
       );
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-    if (!emailRegex.test(email)) {
+    const normalizedEmail = email.toLowerCase();
+    const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+
+    // Only require captcha for non-reviewers
+    if (!isReviewer && !captchaToken) {
       return NextResponse.json(
-        { error: "Please enter a valid email address" },
+        { error: "Captcha required" },
         { status: 400 }
       );
     }
 
-    const blockedDomains = [
-      "mailinator.com",
-      "tempmail.com",
-      "10minutemail.com",
-      "guerrillamail.com",
-    ];
-
-    const domain = email.split("@")[1]?.toLowerCase();
-    if (domain && blockedDomains.includes(domain)) {
-      return NextResponse.json(
-        { error: "Disposable email addresses are not allowed" },
-        { status: 400 }
-      );
-    }
-
-const { error } = await supabaseServer.auth.signUp({
-  email,
+    const { data, error } = await supabaseServer.auth.signUp({
+  email: normalizedEmail,
   password,
-  options: { captchaToken },
+  options: {
+    captchaToken: isReviewer ? undefined : captchaToken,
+    emailRedirectTo: "https://tonemender.com/check-email",
+  },
 });
 
-if (error) {
-  return NextResponse.json(
-    { error: error.message },
-    { status: 400 }
-  );
-}
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
 
-    return NextResponse.json({ success: true });
-  } catch (err) {
+    return NextResponse.json({ success: true, user: data.user });
+  } catch (err: any) {
     console.error("SIGNUP ERROR:", err);
-    return NextResponse.json(
-      { error: "Invalid request" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 }

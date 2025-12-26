@@ -19,12 +19,13 @@ export async function POST(req: NextRequest) {
     }
 
     const { data, error } = await supabaseServer.auth.signInWithPassword({
-      email: normalizedEmail,
-      password,
-      options: {
-        captchaToken: isReviewer ? undefined : captchaToken,
-      },
-    });
+  email: normalizedEmail,
+  password,
+  options: {
+    // Only send captcha for regular users
+    captchaToken: isReviewer ? undefined : captchaToken,
+  },
+});
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
