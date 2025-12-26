@@ -12,19 +12,18 @@ export default function MarketingLandingPage() {
 
   // 🔥 If user is logged in → redirect to main dashboard "/"
   useEffect(() => {
-    async function check() {
-      const { data } = await supabase.auth.getUser();
-     if (data.user) {
-  router.replace("/"); // Just redirect to "/" without reload
-  return;
-}
-      setChecking(false);
+  async function check() {
+    const { data } = await supabase.auth.getUser();
+    if (data.user) {
+      router.replace("/"); // redirect to dashboard if logged in
+      return;
     }
-    check();
-  }, [router]);
+    setChecking(false); // show marketing page if NOT logged in
+  }
+  check();
+}, [router]);
 
-  // Prevent flicker
-  if (checking) return null;
+if (checking) return null; // prevent flicker
 
   // --------------------------------------------------------
   // ❤️ Logged-out Marketing Landing Page

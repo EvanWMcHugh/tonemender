@@ -40,21 +40,12 @@ const normalizedEmail = email.trim().toLowerCase();
 const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
 
 // ⛔ Block until captcha completed (real users only)
-if (!isReviewer) {
-  if (!captchaToken) {
+  if (!isReviewer && !captchaToken) {
     setShowCaptcha(true);
     return;
   }
-}
 
 setLoading(true);
-
-// 🔹 Optional debug log
-console.log({
-  normalizedEmail,
-  isReviewer,
-  captchaToken,
-});
 
 const res = await fetch("/api/auth/sign-in", {
   method: "POST",
@@ -64,15 +55,14 @@ const res = await fetch("/api/auth/sign-in", {
 
 const result = await res.json();
 
-if (!res.ok) {
-  if (result.error === "Captcha required") {
-    setShowCaptcha(true);
-    setCaptchaToken(null);
+ if (!res.ok) {
+    if (result.error === "Captcha required") {
+      setShowCaptcha(true);
+      setCaptchaToken(null);
+    }
+    setError(result.error || "Login failed");
+    return;
   }
-  setError(result.error || "Login failed");
-  setLoading(false);
-  return;
-}
 
     // Let Supabase persist the session
   setCaptchaToken(null);

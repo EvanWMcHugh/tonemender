@@ -14,35 +14,32 @@ export default function AppHomePage() {
   const [isPro, setIsPro] = useState(false);
 
   useEffect(() => {
-    async function load() {
-      const { data } = await supabase.auth.getUser();
-      const user = data.user;
-
-      // 🔥 If NO USER → send to landing page
-      if (!user) {
-        router.replace("/landing");
-        return;
-      }
+  async function load() {
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) {
+      router.replace("/landing"); // send non-logged-in users away
+      return;
+    }
 
       // Otherwise logged in
       setLoggedIn(true);
 
       // Fetch profile status
       const { data: profile } = await supabase
-        .from("profiles")
-        .select("is_pro")
-        .eq("id", user.id)
-        .single();
+      .from("profiles")
+      .select("is_pro")
+      .eq("id", data.user.id)
+      .single();
 
-      setIsPro(profile?.is_pro || isProReviewer(user.email));
+    setIsPro(profile?.is_pro || isProReviewer(data.user.email));
+    setAuthReady(true);
+  }
 
-      setAuthReady(true);
-    }
+  load();
+}, [router]);
 
-    load();
-  }, [router]);
-
-  if (!authReady) return null;
+// PREVENT rendering / redirect until auth state is checked
+if (!authReady) return null;
 
   // 🟢 Logged-in dashboard HOME
   return (
