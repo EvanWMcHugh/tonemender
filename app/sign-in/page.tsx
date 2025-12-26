@@ -21,17 +21,17 @@ export default function LoginPage() {
   const [resetSent, setResetSent] = useState(false);
   const [isReviewerEmail, setIsReviewerEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const normalizedEmail = email.trim().toLowerCase();
   
 useEffect(() => {
-  const isReviewer = ALL_REVIEWER_EMAILS.includes(email.toLowerCase());
+  const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
 
   setIsReviewerEmail(isReviewer);
 
-  if (isReviewer) {
-    setShowCaptcha(false);
-    setCaptchaToken(null);
-  }
-}, [email]);
+  // Always reset captcha when email changes
+  setShowCaptcha(false);
+  setCaptchaToken(null);
+}, [normalizedEmail]);
 
   async function handleLogin(e: React.FormEvent) {
    e.preventDefault();
@@ -47,12 +47,18 @@ if (!isReviewerEmail) {
 
 setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-  email,
+console.log({
+  normalizedEmail,
+  isReviewerEmail,
+  captchaToken,
+});
+
+const { error } = await supabase.auth.signInWithPassword({
+  email: normalizedEmail,
   password,
-  options: {
-    captchaToken: isReviewerEmail ? undefined : captchaToken,
-  },
+  options: isReviewerEmail
+    ? undefined
+    : { captchaToken },
 });
 
     if (error) {
