@@ -75,11 +75,9 @@ if (!res.ok) {
 }
 
     // Let Supabase persist the session
-    setTimeout(() => {
-  router.replace("/");   // ✅ your signed-in page
   setCaptchaToken(null);
-  setShowCaptcha(false);
-}, 300);
+setShowCaptcha(false);
+router.replace("/"); // Redirect to logged-in homepage after successful login
   }
 async function handleResetPassword() {
   const normalizedEmail = email.trim().toLowerCase();

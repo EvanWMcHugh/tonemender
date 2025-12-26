@@ -14,10 +14,10 @@ export default function MarketingLandingPage() {
   useEffect(() => {
     async function check() {
       const { data } = await supabase.auth.getUser();
-      if (data.user) {
-      router.replace("/"); // ✅ redirect signed-in users
-     return;
-    }
+     if (data.user) {
+  router.replace("/"); // Just redirect to "/" without reload
+  return;
+}
       setChecking(false);
     }
     check();
