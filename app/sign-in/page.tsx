@@ -5,11 +5,20 @@ import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { ALL_REVIEWER_EMAILS } from "../../lib/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), {
   ssr: false,
 });
+
+// ✅ Only these are excluded from captcha
+const CAPTCHA_BYPASS_EMAILS = new Set([
+  "pro@tonemender.com",
+  "free@tonemender.com",
+]);
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,92 +26,127 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [resetSent, setResetSent] = useState(false);
-  const [isReviewerEmail, setIsReviewerEmail] = useState(false);
+
+  const [isBypassEmail, setIsBypassEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
 
   useEffect(() => {
     async function checkSession() {
       const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) {
-        router.replace("/"); // redirect if already logged in
-      }
+      if (data?.session?.user) router.replace("/");
     }
     checkSession();
   }, [router]);
 
   useEffect(() => {
-    const isReviewer = ALL_REVIEWER_EMAILS.includes(email.trim().toLowerCase());
-    setIsReviewerEmail(isReviewer);
+    const normalized = normalizeEmail(email);
+    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalized);
+    setIsBypassEmail(bypass);
 
     // Always reset captcha when email changes
     setShowCaptcha(false);
     setCaptchaToken(null);
   }, [email]);
 
+  async function verifyTurnstileOrBypass(normalizedEmail: string) {
+    const resp = await fetch("/api/turnstile/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: normalizedEmail,
+        token: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : captchaToken,
+      }),
+    });
+
+    const json = await resp.json().catch(() => ({}));
+
+    if (!resp.ok || !json?.ok) {
+      throw new Error(json?.error || "Captcha verification failed");
+    }
+  }
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setResetSent(false);
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+    const normalizedEmail = normalizeEmail(email);
+    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
 
-    if (!isReviewer && !captchaToken) {
+    // If not bypass and no token yet, show captcha first
+    if (!bypass && !captchaToken) {
       setShowCaptcha(true);
       return;
     }
 
     setLoading(true);
 
-    // ✅ Direct client-side login
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: normalizedEmail,
-      password,
-      options: {
-        captchaToken: isReviewer ? undefined : captchaToken,
-      },
-    });
+    try {
+      // ✅ Verify Turnstile server-side (or bypass)
+      await verifyTurnstileOrBypass(normalizedEmail);
 
-    if (error) {
-      setError(error.message);
+      // ✅ Then sign in with Supabase (NO captchaToken here, since Supabase captcha is OFF)
+      const { error } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+
+      if (error) throw new Error(error.message);
+
+      router.replace("/");
+      setCaptchaToken(null);
+      setShowCaptcha(false);
+    } catch (err: any) {
+      setError(err?.message || "Login failed");
+      setCaptchaToken(null);
+      setShowCaptcha(false);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    // ✅ Redirect after successful login
-    router.replace("/");
-    setLoading(false);
-    setCaptchaToken(null);
-    setShowCaptcha(false);
   }
 
   async function handleResetPassword() {
-    const normalizedEmail = email.trim().toLowerCase();
-    const isReviewer = ALL_REVIEWER_EMAILS.includes(normalizedEmail);
+    setError("");
+    setResetSent(false);
 
-    if (!isReviewer && !captchaToken) {
-      setShowCaptcha(true);
-      return;
-    }
+    const normalizedEmail = normalizeEmail(email);
+    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
 
     if (!email) {
       setError("Enter your email first.");
       return;
     }
 
+    if (!bypass && !captchaToken) {
+      setShowCaptcha(true);
+      return;
+    }
+
     setLoading(true);
-    setError("");
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "https://tonemender.com/reset-password",
-      captchaToken: isReviewer ? undefined : captchaToken,
-    });
+    try {
+      // ✅ Verify Turnstile server-side (or bypass)
+      await verifyTurnstileOrBypass(normalizedEmail);
 
-    setLoading(false);
-    setResetSent(true);
-    setCaptchaToken(null);
-    setShowCaptcha(false);
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+        redirectTo: "https://tonemender.com/reset-password",
+      });
+
+      if (error) throw new Error(error.message);
+
+      setResetSent(true);
+      setCaptchaToken(null);
+      setShowCaptcha(false);
+    } catch (err: any) {
+      setError(err?.message || "Password reset failed");
+      setCaptchaToken(null);
+      setShowCaptcha(false);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -114,6 +158,7 @@ export default function LoginPage() {
         >
           ← Back to home
         </Link>
+
         <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
 
         {error && <p className="text-red-500">{error}</p>}
@@ -137,7 +182,7 @@ export default function LoginPage() {
             required
           />
 
-          {!isReviewerEmail && showCaptcha && (
+          {!isBypassEmail && showCaptcha && (
             <Turnstile
               sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
               theme="light"
