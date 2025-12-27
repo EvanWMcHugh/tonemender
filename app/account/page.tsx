@@ -70,16 +70,34 @@ export default function AccountPage() {
   }
 
   async function deleteAccount() {
-    const ok = confirm("Delete your ENTIRE account permanently?");
-    if (!ok) return;
+  const ok = confirm("Delete your ENTIRE account permanently?");
+  if (!ok) return;
 
-    const { data: user } = await supabase.auth.getUser();
-    if (!user.user) return;
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
 
-    await supabase.auth.admin.deleteUser(user.user.id);
-    alert("Account deleted.");
-    router.push("/");
+  if (!token) {
+    alert("You must be logged in.");
+    return;
   }
+
+  const res = await fetch("/api/delete-account", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+
+  const json = await res.json();
+
+  if (!res.ok) {
+    alert(json.error || "Failed to delete account.");
+    return;
+  }
+
+  alert("Account deleted.");
+  // Supabase session is now invalid; go home/landing
+  router.push("/");
+}
 
   async function openBillingPortal() {
     const { data } = await supabase.auth.getSession();

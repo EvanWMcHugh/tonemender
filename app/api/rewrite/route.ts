@@ -55,7 +55,12 @@ export async function POST(request: Request) {
 
     // -------- MIDNIGHT RESET CHECK (LOCAL DAILY RESET) --------
     if (profile && !profile.is_pro) {
-      const today = new Date().toISOString().split("T")[0];
+      const today = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+}).format(new Date()); // yields YYYY-MM-DD
 
       if (profile.last_reset_date !== today) {
         await supabaseServer

@@ -26,7 +26,7 @@ export default function LoginPage() {
     async function checkSession() {
       const { data } = await supabase.auth.getSession();
       if (data?.session?.user) {
-        router.replace("/page"); // redirect if already logged in
+        router.replace("/"); // redirect if already logged in
       }
     }
     checkSession();
@@ -71,7 +71,7 @@ export default function LoginPage() {
     }
 
     // ✅ Redirect after successful login
-    router.replace("/page");
+    router.replace("/");
     setLoading(false);
     setCaptchaToken(null);
     setShowCaptcha(false);

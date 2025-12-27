@@ -22,7 +22,7 @@ export default function ResetPasswordPage() {
 
     // Optional: if user somehow logs in during recovery, redirect
     if (event === "SIGNED_IN" && session?.user) {
-      router.replace("/page"); // replace with your main logged-in page
+      router.replace("/"); // replace with your main logged-in page
     }
   });
 

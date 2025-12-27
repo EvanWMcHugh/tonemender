@@ -22,7 +22,7 @@ export default function SignupPage() {
     async function checkSession() {
       const { data } = await supabase.auth.getSession();
       if (data?.session?.user) {
-        router.replace("/page"); // redirect if already logged in
+        router.replace("/"); // redirect if already logged in
       }
     }
     checkSession();
@@ -59,7 +59,7 @@ export default function SignupPage() {
 
     // ✅ If user is immediately logged in (no email confirmation), redirect to main page
     if (data.user) {
-      router.replace("/page");
+      router.replace("/");
     } else {
       // If email confirmation required, go to check-email page
       router.replace("/check-email");

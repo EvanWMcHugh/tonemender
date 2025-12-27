@@ -18,7 +18,10 @@ export default function LogoutButton() {
       });
 
     // Optional: clear localStorage if Supabase stored anything
-    localStorage.clear();
+    // Only remove Supabase-related keys if they exist
+Object.keys(localStorage).forEach((k) => {
+  if (k.startsWith("sb-")) localStorage.removeItem(k);
+});
 
     // Redirect to home page
     window.location.href = "/";

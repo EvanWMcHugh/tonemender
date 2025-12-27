@@ -262,7 +262,7 @@ export default function RewritePage() {
 
     const insertData: any = {
       user_id: user.id,
-      original: message,
+      original: originalMessageSnapshot || message,
       tone,
     };
 

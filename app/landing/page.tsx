@@ -16,7 +16,7 @@ export default function MarketingLandingPage() {
   const checkSession = async () => {
     const { data } = await supabase.auth.getSession();
     if (data.session?.user) {
-      router.replace("/page"); // redirect to your logged-in page
+      router.replace("/"); // redirect to your logged-in page
     } else {
       setChecking(false); // show marketing page
     }
@@ -27,7 +27,7 @@ export default function MarketingLandingPage() {
   // 2️⃣ Listen for login events
   const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
     if (session?.user) {
-      router.replace("/page"); // redirect to logged-in page
+      router.replace("/"); // redirect to logged-in page
     }
   });
 

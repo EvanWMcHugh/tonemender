@@ -7,6 +7,9 @@ export const runtime = "nodejs";
 // No API version here — Stripe uses default stable version
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
+const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY!;
+const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SECRET_KEY!
@@ -40,8 +43,13 @@ export async function POST(req: Request) {
 
     const subscriptionId = session.subscription;
     const customerId = session.customer;
-    const priceId = session.amount_total === 799 ? "monthly" : "yearly";
+    const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+const stripePriceId = lineItems.data[0]?.price?.id;
 
+const plan_type =
+  stripePriceId === PRICE_MONTHLY ? "monthly" :
+  stripePriceId === PRICE_YEARLY ? "yearly" :
+  null;
     // Store in profiles
     await supabase
       .from("profiles")
@@ -50,7 +58,7 @@ export async function POST(req: Request) {
         is_pro: true,
         stripe_customer_id: customerId,
         stripe_subscription_id: subscriptionId,
-        plan_type: priceId,
+        plan_type,
       });
 
     console.log("✅ User upgraded:", userId);
@@ -64,8 +72,12 @@ export async function POST(req: Request) {
 
     const customerId = sub.customer;
     const subscriptionId = sub.id;
-    const priceId =
-      sub.items.data[0].price.unit_amount === 799 ? "monthly" : "yearly";
+    const stripePriceId = sub.items.data[0]?.price?.id;
+
+const plan_type =
+  stripePriceId === PRICE_MONTHLY ? "monthly" :
+  stripePriceId === PRICE_YEARLY ? "yearly" :
+  null;
 
     // Look up user from profiles
     const { data: profile } = await supabase
@@ -81,7 +93,7 @@ export async function POST(req: Request) {
       .update({
         is_pro: true,
         stripe_subscription_id: subscriptionId,
-        plan_type: priceId,
+        plan_type,
       })
       .eq("id", profile.id);
 
@@ -96,8 +108,12 @@ export async function POST(req: Request) {
 
     const customerId = sub.customer;
     const subscriptionId = sub.id;
-    const priceId =
-      sub.items.data[0].price.unit_amount === 799 ? "monthly" : "yearly";
+    const stripePriceId = sub.items.data[0]?.price?.id;
+
+const plan_type =
+  stripePriceId === PRICE_MONTHLY ? "monthly" :
+  stripePriceId === PRICE_YEARLY ? "yearly" :
+  null;
 
     const status = sub.status;
 
@@ -114,7 +130,7 @@ export async function POST(req: Request) {
       .update({
         is_pro: status === "active" || status === "trialing",
         stripe_subscription_id: subscriptionId,
-        plan_type: priceId,
+        plan_type,
       })
       .eq("id", profile.id);
 
