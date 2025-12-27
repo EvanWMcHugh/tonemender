@@ -1,228 +1,165 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { supabase } from "../../lib/supabase";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import { supabase } from "../../lib/supabase";
 
-const Turnstile = dynamic(() => import("react-turnstile"), {
-  ssr: false,
-});
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
-// ✅ Only these are excluded from captcha
-const CAPTCHA_BYPASS_EMAILS = new Set([
-  "pro@tonemender.com",
-  "free@tonemender.com",
-]);
-
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
-}
+const CAPTCHA_ALLOWLIST = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
 export default function LoginPage() {
   const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
-  const [resetSent, setResetSent] = useState(false);
-
-  const [isBypassEmail, setIsBypassEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function checkSession() {
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) router.replace("/");
-    }
-    checkSession();
-  }, [router]);
+  // "signin" means: user clicked login and we’re waiting for captcha
+  const [pendingAction, setPendingAction] = useState<null | "signin">(null);
 
-  useEffect(() => {
-    const normalized = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalized);
-    setIsBypassEmail(bypass);
+  const normalizedEmail = useMemo(() => email.trim().toLowerCase(), [email]);
+  const isAllowlisted = CAPTCHA_ALLOWLIST.has(normalizedEmail);
 
-    // Always reset captcha when email changes
-    setShowCaptcha(false);
-    setCaptchaToken(null);
-  }, [email]);
-
-  async function verifyTurnstileOrBypass(normalizedEmail: string) {
-    const resp = await fetch("/api/turnstile/verify", {
+  async function verifyTurnstile(token: string) {
+    const res = await fetch("/api/turnstile/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: normalizedEmail,
-        token: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : captchaToken,
-      }),
+      body: JSON.stringify({ token, email: normalizedEmail }),
     });
 
-    const json = await resp.json().catch(() => ({}));
-
-    if (!resp.ok || !json?.ok) {
-      throw new Error(json?.error || "Captcha verification failed");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.success) {
+      throw new Error(data?.error || "Captcha verification failed. Please try again.");
     }
   }
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
+  async function runSignIn() {
     setError("");
-    setResetSent(false);
-
-    const normalizedEmail = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
-
-    // If not bypass and no token yet, show captcha first
-    if (!bypass && !captchaToken) {
-      setShowCaptcha(true);
-      return;
-    }
-
     setLoading(true);
-
     try {
-      // ✅ Verify Turnstile server-side (or bypass)
-      await verifyTurnstileOrBypass(normalizedEmail);
-
-      // ✅ Then sign in with Supabase (NO captchaToken here, since Supabase captcha is OFF)
-      const { error } = await supabase.auth.signInWithPassword({
+      const { error: signInError } = await supabase.auth.signInWithPassword({
         email: normalizedEmail,
         password,
       });
+      if (signInError) throw signInError;
 
-      if (error) throw new Error(error.message);
-
-      router.replace("/");
-      setCaptchaToken(null);
-      setShowCaptcha(false);
-    } catch (err: any) {
-      setError(err?.message || "Login failed");
-      setCaptchaToken(null);
-      setShowCaptcha(false);
+      router.push("/"); // your logged-in route
+    } catch (e: any) {
+      setError(e?.message || "Sign in failed.");
+      // If sign-in failed, you might want to let them retry captcha:
+      // setShowCaptcha(false); setCaptchaToken(null); setPendingAction(null);
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleResetPassword() {
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setError("");
-    setResetSent(false);
 
-    const normalizedEmail = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
-
-    if (!email) {
-      setError("Enter your email first.");
+    if (!normalizedEmail || !password) {
+      setError("Please enter your email and password.");
       return;
     }
 
-    if (!bypass && !captchaToken) {
+    // Allowlisted users bypass captcha entirely
+    if (isAllowlisted) {
+      await runSignIn();
+      return;
+    }
+
+    // Not allowlisted: only show captcha AFTER click
+    if (!captchaToken) {
+      setPendingAction("signin");
       setShowCaptcha(true);
       return;
     }
 
+    // If we already have a token (e.g. user completed captcha earlier), verify + sign in
     setLoading(true);
-
     try {
-      // ✅ Verify Turnstile server-side (or bypass)
-      await verifyTurnstileOrBypass(normalizedEmail);
-
-      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: "https://tonemender.com/reset-password",
-      });
-
-      if (error) throw new Error(error.message);
-
-      setResetSent(true);
+      await verifyTurnstile(captchaToken);
+      await runSignIn();
+    } catch (e: any) {
+      setError(e?.message || "Captcha verification failed.");
+      // Force a fresh captcha
       setCaptchaToken(null);
-      setShowCaptcha(false);
-    } catch (err: any) {
-      setError(err?.message || "Password reset failed");
-      setCaptchaToken(null);
-      setShowCaptcha(false);
+      setPendingAction("signin");
+      setShowCaptcha(true);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function onTurnstileVerify(token: string) {
+    setCaptchaToken(token);
+
+    // Auto-run the pending action right after captcha success
+    if (pendingAction === "signin") {
+      setLoading(true);
+      setError("");
+      try {
+        await verifyTurnstile(token);
+        await runSignIn();
+      } catch (e: any) {
+        setError(e?.message || "Captcha verification failed.");
+        setCaptchaToken(null);
+      } finally {
+        setLoading(false);
+        setPendingAction(null);
+      }
     }
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-white">
-      <div className="w-[360px]">
-        <Link
-          href="/landing"
-          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
-        >
-          ← Back to home
-        </Link>
+    <div>
+      <h1>Sign in</h1>
 
-        <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
+      <form onSubmit={handleSubmit}>
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email"
+          type="email"
+          autoComplete="email"
+        />
+        <input
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          type="password"
+          autoComplete="current-password"
+        />
 
-        {error && <p className="text-red-500">{error}</p>}
-
-        <form onSubmit={handleLogin} className="flex flex-col gap-3">
-          <input
-            type="email"
-            placeholder="Email"
-            className="border p-2 rounded"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-
-          <input
-            type="password"
-            placeholder="Password"
-            className="border p-2 rounded"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-
-          {!isBypassEmail && showCaptcha && (
+        {!isAllowlisted && showCaptcha && (
+          <div style={{ marginTop: 12 }}>
             <Turnstile
               sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-              theme="light"
-              onSuccess={(token) => setCaptchaToken(token)}
+              onVerify={onTurnstileVerify}
               onExpire={() => setCaptchaToken(null)}
               onError={() => setCaptchaToken(null)}
             />
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded"
-          >
-            {loading ? "Logging in..." : "Login"}
-          </button>
-        </form>
-
-        <button
-          type="button"
-          onClick={handleResetPassword}
-          disabled={loading}
-          className="mt-3 text-sm text-blue-600 underline text-center w-full"
-        >
-          Forgot your password?
-        </button>
-
-        {resetSent && (
-          <p className="mt-2 text-sm text-green-600 text-center">
-            ✅ Password reset email sent
-          </p>
+          </div>
         )}
 
-        <p className="mt-4 text-center text-sm">
-          Don’t have an account?{" "}
-          <a href="/sign-up" className="text-blue-600 underline">
-            Sign Up
-          </a>
-        </p>
-      </div>
-    </main>
+        {error && <p style={{ color: "red" }}>{error}</p>}
+
+        <button type="submit" disabled={loading}>
+          {loading ? "Signing in..." : "Login"}
+        </button>
+      </form>
+
+      <p>
+        Don’t have an account? <Link href="/sign-up">Sign up</Link>
+      </p>
+    </div>
   );
 }

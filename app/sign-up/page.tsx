@@ -1,131 +1,158 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { supabase } from "../../lib/supabase"; // ✅ import supabase
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import { supabase } from "../../lib/supabase";
 
-const Turnstile = dynamic(() => import("react-turnstile"), {
-  ssr: false,
-});
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
-export default function SignupPage() {
+const CAPTCHA_ALLOWLIST = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+
+export default function SignUpPage() {
   const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const [showCaptcha, setShowCaptcha] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<null | "signup">(null);
 
-  useEffect(() => {
-    async function checkSession() {
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) {
-        router.replace("/"); // redirect if already logged in
-      }
+  const normalizedEmail = useMemo(() => email.trim().toLowerCase(), [email]);
+  const isAllowlisted = CAPTCHA_ALLOWLIST.has(normalizedEmail);
+
+  async function verifyTurnstile(token: string) {
+    const res = await fetch("/api/turnstile/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, email: normalizedEmail }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.success) {
+      throw new Error(data?.error || "Captcha verification failed. Please try again.");
     }
-    checkSession();
-  }, [router]);
+  }
 
-  async function handleSignup(e: React.FormEvent) {
-    e.preventDefault();
+  async function runSignUp() {
     setError("");
     setLoading(true);
+    try {
+      const { error: signUpError } = await supabase.auth.signUp({
+        email: normalizedEmail,
+        password,
+        // options: { emailRedirectTo: `${location.origin}/confirm` } // if you use it
+      });
+      if (signUpError) throw signUpError;
 
-    // ✅ Email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-    if (!emailRegex.test(email)) {
-      setError("Please enter a valid email address");
+      // If you require email confirmation, route to your “check email” page
+      router.push("/check-email");
+    } catch (e: any) {
+      setError(e?.message || "Sign up failed.");
+    } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+
+    if (!normalizedEmail || !password) {
+      setError("Please enter your email and password.");
       return;
     }
 
-    // ✅ Direct client-side signup
-    const { data, error } = await supabase.auth.signUp({
-  email,
-  password,
-  options: {
-    captchaToken,
-    emailRedirectTo: "https://tonemender.com/check-email", // ✅ new correct key
-  },
-});
-
-    if (error) {
-      setError(error.message);
-      setLoading(false);
+    if (isAllowlisted) {
+      await runSignUp();
       return;
     }
 
-    // ✅ If user is immediately logged in (no email confirmation), redirect to main page
-    if (data.user) {
-      router.replace("/");
-    } else {
-      // If email confirmation required, go to check-email page
-      router.replace("/check-email");
+    if (!captchaToken) {
+      setPendingAction("signup");
+      setShowCaptcha(true);
+      return;
     }
 
-    setLoading(false);
-    setCaptchaToken(null);
+    setLoading(true);
+    try {
+      await verifyTurnstile(captchaToken);
+      await runSignUp();
+    } catch (e: any) {
+      setError(e?.message || "Captcha verification failed.");
+      setCaptchaToken(null);
+      setPendingAction("signup");
+      setShowCaptcha(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onTurnstileVerify(token: string) {
+    setCaptchaToken(token);
+
+    if (pendingAction === "signup") {
+      setLoading(true);
+      setError("");
+      try {
+        await verifyTurnstile(token);
+        await runSignUp();
+      } catch (e: any) {
+        setError(e?.message || "Captcha verification failed.");
+        setCaptchaToken(null);
+      } finally {
+        setLoading(false);
+        setPendingAction(null);
+      }
+    }
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-white">
-      <div className="w-[360px]">
-        <Link
-          href="/landing"
-          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
-        >
-          ← Back to home
-        </Link>
-        <h1 className="text-2xl font-bold mb-4 text-center">Create Account</h1>
+    <div>
+      <h1>Sign up</h1>
 
-        {error && <p className="text-red-500 mb-2">{error}</p>}
+      <form onSubmit={handleSubmit}>
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email"
+          type="email"
+          autoComplete="email"
+        />
+        <input
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          type="password"
+          autoComplete="new-password"
+        />
 
-        <form onSubmit={handleSignup} className="flex flex-col gap-3">
-          <input
-            type="email"
-            placeholder="Email"
-            className="border p-2 rounded"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
+        {!isAllowlisted && showCaptcha && (
+          <div style={{ marginTop: 12 }}>
+            <Turnstile
+              sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+              onVerify={onTurnstileVerify}
+              onExpire={() => setCaptchaToken(null)}
+              onError={() => setCaptchaToken(null)}
+            />
+          </div>
+        )}
 
-          <input
-            type="password"
-            placeholder="Password"
-            className="border p-2 rounded"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+        {error && <p style={{ color: "red" }}>{error}</p>}
 
-          <Turnstile
-            sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-            theme="light"
-            size="normal"
-            onSuccess={(token) => setCaptchaToken(token)}
-            onExpire={() => setCaptchaToken(null)}
-            onError={() => setCaptchaToken(null)}
-          />
+        <button type="submit" disabled={loading}>
+          {loading ? "Creating account..." : "Sign up"}
+        </button>
+      </form>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-green-600 text-white p-2 rounded"
-          >
-            {loading ? "Creating..." : "Sign Up"}
-          </button>
-        </form>
-
-        <p className="mt-4 text-center text-sm">
-          Already have an account?{" "}
-          <a href="/sign-in" className="text-blue-600 underline">
-            Sign In
-          </a>
-        </p>
-      </div>
-    </main>
+      <p>
+        Already have an account? <Link href="/sign-in">Sign in</Link>
+      </p>
+    </div>
   );
 }
