@@ -11,6 +11,7 @@
     "@capacitor/android": "^7.4.4",
     "@capacitor/cli": "^7.4.4",
     "@capacitor/core": "^7.4.4",
+    "@react-email/render": "^2.0.4",
     "@supabase/supabase-js": "^2.86.0",
     "framer-motion": "^12.23.25",
     "html2canvas": "^1.4.1",
