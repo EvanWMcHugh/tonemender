@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Toast from "../components/Toast";
@@ -13,26 +13,30 @@ type ToneKey = "soft" | "calm" | "clear";
 export default function RewritePage() {
   const router = useRouter();
 
-  // Auth state
+  // ---------------------------------------------------------
+  // AUTH / PLAN
+  // ---------------------------------------------------------
   const [ready, setReady] = useState(false);
-
-  // Pro status
   const [isPro, setIsPro] = useState(false);
 
-  // Rewrite state
+  // ---------------------------------------------------------
+  // INPUTS
+  // ---------------------------------------------------------
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
   const [tone, setTone] = useState("");
 
-  // If user clicks "Use This", keep original
+  // ---------------------------------------------------------
+  // TOGGLE: original <-> used rewrite
+  // ---------------------------------------------------------
   const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
+  const [usedRewriteText, setUsedRewriteText] = useState("");
   const [usedRewrite, setUsedRewrite] = useState(false);
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [limitReached, setLimitReached] = useState(false);
-
-  const [results, setResults] = useState<{ soft: string; calm: string; clear: string }>({
+  // ---------------------------------------------------------
+  // RESULTS / METADATA
+  // ---------------------------------------------------------
+  const [results, setResults] = useState<Record<ToneKey, string>>({
     soft: "",
     calm: "",
     clear: "",
@@ -41,9 +45,17 @@ export default function RewritePage() {
   const [toneScore, setToneScore] = useState<number | null>(null);
   const [emotion, setEmotion] = useState("");
 
+  // ---------------------------------------------------------
+  // UI STATE
+  // ---------------------------------------------------------
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [limitReached, setLimitReached] = useState(false);
   const [toast, setToast] = useState("");
 
-  // Before/After share card
+  // ---------------------------------------------------------
+  // SHARE CARD
+  // ---------------------------------------------------------
   const [originalForCard, setOriginalForCard] = useState("");
   const [rewrittenForCard, setRewrittenForCard] = useState("");
   const shareCardRef = useRef<HTMLDivElement | null>(null);
@@ -52,6 +64,10 @@ export default function RewritePage() {
     if (typeof window !== "undefined" && "vibrate" in navigator) {
       navigator.vibrate(ms);
     }
+  }
+
+  function normalizeEmail(email: string | null) {
+    return (email ?? "").trim().toLowerCase();
   }
 
   // ---------------------------------------------------------
@@ -70,7 +86,6 @@ export default function RewritePage() {
           return;
         }
 
-        // Check Pro
         const { data: profile } = await supabase
           .from("profiles")
           .select("is_pro")
@@ -79,7 +94,8 @@ export default function RewritePage() {
 
         if (cancelled) return;
 
-        setIsPro(Boolean(profile?.is_pro) || isProReviewer(user.email ?? null));
+        const email = normalizeEmail(user.email ?? null);
+        setIsPro(Boolean(profile?.is_pro) || isProReviewer(email));
         setReady(true);
       } catch (err) {
         console.error("REWRITE AUTH LOAD ERROR:", err);
@@ -104,15 +120,47 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // HANDLE REWRITE
+  // HELPERS
   // ---------------------------------------------------------
-  async function handleRewrite() {
+  function resetUiForNewRewrite() {
     setError("");
     setLimitReached(false);
     setToneScore(null);
     setEmotion("");
-    setResults({ soft: "", calm: "", clear: "" });
     setToast("");
+    setResults({ soft: "", calm: "", clear: "" });
+  }
+
+  // Capture original snapshot once per “session”.
+  // We keep it until user edits the textarea in a way that makes the snapshot stale.
+  function ensureOriginalSnapshot(current: string) {
+    if (!originalMessageSnapshot) {
+      setOriginalMessageSnapshot(current);
+    }
+  }
+
+  function clearToggleSessionIfUserEdits(newValue: string) {
+    // If user manually edits the textarea, the previous “used rewrite” and snapshot
+    // may no longer represent a clean toggle pair. Reset toggle session.
+    if (!originalMessageSnapshot) return;
+
+    // If they're editing while viewing original or used rewrite, we consider this a new session.
+    // Only clear if they typed something different from both snapshot and used text.
+    const isDifferentFromOriginal = newValue !== originalMessageSnapshot;
+    const isDifferentFromUsed = usedRewriteText ? newValue !== usedRewriteText : true;
+
+    if (isDifferentFromOriginal && isDifferentFromUsed) {
+      setOriginalMessageSnapshot("");
+      setUsedRewriteText("");
+      setUsedRewrite(false);
+    }
+  }
+
+  // ---------------------------------------------------------
+  // HANDLE REWRITE
+  // ---------------------------------------------------------
+  async function handleRewrite() {
+    resetUiForNewRewrite();
     setLoading(true);
 
     const trimmedMessage = message.trim();
@@ -131,10 +179,10 @@ export default function RewritePage() {
         setError("Please paste a message to rewrite.");
         return;
       }
-      // ✅ Save original message so Revert works even if user never clicks "Use This"
-      if (!originalMessageSnapshot) {
-        setOriginalMessageSnapshot(trimmedMessage);
-      }
+
+      // ✅ Ensure revert/toggle works even if user never clicks “Use This”
+      ensureOriginalSnapshot(trimmedMessage);
+
       const finalRecipient = isPro ? recipient : "default";
       const finalTone = isPro ? tone : "default";
 
@@ -142,8 +190,7 @@ export default function RewritePage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // Prefer header auth (your API supports it)
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${token}`, // header-first auth
         },
         body: JSON.stringify({
           message: trimmedMessage,
@@ -169,7 +216,7 @@ export default function RewritePage() {
         return;
       }
 
-      const newResults = {
+      const newResults: Record<ToneKey, string> = {
         soft: String(json.soft ?? "").trim(),
         calm: String(json.calm ?? "").trim(),
         clear: String(json.clear ?? "").trim(),
@@ -182,16 +229,17 @@ export default function RewritePage() {
       setEmotion(String(json.emotion_prediction ?? "").trim());
 
       const chosenToneKey: ToneKey = isPro
-        ? (finalTone === "default" ? "soft" : (finalTone as ToneKey))
+        ? ((finalTone === "default" ? "soft" : finalTone) as ToneKey)
         : "soft";
 
       const chosenText =
-        (newResults as any)[chosenToneKey] ||
+        newResults[chosenToneKey] ||
         newResults.soft ||
         newResults.calm ||
         newResults.clear ||
         "";
 
+      // Share card content
       setOriginalForCard(trimmedMessage);
       setRewrittenForCard(chosenText);
 
@@ -205,7 +253,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // SAVE, COPY, USE
+  // COPY, USE, TOGGLE
   // ---------------------------------------------------------
   async function copyToClipboard(text: string) {
     if (!text) {
@@ -224,10 +272,15 @@ export default function RewritePage() {
   function useThis(text: string) {
     if (!text) return;
 
-    if (!usedRewrite) {
+    // Capture original only once
+    if (!originalMessageSnapshot) {
       setOriginalMessageSnapshot(message);
     }
 
+    // Remember the used rewrite so we can toggle
+    setUsedRewriteText(text);
+
+    // Put rewrite into textarea
     setMessage(text);
     setUsedRewrite(true);
 
@@ -235,24 +288,29 @@ export default function RewritePage() {
     vibrate(10);
   }
 
-  function revertToOriginal() {
+  // Toggle behavior: when not original, show button that takes you to original.
+  // If user wants to go back to rewrite, they can hit "Use This" again OR we can
+  // provide an optional “Back to rewrite” button — see below.
+  function toggleToOriginal() {
     if (!originalMessageSnapshot) return;
 
-    // Restore original text
     setMessage(originalMessageSnapshot);
-
-    // Reset rewrite state so UI matches reality
-    setResults({ soft: "", calm: "", clear: "" });
-    setOriginalForCard("");
-    setRewrittenForCard("");
-
-    // Clear snapshot + flags
-    setOriginalMessageSnapshot("");
     setUsedRewrite(false);
-
     vibrate(15);
   }
 
+  // Optional: toggle back to used rewrite (handy once you're viewing original)
+  function toggleToRewrite() {
+    if (!usedRewriteText) return;
+
+    setMessage(usedRewriteText);
+    setUsedRewrite(true);
+    vibrate(15);
+  }
+
+  // ---------------------------------------------------------
+  // SAVE
+  // ---------------------------------------------------------
   async function saveMessage(text: string, toneKey: ToneKey) {
     const { data } = await supabase.auth.getSession();
     const user = data.session?.user;
@@ -287,7 +345,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // SHARE HANDLERS
+  // SHARE
   // ---------------------------------------------------------
   async function shareApp() {
     const url = "https://tonemender.com";
@@ -312,14 +370,14 @@ export default function RewritePage() {
 
   async function shareRewrite() {
     const key: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
-    const current = (results as any)[key] || results.soft;
+    const current = results[key] || results.soft;
 
     if (!current) {
       setToast("Rewrite a message first.");
       return;
     }
 
-    const beforeText = (usedRewrite ? originalMessageSnapshot : message).trim();
+    const beforeText = (usedRewrite && originalMessageSnapshot ? originalMessageSnapshot : message).trim();
     const shareText = `Before:\n${beforeText}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
 
     try {
@@ -382,13 +440,22 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // UI — FINAL RENDER
+  // UI
   // ---------------------------------------------------------
   const displayKey: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
-  const displayText = (results as any)[displayKey] || results.soft;
+  const displayText = results[displayKey] || results.soft;
 
-  const rewriteButtonDisabled =
-    loading || !message.trim() || (isPro && (!recipient || !tone));
+  const rewriteButtonDisabled = loading || !message.trim() || (isPro && (!recipient || !tone));
+
+  // Show a button only when textarea is NOT original.
+  const showRevertButton =
+    !!originalMessageSnapshot && message !== originalMessageSnapshot;
+
+  // Optional “Back to rewrite” button when viewing original but we have a used rewrite stored
+  const showBackToRewriteButton =
+    !!originalMessageSnapshot &&
+    message === originalMessageSnapshot &&
+    !!usedRewriteText;
 
   return (
     <main className="w-full max-w-2xl">
@@ -444,23 +511,48 @@ export default function RewritePage() {
           {/* Original message */}
           <div className="mb-4">
             <label className="block mb-2 text-sm font-medium text-slate-700">
-              Your original message
+              Your message
             </label>
+
             <textarea
               className="border border-slate-300 bg-slate-50 focus:bg-white focus:border-blue-500 transition-colors p-3 w-full rounded-2xl min-h-[130px] text-sm"
               placeholder='Example: "I’m so tired of you ignoring my texts."'
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setMessage(v);
+                clearToggleSessionIfUserEdits(v);
+              }}
             />
-          {originalMessageSnapshot && (
-            <button
-              type="button"
-              onClick={revertToOriginal}
-              className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
-            >
-              Revert to original message
-            </button>
-          )}
+
+            <div className="mt-2 flex flex-wrap gap-3">
+              {showRevertButton && (
+                <button
+                  type="button"
+                  onClick={toggleToOriginal}
+                  className="text-xs text-slate-600 underline hover:text-slate-800"
+                >
+                  View original message
+                </button>
+              )}
+
+              {showBackToRewriteButton && (
+                <button
+                  type="button"
+                  onClick={toggleToRewrite}
+                  className="text-xs text-slate-600 underline hover:text-slate-800"
+                >
+                  Back to used rewrite
+                </button>
+              )}
+
+              {/* Optional helper badge */}
+              {originalMessageSnapshot && (
+                <span className="text-[11px] text-slate-500">
+                  {message === originalMessageSnapshot ? "Viewing: Original" : "Viewing: Edited/Rewrite"}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Relationship & Tone */}
