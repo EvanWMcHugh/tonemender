@@ -11,6 +11,7 @@ export default function ConfirmPage() {
   const token = searchParams.get("token");
 
   const [status, setStatus] = useState<Status>("loading");
+  const [message, setMessage] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -18,6 +19,7 @@ export default function ConfirmPage() {
     async function confirm() {
       if (!token) {
         setStatus("error");
+        setMessage("Missing token.");
         return;
       }
 
@@ -28,12 +30,29 @@ export default function ConfirmPage() {
           body: JSON.stringify({ token }),
         });
 
+        let json: any = {};
+        try {
+          json = await res.json();
+        } catch {
+          json = {};
+        }
+
         if (cancelled) return;
 
-        setStatus(res.ok ? "success" : "error");
+        if (res.ok && json?.success) {
+          setStatus("success");
+          setMessage("");
+          return;
+        }
+
+        setStatus("error");
+        setMessage(json?.error || "This confirmation link is invalid or expired.");
       } catch (err) {
         console.error("CONFIRM PAGE ERROR:", err);
-        if (!cancelled) setStatus("error");
+        if (!cancelled) {
+          setStatus("error");
+          setMessage("This confirmation link is invalid or expired.");
+        }
       }
     }
 
@@ -61,10 +80,7 @@ export default function ConfirmPage() {
           </p>
 
           <div className="mt-6 flex flex-col gap-3 items-center">
-            <Link
-              href="/landing"
-              className="text-sm text-slate-600 hover:underline"
-            >
+            <Link href="/landing" className="text-sm text-slate-600 hover:underline">
               Back to home
             </Link>
           </div>
@@ -77,7 +93,7 @@ export default function ConfirmPage() {
     <main className="min-h-screen flex items-center justify-center bg-white">
       <div className="text-center px-6">
         <p className="text-red-600 font-semibold text-lg">
-          ❌ This confirmation link is invalid or expired.
+          ❌ {message || "This confirmation link is invalid or expired."}
         </p>
 
         <div className="mt-6 flex flex-col gap-3 items-center">

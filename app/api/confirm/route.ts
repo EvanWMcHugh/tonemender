@@ -1,19 +1,8 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { sha256 } from "@/lib/authTokens";
 
 export const runtime = "nodejs";
-
-const supabaseServer = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -37,11 +26,13 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
-    // Look up subscriber by confirm_token
-    const { data, error } = await supabaseServer
+    const tokenHash = sha256(token);
+
+    // Look up subscriber by confirm_token_hash
+    const { data, error } = await supabaseAdmin
       .from("newsletter_subscribers")
       .select("id, email, confirmed")
-      .eq("confirm_token", token)
+      .eq("confirm_token_hash", tokenHash)
       .single();
 
     if (error || !data) {
@@ -53,12 +44,12 @@ export async function POST(req: Request) {
       return jsonNoStore({ success: true, email: data.email });
     }
 
-    const { error: updateError } = await supabaseServer
+    const { error: updateError } = await supabaseAdmin
       .from("newsletter_subscribers")
       .update({
         confirmed: true,
         confirmed_at: new Date().toISOString(),
-        confirm_token: null,
+        confirm_token_hash: null,
       })
       .eq("id", data.id);
 
@@ -69,9 +60,6 @@ export async function POST(req: Request) {
     return jsonNoStore({ success: true, email: data.email });
   } catch (err) {
     console.error("CONFIRM ERROR:", err);
-    return jsonNoStore(
-      { error: "Server error while confirming" },
-      { status: 500 }
-    );
+    return jsonNoStore({ error: "Server error while confirming" }, { status: 500 });
   }
 }
