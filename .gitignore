@@ -1,6 +1,32 @@
+# =========================
+# Node / Next.js
+# =========================
 node_modules/
 .next/
-.env.local
-.env
-*.log
 dist/
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.local
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Android Studio / IntelliJ
+# (safe to ignore – NEVER delete real app files)
+# =========================
+android/.idea/
+android/.gradle/
+android/**/build/
+android/local.properties
+
+# =========================
+# OS junk
+# =========================
+.DS_Store
+Thumbs.db
