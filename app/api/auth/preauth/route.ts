@@ -19,10 +19,7 @@ export async function POST(req: Request) {
     const token = body?.token;
 
     if (!email || typeof email !== "string") {
-      return NextResponse.json(
-        { ok: false, error: "Missing email" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Missing email" }, { status: 400 });
     }
 
     // ✅ Bypass for internal accounts
@@ -32,10 +29,7 @@ export async function POST(req: Request) {
 
     // Everyone else must pass Turnstile
     if (!token || typeof token !== "string") {
-      return NextResponse.json(
-        { ok: false, error: "Captcha required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Captcha required" }, { status: 400 });
     }
 
     const secret = process.env.TURNSTILE_SECRET_KEY;
@@ -46,26 +40,21 @@ export async function POST(req: Request) {
       );
     }
 
-    // Cloudflare expects form-encoded body
     const formData = new FormData();
     formData.append("secret", secret);
     formData.append("response", token);
 
-    // (Optional) Send IP if present (helps Turnstile scoring in some setups)
+    // Optional IP forwarding
     const forwardedFor = req.headers.get("x-forwarded-for");
     const cfIp = req.headers.get("cf-connecting-ip");
     const ip = (cfIp ?? forwardedFor)?.split(",")[0]?.trim();
     if (ip) formData.append("remoteip", ip);
 
-    const resp = await fetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        body: formData,
-        // Avoid caching any verification results
-        cache: "no-store",
-      }
-    );
+    const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      body: formData,
+      cache: "no-store",
+    });
 
     if (!resp.ok) {
       return NextResponse.json(
@@ -77,7 +66,6 @@ export async function POST(req: Request) {
     const data: any = await resp.json().catch(() => null);
 
     if (!data?.success) {
-      // Do not echo the full response payload back (it can contain info you don’t want to leak)
       return NextResponse.json(
         {
           ok: false,
@@ -90,9 +78,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true });
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "Invalid request" },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: "Invalid request" }, { status: 400 });
   }
 }

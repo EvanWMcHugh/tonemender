@@ -65,28 +65,6 @@ export default function SignUpPage() {
     setPendingAction(null);
   }
 
-  async function verifyTurnstileOrBypass(emailToVerify: string, token: string | null) {
-    const resp = await fetch("/api/turnstile/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: emailToVerify,
-        token: CAPTCHA_BYPASS_EMAILS.has(emailToVerify) ? null : token,
-      }),
-    });
-
-    let json: any = {};
-    try {
-      json = await resp.json();
-    } catch {
-      json = {};
-    }
-
-    if (!resp.ok || !json?.ok) {
-      throw new Error(json?.error || "Captcha verification failed");
-    }
-  }
-
   async function doSignUp(withToken: string | null) {
     setError("");
 
@@ -99,20 +77,19 @@ export default function SignUpPage() {
 
     setLoading(true);
     try {
-      await verifyTurnstileOrBypass(normalizedEmail, withToken);
-
-      // ✅ call your server signup route (NOT supabase.auth.signUp)
       const resp = await fetch("/api/auth/sign-up", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: normalizedEmail,
           password,
+          // ✅ bypass emails send null; others send the Turnstile token
           captchaToken: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : withToken,
         }),
       });
 
       const json = await resp.json().catch(() => ({}));
+
       if (!resp.ok || !json?.ok) {
         throw new Error(json?.error || "Sign up failed");
       }
@@ -141,10 +118,7 @@ export default function SignUpPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
-        <Link
-          href="/landing"
-          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
-        >
+        <Link href="/landing" className="inline-block mb-4 text-sm text-slate-600 hover:underline">
           ← Back to home
         </Link>
 

@@ -71,24 +71,17 @@ export default function LoginPage() {
     setPendingAction(null);
   }
 
-  async function verifyTurnstileOrBypass(emailToVerify: string, token: string | null) {
-    const resp = await fetch("/api/turnstile/verify", {
+  async function preauthOrThrow(emailToVerify: string, token: string | null) {
+    const resp = await fetch("/api/auth/preauth", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // If bypass email, server will bypass even if token is null
       body: JSON.stringify({
         email: emailToVerify,
-        token: CAPTCHA_BYPASS_EMAILS.has(emailToVerify) ? null : token,
+        token: CAPTCHA_BYPASS_EMAILS.has(emailToVerify) ? "bypass" : token,
       }),
     });
 
-    let json: any = {};
-    try {
-      json = await resp.json();
-    } catch {
-      json = {};
-    }
-
+    const json = await resp.json().catch(() => ({}));
     if (!resp.ok || !json?.ok) {
       throw new Error(json?.error || "Captcha verification failed");
     }
@@ -109,7 +102,7 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      await verifyTurnstileOrBypass(normalizedEmail, withToken);
+      await preauthOrThrow(normalizedEmail, withToken);
 
       const { error } = await supabase.auth.signInWithPassword({
         email: normalizedEmail,
@@ -134,7 +127,6 @@ export default function LoginPage() {
         .single();
 
       if (profErr) {
-        // If we can't verify, fail safe: log out
         await supabase.auth.signOut();
         throw new Error("Could not verify account status. Please try again.");
       }
@@ -177,9 +169,8 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      await verifyTurnstileOrBypass(normalizedEmail, withToken);
+      await preauthOrThrow(normalizedEmail, withToken);
 
-      // ✅ Custom password reset flow (no Supabase reset email)
       const resp = await fetch("/api/auth/request-password-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -190,18 +181,12 @@ export default function LoginPage() {
       });
 
       if (!resp.ok) {
-        let json: any = {};
-        try {
-          json = await resp.json();
-        } catch {
-          json = {};
-        }
+        const json = await resp.json().catch(() => ({}));
         throw new Error(json?.error || "Password reset failed");
       }
 
       setResetSent(true);
       cleanupCaptchaState();
-
       router.push("/check-email?type=password-reset");
     } catch (err: any) {
       setError(err?.message || "Password reset failed");
@@ -230,7 +215,7 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      await verifyTurnstileOrBypass(normalizedEmail, withToken);
+      await preauthOrThrow(normalizedEmail, withToken);
 
       const resp = await fetch("/api/auth/resend-signup-confirmation", {
         method: "POST",
@@ -241,14 +226,8 @@ export default function LoginPage() {
         }),
       });
 
-      // Don’t leak whether account exists
       if (!resp.ok) {
-        let json: any = {};
-        try {
-          json = await resp.json();
-        } catch {
-          json = {};
-        }
+        const json = await resp.json().catch(() => ({}));
         throw new Error(json?.error || "Could not resend confirmation email");
       }
 
@@ -282,22 +261,15 @@ export default function LoginPage() {
 
     if (!pendingAction) return;
 
-    if (pendingAction === "login") {
-      await doLogin(token);
-    } else if (pendingAction === "reset") {
-      await doReset(token);
-    } else if (pendingAction === "resendConfirm") {
-      await doResendConfirmation(token);
-    }
+    if (pendingAction === "login") await doLogin(token);
+    else if (pendingAction === "reset") await doReset(token);
+    else if (pendingAction === "resendConfirm") await doResendConfirmation(token);
   }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
-        <Link
-          href="/landing"
-          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
-        >
+        <Link href="/landing" className="inline-block mb-4 text-sm text-slate-600 hover:underline">
           ← Back to home
         </Link>
 
