@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabase";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -15,49 +16,14 @@ export default function ResetPasswordPage() {
   const [success, setSuccess] = useState(false);
 
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    // Some flows won't fire PASSWORD_RECOVERY immediately depending on how the link is opened.
-    // We listen for auth events, but also allow the user to try once session is established.
-    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (cancelled) return;
-
-      if (event === "PASSWORD_RECOVERY") {
-        setReady(true);
-        setError("");
-      }
-
-      // If user is signed in normally, send them to the app
-      if (event === "SIGNED_IN" && session?.user) {
-        router.replace("/");
-      }
-    });
-
-    // Also check session on mount (covers some edge cases)
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (cancelled) return;
-
-      // If session exists here during recovery, allow reset
-      if (data.session) setReady(true);
-    })();
-
-    return () => {
-      cancelled = true;
-      listener.subscription.unsubscribe();
-    };
-  }, [router]);
 
   async function handleReset(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setSuccess(false);
 
-    if (!ready) {
-      setError("Preparing secure reset session. Please wait a moment.");
+    if (!token) {
+      setError("Missing reset token. Please request a new reset link.");
       return;
     }
 
@@ -73,10 +39,16 @@ export default function ResetPasswordPage() {
 
     setLoading(true);
     try {
-      const { error } = await supabase.auth.updateUser({ password });
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, newPassword: password }),
+      });
 
-      if (error) {
-        setError(error.message);
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data?.error || "Failed to reset password.");
         return;
       }
 
@@ -86,6 +58,8 @@ export default function ResetPasswordPage() {
       setTimeout(() => {
         router.replace("/sign-in");
       }, 600);
+    } catch {
+      setError("Network error. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -96,7 +70,14 @@ export default function ResetPasswordPage() {
       <div className="w-[360px]">
         <h1 className="text-2xl font-bold mb-4 text-center">Reset Password</h1>
 
+        {!token && (
+          <p className="text-red-500 text-sm mb-2">
+            This reset link is missing a token. Please request a new reset link.
+          </p>
+        )}
+
         {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+
         {success && (
           <p className="text-green-600 text-sm mb-2 text-center">
             ✅ Password updated — redirecting to sign in…
@@ -113,6 +94,7 @@ export default function ResetPasswordPage() {
             required
             autoComplete="new-password"
             minLength={8}
+            disabled={!token || loading}
           />
 
           <input
@@ -124,11 +106,12 @@ export default function ResetPasswordPage() {
             required
             autoComplete="new-password"
             minLength={8}
+            disabled={!token || loading}
           />
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !token}
             className="bg-blue-600 text-white p-2 rounded disabled:opacity-60"
           >
             {loading ? "Updating..." : "Update Password"}

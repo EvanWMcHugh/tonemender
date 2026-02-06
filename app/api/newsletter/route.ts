@@ -10,12 +10,13 @@ export const runtime = "nodejs";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SECRET_KEY;
 const resendKey = process.env.RESEND_API_KEY;
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+const appUrl = process.env.APP_URL;
+const emailFrom = process.env.EMAIL_FROM || "ToneMender <no-reply@tonemender.com>";
 
 if (!supabaseUrl) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
 if (!supabaseKey) throw new Error("Missing SUPABASE_SECRET_KEY");
 if (!resendKey) throw new Error("Missing RESEND_API_KEY");
-if (!siteUrl) throw new Error("Missing NEXT_PUBLIC_SITE_URL");
+if (!appUrl) throw new Error("Missing APP_URL");
 
 /* ----------------------------
    SUPABASE CLIENT (server)
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
     /* ----------------------------
        SEND CONFIRMATION EMAIL (Resend)
     ----------------------------- */
-    const confirmUrl = `${siteUrl}/confirm?token=${encodeURIComponent(token)}`;
+    const confirmUrl = `${appUrl}/confirm?token=${encodeURIComponent(token)}`;
 
     const emailRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "ToneMender <updates@tonemender.com>",
+        from: emailFrom,
         to: email,
         subject: "Confirm your ToneMender updates",
         html: `

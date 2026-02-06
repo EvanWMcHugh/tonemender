@@ -4,6 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import { isProReviewer } from "../../lib/reviewers";
+import dynamic from "next/dynamic";
+
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
+
+// ✅ Only these are excluded from captcha (match sign-in + API)
+const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
 type UsageStats = { today: number; total: number };
 
@@ -35,7 +41,16 @@ export default function AccountPage() {
   const [emailError, setEmailError] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
 
+  // Turnstile state for email change
+  const [showEmailCaptcha, setShowEmailCaptcha] = useState(false);
+  const [emailCaptchaToken, setEmailCaptchaToken] = useState<string | null>(null);
+
   const todayStr = useMemo(() => getPacificDateString(), []);
+  const normalizedCurrentEmail = useMemo(() => normalizeEmail(email || ""), [email]);
+  const isBypassEmail = useMemo(
+    () => (normalizedCurrentEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedCurrentEmail) : false),
+    [normalizedCurrentEmail]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -85,7 +100,6 @@ export default function AccountPage() {
           const total = usageRows?.length ?? 0;
 
           // created_at is ISO string; take YYYY-MM-DD and compare to Pacific day string
-          // (keeps behavior consistent with your current approach)
           const today = (usageRows ?? []).filter((u: any) => {
             const created = typeof u?.created_at === "string" ? u.created_at : "";
             const utcDay = created.split("T")[0]; // YYYY-MM-DD
@@ -104,7 +118,7 @@ export default function AccountPage() {
 
     load();
 
-    // Optional: keep UI email in sync after auth state changes (e.g., email change finalizes)
+    // Keep UI email in sync after auth state changes
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       const user = session?.user;
       if (!user) {
@@ -211,45 +225,73 @@ export default function AccountPage() {
     alert("Could not open billing portal.");
   }
 
+  function resetEmailCaptchaState() {
+    setEmailCaptchaToken(null);
+    setShowEmailCaptcha(false);
+  }
+
   async function handleChangeEmail(e: React.FormEvent) {
     e.preventDefault();
     setEmailError("");
     setEmailMessage("");
+
+    const candidate = normalizeEmail(newEmail);
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+    if (!emailRegex.test(candidate)) {
+      setEmailError("Please enter a valid email address");
+      return;
+    }
+
+    // Optional: prevent “changing” to the same email
+    if (email && normalizeEmail(email) === candidate) {
+      setEmailError("That is already your current email.");
+      return;
+    }
+
+    // If not bypass, require captcha token (show widget on first click)
+    if (!isBypassEmail && !emailCaptchaToken) {
+      setShowEmailCaptcha(true);
+      return;
+    }
+
     setEmailLoading(true);
 
     try {
-      const candidate = normalizeEmail(newEmail);
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
 
-      if (!emailRegex.test(candidate)) {
-        setEmailError("Please enter a valid email address");
+      if (!accessToken) {
+        setEmailError("You must be logged in.");
         return;
       }
 
-      // Optional: prevent “changing” to the same email
-      if (email && normalizeEmail(email) === candidate) {
-        setEmailError("That is already your current email.");
+      const resp = await fetch("/api/auth/request-email-change", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: accessToken,
+          newEmail: candidate,
+          turnstileToken: isBypassEmail ? "bypass" : emailCaptchaToken,
+        }),
+      });
+
+      const json = await resp.json().catch(() => ({}));
+
+      if (!resp.ok) {
+        setEmailError(json?.error || "Failed to send confirmation email.");
+        resetEmailCaptchaState();
         return;
       }
 
-      const redirectTo = `${
-        process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin
-      }/auth/callback`;
-
-      const { error } = await supabase.auth.updateUser(
-        { email: candidate },
-        { emailRedirectTo: redirectTo }
-      );
-
-      if (error) {
-        setEmailError(error.message);
-        return;
-      }
-
-      setEmailMessage(
-        "We sent a confirmation link to your new email. Open it to complete the change."
-      );
       setNewEmail("");
+      resetEmailCaptchaState();
+
+      // ✅ Route to your new generalized check-email screen
+      router.push("/check-email?type=email-change");
+    } catch (err: any) {
+      setEmailError(err?.message || "Failed to send confirmation email.");
+      resetEmailCaptchaState();
     } finally {
       setEmailLoading(false);
     }
@@ -309,9 +351,7 @@ export default function AccountPage() {
           <p className="font-medium mb-2">Change Email</p>
 
           {emailError && <p className="text-red-500 text-sm mb-1">{emailError}</p>}
-          {emailMessage && (
-            <p className="text-green-600 text-sm mb-1">{emailMessage}</p>
-          )}
+          {emailMessage && <p className="text-green-600 text-sm mb-1">{emailMessage}</p>}
 
           <div className="flex gap-2">
             <input
@@ -330,11 +370,25 @@ export default function AccountPage() {
               disabled={emailLoading}
               className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {emailLoading ? "Sending…" : "Update"}
+              {emailLoading ? "Sending…" : showEmailCaptcha && !isBypassEmail ? "Verify…" : "Update"}
             </button>
           </div>
 
-          {/* Optional hint */}
+          {!isBypassEmail && showEmailCaptcha && (
+            <div className="mt-3">
+              <Turnstile
+                sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+                theme="light"
+                onSuccess={(t) => setEmailCaptchaToken(t)}
+                onExpire={() => setEmailCaptchaToken(null)}
+                onError={() => setEmailCaptchaToken(null)}
+              />
+              <p className="text-[11px] text-slate-500 mt-2">
+                Complete the captcha, then click Update again.
+              </p>
+            </div>
+          )}
+
           <p className="text-[11px] text-slate-500 mt-2">
             After confirming, you may need to log in again using the new email.
           </p>

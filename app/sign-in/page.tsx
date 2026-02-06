@@ -141,19 +141,32 @@ export default function LoginPage() {
     try {
       await verifyTurnstileOrBypass(normalizedEmail, withToken);
 
-      const redirectTo =
-        process.env.NEXT_PUBLIC_SITE_URL
-          ? `${process.env.NEXT_PUBLIC_SITE_URL}/reset-password`
-          : "https://tonemender.com/reset-password";
-
-      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo,
+      // ✅ Custom password reset flow (no Supabase reset email)
+      const resp = await fetch("/api/auth/request-password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          turnstileToken: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? "bypass" : withToken,
+        }),
       });
 
-      if (error) throw new Error(error.message);
+      // We intentionally don't care about response details (avoid leaks)
+      if (!resp.ok) {
+        let json: any = {};
+        try {
+          json = await resp.json();
+        } catch {
+          json = {};
+        }
+        throw new Error(json?.error || "Password reset failed");
+      }
 
       setResetSent(true);
       cleanupCaptchaState();
+
+      // ✅ Better UX
+      router.push("/check-email?type=password-reset");
     } catch (err: any) {
       setError(err?.message || "Password reset failed");
       cleanupCaptchaState();

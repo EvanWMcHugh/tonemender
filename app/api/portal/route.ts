@@ -36,7 +36,7 @@ function getBearerToken(req: Request): string | null {
 
 export async function POST(req: Request) {
   try {
-    // Parse body safely (avoid Promise.catch chaining)
+    // Parse body safely
     let body: any = {};
     try {
       body = await req.json();
@@ -76,18 +76,19 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "No Stripe customer found" }, { status: 400 });
     }
 
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-    if (!siteUrl) {
+    // ✅ Canonical app URL (server-side)
+    const appUrl = process.env.APP_URL;
+    if (!appUrl) {
       return jsonNoStore(
-        { error: "Server misconfigured (missing NEXT_PUBLIC_SITE_URL)" },
+        { error: "Server misconfigured (missing APP_URL)" },
         { status: 500 }
       );
     }
 
-    // Create portal session
+    // Create billing portal session
     const portal = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id,
-      return_url: `${siteUrl}/account`,
+      return_url: `${appUrl}/account`,
     });
 
     if (!portal.url) {

@@ -36,7 +36,7 @@ function getBearerToken(req: Request): string | null {
 
 export async function POST(req: Request) {
   try {
-    // Parse body safely (avoid Promise.catch chaining)
+    // Parse body safely
     let body: any = {};
     try {
       body = await req.json();
@@ -54,8 +54,7 @@ export async function POST(req: Request) {
     }
 
     // Authenticate user
-    const { data: authData, error: authError } =
-      await supabaseServer.auth.getUser(token);
+    const { data: authData, error: authError } = await supabaseServer.auth.getUser(token);
 
     if (authError || !authData?.user) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
@@ -76,11 +75,11 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
     }
 
-    // Site URL sanity
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-    if (!siteUrl) {
+    // ✅ Canonical app URL (server-side)
+    const appUrl = process.env.APP_URL;
+    if (!appUrl) {
       return jsonNoStore(
-        { error: "Server misconfigured (missing NEXT_PUBLIC_SITE_URL)" },
+        { error: "Server misconfigured (missing APP_URL)" },
         { status: 500 }
       );
     }
@@ -126,8 +125,8 @@ export async function POST(req: Request) {
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${siteUrl}/account?success=true`,
-      cancel_url: `${siteUrl}/upgrade?canceled=true`,
+      success_url: `${appUrl}/account?success=true`,
+      cancel_url: `${appUrl}/upgrade?canceled=true`,
       metadata: {
         userId,
         planType,
