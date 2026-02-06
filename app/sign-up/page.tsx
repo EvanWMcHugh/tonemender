@@ -101,12 +101,21 @@ export default function SignUpPage() {
     try {
       await verifyTurnstileOrBypass(normalizedEmail, withToken);
 
-      const { error } = await supabase.auth.signUp({
-        email: normalizedEmail,
-        password,
+      // ✅ call your server signup route (NOT supabase.auth.signUp)
+      const resp = await fetch("/api/auth/sign-up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password,
+          captchaToken: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : withToken,
+        }),
       });
 
-      if (error) throw new Error(error.message);
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json?.ok) {
+        throw new Error(json?.error || "Sign up failed");
+      }
 
       cleanupCaptchaState();
       router.replace("/check-email");

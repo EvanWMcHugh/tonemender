@@ -15,7 +15,7 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-type PendingAction = null | "login" | "reset";
+type PendingAction = null | "login" | "reset" | "resendConfirm";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,6 +31,9 @@ export default function LoginPage() {
 
   const [showCaptcha, setShowCaptcha] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+
+  const [needsEmailConfirm, setNeedsEmailConfirm] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
   const isBypassEmail = useMemo(
@@ -58,6 +61,8 @@ export default function LoginPage() {
     setShowCaptcha(false);
     setCaptchaToken(null);
     setPendingAction(null);
+    setNeedsEmailConfirm(false);
+    setResendSent(false);
   }, [normalizedEmail]);
 
   function cleanupCaptchaState() {
@@ -92,6 +97,8 @@ export default function LoginPage() {
   async function doLogin(withToken: string | null) {
     setError("");
     setResetSent(false);
+    setNeedsEmailConfirm(false);
+    setResendSent(false);
 
     // show captcha only after click
     if (!isBypassEmail && !withToken) {
@@ -111,6 +118,35 @@ export default function LoginPage() {
 
       if (error) throw new Error(error.message);
 
+      // ✅ Gate: block unverified emails
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData?.user?.id;
+
+      if (!userId) {
+        await supabase.auth.signOut();
+        throw new Error("Sign in failed. Please try again.");
+      }
+
+      const { data: profile, error: profErr } = await supabase
+        .from("profiles")
+        .select("email_verified")
+        .eq("id", userId)
+        .single();
+
+      if (profErr) {
+        // If we can't verify, fail safe: log out
+        await supabase.auth.signOut();
+        throw new Error("Could not verify account status. Please try again.");
+      }
+
+      if (!profile?.email_verified) {
+        await supabase.auth.signOut();
+        setNeedsEmailConfirm(true);
+        cleanupCaptchaState();
+        setError("Please confirm your email before signing in.");
+        return;
+      }
+
       cleanupCaptchaState();
       router.replace("/");
     } catch (err: any) {
@@ -124,6 +160,8 @@ export default function LoginPage() {
   async function doReset(withToken: string | null) {
     setError("");
     setResetSent(false);
+    setNeedsEmailConfirm(false);
+    setResendSent(false);
 
     if (!normalizedEmail) {
       setError("Enter your email first.");
@@ -151,7 +189,6 @@ export default function LoginPage() {
         }),
       });
 
-      // We intentionally don't care about response details (avoid leaks)
       if (!resp.ok) {
         let json: any = {};
         try {
@@ -165,10 +202,61 @@ export default function LoginPage() {
       setResetSent(true);
       cleanupCaptchaState();
 
-      // ✅ Better UX
       router.push("/check-email?type=password-reset");
     } catch (err: any) {
       setError(err?.message || "Password reset failed");
+      cleanupCaptchaState();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doResendConfirmation(withToken: string | null) {
+    setError("");
+    setNeedsEmailConfirm(false);
+    setResendSent(false);
+
+    if (!normalizedEmail) {
+      setError("Enter your email first.");
+      return;
+    }
+
+    // show captcha only after click
+    if (!isBypassEmail && !withToken) {
+      setPendingAction("resendConfirm");
+      setShowCaptcha(true);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await verifyTurnstileOrBypass(normalizedEmail, withToken);
+
+      const resp = await fetch("/api/auth/resend-signup-confirmation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          turnstileToken: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? "bypass" : withToken,
+        }),
+      });
+
+      // Don’t leak whether account exists
+      if (!resp.ok) {
+        let json: any = {};
+        try {
+          json = await resp.json();
+        } catch {
+          json = {};
+        }
+        throw new Error(json?.error || "Could not resend confirmation email");
+      }
+
+      setResendSent(true);
+      cleanupCaptchaState();
+      router.push("/check-email?type=confirm-email");
+    } catch (err: any) {
+      setError(err?.message || "Could not resend confirmation email");
       cleanupCaptchaState();
     } finally {
       setLoading(false);
@@ -184,6 +272,10 @@ export default function LoginPage() {
     await doReset(null);
   }
 
+  async function handleResend() {
+    await doResendConfirmation(null);
+  }
+
   // When captcha succeeds, automatically finish the pending action
   async function handleCaptchaSuccess(token: string) {
     setCaptchaToken(token);
@@ -194,6 +286,8 @@ export default function LoginPage() {
       await doLogin(token);
     } else if (pendingAction === "reset") {
       await doReset(token);
+    } else if (pendingAction === "resendConfirm") {
+      await doResendConfirmation(token);
     }
   }
 
@@ -264,6 +358,23 @@ export default function LoginPage() {
         {resetSent && (
           <p className="mt-2 text-sm text-green-600 text-center">
             ✅ Password reset email sent
+          </p>
+        )}
+
+        {needsEmailConfirm && (
+          <button
+            type="button"
+            onClick={handleResend}
+            disabled={loading}
+            className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60"
+          >
+            Resend confirmation email
+          </button>
+        )}
+
+        {resendSent && (
+          <p className="mt-2 text-sm text-green-600 text-center">
+            ✅ Confirmation email sent
           </p>
         )}
 
