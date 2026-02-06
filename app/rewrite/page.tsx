@@ -131,7 +131,10 @@ export default function RewritePage() {
         setError("Please paste a message to rewrite.");
         return;
       }
-
+      // ✅ Save original message so Revert works even if user never clicks "Use This"
+      if (!originalMessageSnapshot) {
+        setOriginalMessageSnapshot(trimmedMessage);
+      }
       const finalRecipient = isPro ? recipient : "default";
       const finalTone = isPro ? tone : "default";
 
@@ -235,7 +238,15 @@ export default function RewritePage() {
   function revertToOriginal() {
     if (!originalMessageSnapshot) return;
 
+    // Restore original text
     setMessage(originalMessageSnapshot);
+
+    // Reset rewrite state so UI matches reality
+    setResults({ soft: "", calm: "", clear: "" });
+    setOriginalForCard("");
+    setRewrittenForCard("");
+
+    // Clear snapshot + flags
     setOriginalMessageSnapshot("");
     setUsedRewrite(false);
 
@@ -441,14 +452,15 @@ export default function RewritePage() {
               value={message}
               onChange={(e) => setMessage(e.target.value)}
             />
-            {usedRewrite && (
-              <button
-                onClick={revertToOriginal}
-                className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
-              >
-                Revert to original message
-              </button>
-            )}
+          {originalMessageSnapshot && (
+            <button
+              type="button"
+              onClick={revertToOriginal}
+              className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
+            >
+              Revert to original message
+            </button>
+          )}
           </div>
 
           {/* Relationship & Tone */}
