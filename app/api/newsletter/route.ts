@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 
+export const runtime = "nodejs";
+
 /* ----------------------------
-   ENV SAFETY CHECKS
+   ENV
 ----------------------------- */
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SECRET_KEY;
@@ -16,51 +18,81 @@ if (!resendKey) throw new Error("Missing RESEND_API_KEY");
 if (!siteUrl) throw new Error("Missing NEXT_PUBLIC_SITE_URL");
 
 /* ----------------------------
-   SUPABASE CLIENT
+   SUPABASE CLIENT (server)
 ----------------------------- */
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabaseServer = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
 
-/* ----------------------------
-   POST HANDLER
------------------------------ */
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+// Simple email validation (good enough for signup forms without being overly strict)
+function isValidEmail(email: string) {
+  if (email.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 export async function POST(req: Request) {
   try {
-    const { email } = await req.json();
-
-    if (!email || !email.includes("@")) {
-      return NextResponse.json(
-        { error: "Invalid email" },
-        { status: 400 }
-      );
+    // Parse body safely
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
     }
 
+    const emailRaw = body?.email;
+    if (!emailRaw || typeof emailRaw !== "string") {
+      return jsonNoStore({ error: "Invalid email" }, { status: 400 });
+    }
+
+    const email = normalizeEmail(emailRaw);
+
+    if (!isValidEmail(email)) {
+      return jsonNoStore({ error: "Invalid email" }, { status: 400 });
+    }
+
+    // New confirmation token each time user submits (keeps links fresh)
     const token = crypto.randomBytes(32).toString("hex");
 
     /* ----------------------------
        UPSERT EMAIL
     ----------------------------- */
-    const { error: insertError } = await supabase
+    const { error: upsertError } = await supabaseServer
       .from("newsletter_subscribers")
       .upsert(
         {
           email,
           confirm_token: token,
           confirmed: false,
+          confirmed_at: null,
         },
         { onConflict: "email" }
       );
 
-    if (insertError) {
-      console.error("SUPABASE ERROR:", insertError);
-      return NextResponse.json(
-        { error: "Database error" },
-        { status: 500 }
-      );
+    if (upsertError) {
+      console.error("SUPABASE ERROR:", upsertError);
+      return jsonNoStore({ error: "Database error" }, { status: 500 });
     }
 
     /* ----------------------------
-       SEND CONFIRMATION EMAIL
+       SEND CONFIRMATION EMAIL (Resend)
     ----------------------------- */
+    const confirmUrl = `${siteUrl}/confirm?token=${encodeURIComponent(token)}`;
+
     const emailRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -68,22 +100,28 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "ToneMender <updates@tonemender.com>", // ✅ SAFE SENDER
+        from: "ToneMender <updates@tonemender.com>",
         to: email,
         subject: "Confirm your ToneMender updates",
         html: `
-          <p>Thanks for joining ToneMender 👋</p>
-          <p>Please confirm your email:</p>
-          <p>
-            <a href="${siteUrl}/confirm?token=${token}">
-              Confirm my email
-            </a>
-          </p>
+          <div style="font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial, sans-serif; line-height: 1.5;">
+            <p>Thanks for joining ToneMender 👋</p>
+            <p>Please confirm your email:</p>
+            <p>
+              <a href="${confirmUrl}" style="display:inline-block; padding:10px 14px; background:#111827; color:#fff; text-decoration:none; border-radius:8px;">
+                Confirm my email
+              </a>
+            </p>
+            <p style="color:#6b7280; font-size:12px;">
+              If the button doesn’t work, copy and paste this link:<br/>
+              <span>${confirmUrl}</span>
+            </p>
+          </div>
         `,
       }),
     });
 
-    let emailResult = null;
+    let emailResult: any = null;
     try {
       emailResult = await emailRes.json();
     } catch {
@@ -92,22 +130,13 @@ export async function POST(req: Request) {
 
     if (!emailRes.ok) {
       console.error("❌ RESEND FAILED:", emailResult);
-      return NextResponse.json(
-        { error: "Email failed to send", details: emailResult },
-        { status: 500 }
-      );
+      // Avoid echoing provider details to the client
+      return jsonNoStore({ error: "Email failed to send" }, { status: 502 });
     }
 
-    /* ----------------------------
-       SUCCESS
-    ----------------------------- */
-    return NextResponse.json({ success: true });
-
+    return jsonNoStore({ success: true });
   } catch (err) {
     console.error("NEWSLETTER API ERROR:", err);
-    return NextResponse.json(
-      { error: "Server error" },
-      { status: 500 }
-    );
+    return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

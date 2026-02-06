@@ -1,54 +1,68 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
 import { supabase } from "../lib/supabase";
 import LogoutButton from "./components/LogoutButton";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { isProReviewer } from "../lib/reviewers";
 
 export default function AppHomePage() {
   const router = useRouter();
+
   const [authReady, setAuthReady] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
   const [isPro, setIsPro] = useState(false);
 
   useEffect(() => {
-  async function load() {
-    const { data: sessionData } = await supabase.auth.getSession();
-const user = sessionData?.session?.user;
+    let cancelled = false;
 
-// 🔥 If NO USER → send to landing page
-if (!user) {
-  router.replace("/landing");
-  return;
-}
+    async function load() {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData?.session?.user;
 
-      // Otherwise logged in
-      setLoggedIn(true);
+        // 🔥 If NO USER → send to landing page
+        if (!user) {
+          router.replace("/landing");
+          return;
+        }
 
-      // Fetch profile status
-      const { data: profile } = await supabase
-      .from("profiles")
-      .select("is_pro")
-      .eq("id", user.id)
-      .single();
+        // Fetch profile status
+        const { data: profile, error } = await supabase
+          .from("profiles")
+          .select("is_pro")
+          .eq("id", user.id)
+          .single();
 
-    setIsPro(profile?.is_pro || isProReviewer(user.email));
-    setAuthReady(true);
-  }
+        if (cancelled) return;
 
-  load();
-}, [router]);
+        // Reviewer emails always count as Pro
+        const pro =
+          Boolean(profile?.is_pro) || isProReviewer(user.email ?? null);
 
-// PREVENT rendering / redirect until auth state is checked
-if (!authReady) return null;
+        setIsPro(pro);
+        setAuthReady(true);
+      } catch (err) {
+        // If anything unexpected happens, fail safely to landing
+        console.error("HOME LOAD ERROR:", err);
+        router.replace("/landing");
+      }
+    }
 
-  // 🟢 Logged-in dashboard HOME
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  // Prevent rendering until auth check completes
+  if (!authReady) return null;
+
   return (
     <main className="w-full max-w-xl">
       <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
-
         {/* HEADER */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -57,7 +71,9 @@ if (!authReady) return null;
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">ToneMender</h1>
-              <p className="text-xs text-slate-500">Say it better. Save it together.</p>
+              <p className="text-xs text-slate-500">
+                Say it better. Save it together.
+              </p>
             </div>
           </div>
 
@@ -66,8 +82,8 @@ if (!authReady) return null;
 
         {/* DESCRIPTION */}
         <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-          Welcome back! Rewrite your messages into calm, clear, relationship-safe
-          communication.
+          Welcome back! Rewrite your messages into calm, clear,
+          relationship-safe communication.
         </p>
 
         {/* NAVIGATION */}

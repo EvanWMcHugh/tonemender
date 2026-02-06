@@ -2,53 +2,90 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
+
+type Status = "loading" | "success" | "error";
 
 export default function ConfirmPage() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token");
 
-  const [status, setStatus] = useState<
-    "loading" | "success" | "error"
-  >("loading");
+  const [status, setStatus] = useState<Status>("loading");
 
   useEffect(() => {
+    let cancelled = false;
+
     async function confirm() {
       if (!token) {
         setStatus("error");
         return;
       }
 
-      const res = await fetch("/api/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
+      try {
+        const res = await fetch("/api/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
 
-      if (res.ok) {
-        setStatus("success");
-      } else {
-        setStatus("error");
+        if (cancelled) return;
+
+        setStatus(res.ok ? "success" : "error");
+      } catch (err) {
+        console.error("CONFIRM PAGE ERROR:", err);
+        if (!cancelled) setStatus("error");
       }
     }
 
     confirm();
+
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   if (status === "loading") {
-    return <p className="text-center mt-20">Confirming…</p>;
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-white">
+        <p className="text-center text-slate-700">Confirming…</p>
+      </main>
+    );
   }
 
   if (status === "success") {
     return (
-      <p className="text-center mt-20 text-green-600 font-semibold">
-        ✅ You’re in! Thanks for joining ToneMender.
-      </p>
+      <main className="min-h-screen flex items-center justify-center bg-white">
+        <div className="text-center px-6">
+          <p className="text-green-600 font-semibold text-lg">
+            ✅ You’re in! Thanks for joining ToneMender.
+          </p>
+
+          <div className="mt-6 flex flex-col gap-3 items-center">
+            <Link
+              href="/landing"
+              className="text-sm text-slate-600 hover:underline"
+            >
+              Back to home
+            </Link>
+          </div>
+        </div>
+      </main>
     );
   }
 
   return (
-    <p className="text-center mt-20 text-red-600 font-semibold">
-      ❌ This confirmation link is invalid or expired.
-    </p>
+    <main className="min-h-screen flex items-center justify-center bg-white">
+      <div className="text-center px-6">
+        <p className="text-red-600 font-semibold text-lg">
+          ❌ This confirmation link is invalid or expired.
+        </p>
+
+        <div className="mt-6 flex flex-col gap-3 items-center">
+          <Link href="/landing" className="text-sm text-blue-600 underline">
+            Back to home
+          </Link>
+        </div>
+      </div>
+    </main>
   );
 }

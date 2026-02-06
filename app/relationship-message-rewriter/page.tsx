@@ -1,59 +1,63 @@
 import Link from "next/link";
 import Script from "next/script";
+import type { Metadata } from "next";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Relationship Message Rewriter – Fix Text Tone With AI | ToneMender",
   description:
     "ToneMender is an AI relationship message rewriter that fixes tone in text messages so conversations stay calm, clear, and respectful.",
 };
 
 export default function RelationshipMessageRewriterPage() {
+  const faqSchema = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: [
+      {
+        "@type": "Question",
+        name: "What is a relationship message rewriter?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text:
+            "A relationship message rewriter uses AI to adjust tone in text messages so they sound calm, clear, and respectful instead of harsh or misunderstood.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Can this help prevent arguments over text?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text:
+            "Yes. By softening wording and clarifying intent, a message rewriter helps prevent misunderstandings that often lead to unnecessary arguments.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Is ToneMender free to use?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text:
+            "ToneMender offers free usage with optional paid features for higher limits and advanced tools.",
+        },
+      },
+    ],
+  };
+
   return (
     <main className="max-w-4xl mx-auto px-6 py-16 text-slate-900">
       <Link
-  href="/landing"
-  className="inline-block mb-8 text-sm text-slate-600 hover:underline"
->
-  ← Back to home
-</Link>
-          <Script
+        href="/landing"
+        className="inline-block mb-8 text-sm text-slate-600 hover:underline"
+      >
+        ← Back to home
+      </Link>
+
+      <Script
+        id="faq-schema"
         type="application/ld+json"
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify({
-            "@context": "https://schema.org",
-            "@type": "FAQPage",
-            mainEntity: [
-              {
-                "@type": "Question",
-                name: "What is a relationship message rewriter?",
-                acceptedAnswer: {
-                  "@type": "Answer",
-                  text:
-                    "A relationship message rewriter uses AI to adjust tone in text messages so they sound calm, clear, and respectful instead of harsh or misunderstood.",
-                },
-              },
-              {
-                "@type": "Question",
-                name: "Can this help prevent arguments over text?",
-                acceptedAnswer: {
-                  "@type": "Answer",
-                  text:
-                    "Yes. By softening wording and clarifying intent, a message rewriter helps prevent misunderstandings that often lead to unnecessary arguments.",
-                },
-              },
-              {
-                "@type": "Question",
-                name: "Is ToneMender free to use?",
-                acceptedAnswer: {
-                  "@type": "Answer",
-                  text:
-                    "ToneMender offers free usage with optional paid features for higher limits and advanced tools.",
-                },
-              },
-            ],
-          }),
-        }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
       />
+
       <h1 className="text-4xl font-extrabold tracking-tight mb-6">
         Relationship Message Rewriter
       </h1>

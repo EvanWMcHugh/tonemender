@@ -1,14 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 
-const Turnstile = dynamic(() => import("react-turnstile"), {
-  ssr: false,
-});
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
 // ✅ Only these are excluded from captcha
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
@@ -31,45 +29,35 @@ export default function SignUpPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [showCaptcha, setShowCaptcha] = useState(false);
 
-  const [isBypassEmail, setIsBypassEmail] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
+  const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
+  const isBypassEmail = useMemo(
+    () => CAPTCHA_BYPASS_EMAILS.has(normalizedEmail),
+    [normalizedEmail]
+  );
+
   useEffect(() => {
+    let cancelled = false;
+
     async function checkSession() {
       const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) router.replace("/");
+      if (!cancelled && data?.session?.user) router.replace("/");
     }
+
     checkSession();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
+  // Reset captcha when email changes
   useEffect(() => {
-    const normalized = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalized);
-    setIsBypassEmail(bypass);
-
-    // reset captcha when email changes
     setShowCaptcha(false);
     setCaptchaToken(null);
     setPendingAction(null);
-  }, [email]);
-
-  async function verifyTurnstileOrBypass(normalizedEmail: string, token: string | null) {
-    const resp = await fetch("/api/turnstile/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: normalizedEmail,
-        token: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : token,
-      }),
-    });
-
-    const json = await resp.json().catch(() => ({}));
-
-    // Match your sign-in expectation: { ok: true }
-    if (!resp.ok || !json?.ok) {
-      throw new Error(json?.error || "Captcha verification failed");
-    }
-  }
+  }, [normalizedEmail]);
 
   function cleanupCaptchaState() {
     setCaptchaToken(null);
@@ -77,14 +65,33 @@ export default function SignUpPage() {
     setPendingAction(null);
   }
 
+  async function verifyTurnstileOrBypass(emailToVerify: string, token: string | null) {
+    const resp = await fetch("/api/turnstile/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: emailToVerify,
+        token: CAPTCHA_BYPASS_EMAILS.has(emailToVerify) ? null : token,
+      }),
+    });
+
+    let json: any = {};
+    try {
+      json = await resp.json();
+    } catch {
+      json = {};
+    }
+
+    if (!resp.ok || !json?.ok) {
+      throw new Error(json?.error || "Captcha verification failed");
+    }
+  }
+
   async function doSignUp(withToken: string | null) {
     setError("");
 
-    const normalizedEmail = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
-
     // show captcha only after click
-    if (!bypass && !withToken) {
+    if (!isBypassEmail && !withToken) {
       setPendingAction("signup");
       setShowCaptcha(true);
       return;
@@ -102,8 +109,6 @@ export default function SignUpPage() {
       if (error) throw new Error(error.message);
 
       cleanupCaptchaState();
-
-      // keep your existing flow: you likely want them to confirm email
       router.replace("/check-email");
     } catch (err: any) {
       setError(err?.message || "Sign up failed");
@@ -120,9 +125,7 @@ export default function SignUpPage() {
 
   async function handleCaptchaSuccess(token: string) {
     setCaptchaToken(token);
-
     if (pendingAction !== "signup") return;
-
     await doSignUp(token);
   }
 
@@ -138,7 +141,7 @@ export default function SignUpPage() {
 
         <h1 className="text-2xl font-bold mb-4 text-center">Sign Up</h1>
 
-        {error && <p className="text-red-500">{error}</p>}
+        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
 
         <form onSubmit={handleSignUp} className="flex flex-col gap-3">
           <input
@@ -148,6 +151,8 @@ export default function SignUpPage() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
+            autoComplete="email"
+            inputMode="email"
           />
 
           <input
@@ -157,6 +162,8 @@ export default function SignUpPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
+            autoComplete="new-password"
+            minLength={8}
           />
 
           {!isBypassEmail && showCaptcha && (
@@ -172,7 +179,7 @@ export default function SignUpPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded"
+            className="bg-blue-600 text-white p-2 rounded disabled:opacity-60"
           >
             {loading ? "Creating account..." : "Sign Up"}
           </button>
@@ -180,9 +187,9 @@ export default function SignUpPage() {
 
         <p className="mt-4 text-center text-sm">
           Already have an account?{" "}
-          <a href="/sign-in" className="text-blue-600 underline">
+          <Link href="/sign-in" className="text-blue-600 underline">
             Sign In
-          </a>
+          </Link>
         </p>
       </div>
     </main>

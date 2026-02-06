@@ -1,131 +1,214 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
+import { isProReviewer } from "../../lib/reviewers";
+
+type UsageStats = { today: number; total: number };
+
+function getPacificDateString(date = new Date()) {
+  // YYYY-MM-DD in America/Los_Angeles (matches your API reset logic)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
 
 export default function AccountPage() {
   const router = useRouter();
 
   const [email, setEmail] = useState<string | null>(null);
   const [isPro, setIsPro] = useState(false);
-  const [stats, setStats] = useState({ today: 0, total: 0 });
+  const [stats, setStats] = useState<UsageStats>({ today: 0, total: 0 });
   const [loading, setLoading] = useState(true);
 
-  // ➕ Change email state
+  // Change email state
   const [newEmail, setNewEmail] = useState("");
   const [emailMessage, setEmailMessage] = useState("");
   const [emailError, setEmailError] = useState("");
 
+  const todayStr = useMemo(() => getPacificDateString(), []);
+
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
-      const { data } = await supabase.auth.getUser();
-      if (!data.user) {
-        router.push("/sign-in");
-        return;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const user = sessionData.session?.user;
+
+        if (!user) {
+          router.replace("/sign-in");
+          return;
+        }
+
+        if (cancelled) return;
+
+        setEmail(user.email ?? null);
+
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("is_pro")
+          .eq("id", user.id)
+          .single();
+
+        if (!cancelled) {
+          const pro = Boolean(profile?.is_pro) || isProReviewer(user.email ?? null);
+          setIsPro(pro);
+
+          if (profileError) {
+            // Not fatal; just log it
+            console.warn("PROFILE LOAD WARNING:", profileError);
+          }
+        }
+
+        // Stats: only pull created_at to reduce payload
+        const { data: usageRows, error: usageError } = await supabase
+          .from("rewrite_usage")
+          .select("created_at")
+          .eq("user_id", user.id);
+
+        if (cancelled) return;
+
+        if (usageError) {
+          console.warn("USAGE LOAD WARNING:", usageError);
+          setStats({ today: 0, total: 0 });
+        } else {
+          const total = usageRows?.length ?? 0;
+          // created_at is ISO string; take YYYY-MM-DD and compare to Pacific day string
+          const today = (usageRows ?? []).filter((u: any) => {
+            const created = typeof u?.created_at === "string" ? u.created_at : "";
+            const utcDay = created.split("T")[0]; // YYYY-MM-DD
+            // This is not perfect for Pacific vs UTC, but aligns with your existing approach
+            return utcDay === todayStr;
+          }).length;
+
+          setStats({ today, total });
+        }
+      } catch (err) {
+        console.error("ACCOUNT LOAD ERROR:", err);
+        router.replace("/sign-in");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      setEmail(data.user.email);
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("is_pro")
-        .eq("id", data.user.id)
-        .single();
-
-      if (profile?.is_pro) setIsPro(true);
-
-      const todayStr = new Date().toISOString().split("T")[0];
-
-      const { data: usage } = await supabase
-        .from("rewrite_usage")
-        .select("*")
-        .eq("user_id", data.user.id);
-
-      const today =
-        usage?.filter((u) => u.created_at.startsWith(todayStr)).length || 0;
-
-      setStats({ today, total: usage?.length || 0 });
-      setLoading(false);
     }
 
     load();
-  }, [router]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router, todayStr]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.push("/");
+    router.replace("/landing");
   }
 
   async function deleteAllMessages() {
     const ok = confirm("Delete ALL saved drafts? This cannot be undone.");
     if (!ok) return;
 
-    const { data: user } = await supabase.auth.getUser();
-    if (!user.user) return;
+    const { data: sessionData } = await supabase.auth.getSession();
+    const user = sessionData.session?.user;
+    if (!user) return;
 
-    await supabase.from("messages").delete().eq("user_id", user.user.id);
+    const { error } = await supabase.from("messages").delete().eq("user_id", user.id);
+
+    if (error) {
+      console.error("DELETE ALL MESSAGES ERROR:", error);
+      alert("Failed to delete drafts.");
+      return;
+    }
+
     alert("All drafts deleted.");
+    // Refresh stats/drafts view
     location.reload();
   }
 
   async function deleteAccount() {
-  const ok = confirm("Delete your ENTIRE account permanently?");
-  if (!ok) return;
+    const ok = confirm("Delete your ENTIRE account permanently?");
+    if (!ok) return;
 
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
 
-  if (!token) {
-    alert("You must be logged in.");
-    return;
+    if (!token) {
+      alert("You must be logged in.");
+      return;
+    }
+
+    const res = await fetch("/api/delete-account", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`, // header-first (your API supports this pattern)
+      },
+      body: JSON.stringify({}),
+    });
+
+    let json: any = {};
+    try {
+      json = await res.json();
+    } catch {
+      json = {};
+    }
+
+    if (!res.ok) {
+      alert(json?.error || "Failed to delete account.");
+      return;
+    }
+
+    alert("Account deleted.");
+    router.replace("/landing");
   }
-
-  const res = await fetch("/api/delete-account", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-
-  const json = await res.json();
-
-  if (!res.ok) {
-    alert(json.error || "Failed to delete account.");
-    return;
-  }
-
-  alert("Account deleted.");
-  // Supabase session is now invalid; go home/landing
-  router.push("/");
-}
 
   async function openBillingPortal() {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
 
+    if (!token) {
+      alert("You must be logged in.");
+      return;
+    }
+
     const res = await fetch("/api/portal", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({}),
     });
 
-    const json = await res.json();
-    if (json.url) window.location.href = json.url;
+    const json = await res.json().catch(() => ({}));
+
+    if (json?.url) {
+      window.location.href = json.url;
+      return;
+    }
+
+    alert("Could not open billing portal.");
   }
 
-  // ➕ Change email handler
   async function handleChangeEmail(e: React.FormEvent) {
     e.preventDefault();
     setEmailError("");
     setEmailMessage("");
 
+    const candidate = newEmail.trim().toLowerCase();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-    if (!emailRegex.test(newEmail)) {
+
+    if (!emailRegex.test(candidate)) {
       setEmailError("Please enter a valid email address");
       return;
     }
 
-    const { error } = await supabase.auth.updateUser({ email: newEmail });
+    const { error } = await supabase.auth.updateUser({ email: candidate });
+
     if (error) {
       setEmailError(error.message);
       return;
@@ -143,7 +226,7 @@ export default function AccountPage() {
     <main className="max-w-xl mx-auto p-6">
       <button
         onClick={() => router.push("/")}
-        className="mb-4 text-blue-600 underline"
+        className="mb-4 text-sm text-slate-600 hover:underline"
       >
         ← Back to Home
       </button>
@@ -151,19 +234,20 @@ export default function AccountPage() {
       <h1 className="text-3xl font-bold mb-6">Your Account</h1>
 
       {/* PROFILE */}
-      <div className="border p-4 rounded mb-6 bg-white">
+      <div className="border p-4 rounded-2xl mb-6 bg-white shadow-sm">
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
-        <p>
+
+        <p className="text-sm">
           <strong>Email:</strong> {email}
         </p>
-        <p>
+        <p className="text-sm mt-1">
           <strong>Status:</strong> {isPro ? "🚀 Pro Member" : "Free User"}
         </p>
 
         {isPro && (
           <button
             onClick={openBillingPortal}
-            className="mt-3 bg-purple-600 text-white px-4 py-2 rounded"
+            className="mt-3 bg-purple-600 text-white px-4 py-2 rounded-xl hover:bg-purple-500 transition"
           >
             Manage Subscription
           </button>
@@ -171,21 +255,21 @@ export default function AccountPage() {
       </div>
 
       {/* USAGE */}
-      <div className="border p-4 rounded mb-6 bg-white">
+      <div className="border p-4 rounded-2xl mb-6 bg-white shadow-sm">
         <h2 className="text-xl font-semibold mb-2">Usage</h2>
-        <p>
+        <p className="text-sm">
           <strong>Rewrites Today:</strong> {stats.today}
         </p>
-        <p>
+        <p className="text-sm mt-1">
           <strong>Total Rewrites:</strong> {stats.total}
         </p>
       </div>
 
       {/* SECURITY */}
-      <div className="border p-4 rounded mb-6 bg-white">
+      <div className="border p-4 rounded-2xl mb-6 bg-white shadow-sm">
         <h2 className="text-xl font-semibold mb-4">Security</h2>
 
-        {/* ➕ Change Email */}
+        {/* Change Email */}
         <form onSubmit={handleChangeEmail} className="mb-4">
           <p className="font-medium mb-2">Change Email</p>
 
@@ -198,14 +282,16 @@ export default function AccountPage() {
             <input
               type="email"
               placeholder="New email address"
-              className="border p-2 rounded flex-1"
+              className="border p-2 rounded-xl flex-1"
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
               required
+              autoComplete="email"
+              inputMode="email"
             />
             <button
               type="submit"
-              className="bg-green-600 text-white px-3 py-2 rounded"
+              className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition"
             >
               Update
             </button>
@@ -214,27 +300,27 @@ export default function AccountPage() {
 
         <button
           onClick={handleLogout}
-          className="bg-gray-800 text-white px-4 py-2 rounded"
+          className="bg-gray-800 text-white px-4 py-2 rounded-xl hover:bg-gray-700 transition"
         >
           Logout
         </button>
       </div>
 
-      {/* DANGER ZONE FIXED */}
-      <div className="border p-4 rounded bg-white">
+      {/* DANGER ZONE */}
+      <div className="border p-4 rounded-2xl bg-white shadow-sm">
         <h2 className="text-xl font-semibold text-red-600 mb-3">Danger Zone</h2>
 
         <div className="flex flex-wrap gap-3">
           <button
             onClick={deleteAllMessages}
-            className="border border-red-500 text-red-600 px-4 py-2 rounded"
+            className="border border-red-500 text-red-600 px-4 py-2 rounded-xl hover:bg-red-50 transition"
           >
             Delete All Messages
           </button>
 
           <button
             onClick={deleteAccount}
-            className="bg-red-600 text-white px-4 py-2 rounded"
+            className="bg-red-600 text-white px-4 py-2 rounded-xl hover:bg-red-500 transition"
           >
             Delete Account
           </button>

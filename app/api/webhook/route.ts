@@ -10,10 +10,23 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY!;
 const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
 
-const supabase = createClient(
+const supabaseServer = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!
+  process.env.SUPABASE_SECRET_KEY!,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
 );
+
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
 function getPlanType(stripePriceId?: string | null) {
   if (!stripePriceId) return null;
@@ -22,10 +35,14 @@ function getPlanType(stripePriceId?: string | null) {
   return null;
 }
 
+function isActiveStatus(status?: Stripe.Subscription.Status | null) {
+  return status === "active" || status === "trialing";
+}
+
 export async function POST(req: Request) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) {
-    return NextResponse.json(
+    return jsonNoStore(
       { error: "Missing STRIPE_WEBHOOK_SECRET" },
       { status: 500 }
     );
@@ -33,10 +50,7 @@ export async function POST(req: Request) {
 
   const signature = req.headers.get("stripe-signature");
   if (!signature) {
-    return NextResponse.json(
-      { error: "Missing stripe-signature" },
-      { status: 400 }
-    );
+    return jsonNoStore({ error: "Missing stripe-signature" }, { status: 400 });
   }
 
   const rawBody = await req.text();
@@ -47,7 +61,7 @@ export async function POST(req: Request) {
     event = stripe.webhooks.constructEvent(rawBody, signature, secret);
   } catch (err: any) {
     console.error("❌ WEBHOOK SIGNING ERROR:", err?.message || err);
-    return NextResponse.json(
+    return jsonNoStore(
       { error: err?.message ?? "Invalid signature" },
       { status: 400 }
     );
@@ -62,22 +76,29 @@ export async function POST(req: Request) {
 
       const userId = (session.metadata as any)?.userId as string | undefined;
       if (!userId) {
-        console.error("❌ Missing userId in metadata");
-        return NextResponse.json({ received: true });
+        console.error("❌ Missing userId in checkout session metadata");
+        return jsonNoStore({ received: true });
       }
 
-      const subscriptionId = session.subscription as string | null;
-      const customerId = session.customer as string | null;
+      const subscriptionId = (session.subscription as string | null) ?? null;
+      const customerId = (session.customer as string | null) ?? null;
 
-      // Get priceId from line items
-      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
-        limit: 1,
-      });
-      const stripePriceId = lineItems.data[0]?.price?.id ?? null;
+      // Determine plan type from line items (safe + explicit)
+      let stripePriceId: string | null = null;
+      try {
+        const lineItems = await stripe.checkout.sessions.listLineItems(
+          session.id,
+          { limit: 1 }
+        );
+        stripePriceId = lineItems.data?.[0]?.price?.id ?? null;
+      } catch (e) {
+        // If this fails, proceed; webhook may be retried
+        console.error("⚠️ Failed to list line items:", e);
+      }
 
       const plan_type = getPlanType(stripePriceId);
 
-      await supabase.from("profiles").upsert({
+      await supabaseServer.from("profiles").upsert({
         id: userId,
         is_pro: true,
         stripe_customer_id: customerId,
@@ -94,24 +115,24 @@ export async function POST(req: Request) {
     if (event.type === "customer.subscription.created") {
       const sub = event.data.object as Stripe.Subscription;
 
-      const customerId = sub.customer as string | null;
+      const customerId = (sub.customer as string | null) ?? null;
       const subscriptionId = sub.id;
-      const stripePriceId = sub.items.data[0]?.price?.id ?? null;
+      const stripePriceId = sub.items.data?.[0]?.price?.id ?? null;
 
       const plan_type = getPlanType(stripePriceId);
 
-      const { data: profile } = await supabase
+      const { data: profile } = await supabaseServer
         .from("profiles")
         .select("id")
         .eq("stripe_customer_id", customerId)
         .single();
 
-      if (!profile) return NextResponse.json({ received: true });
+      if (!profile) return jsonNoStore({ received: true });
 
-      await supabase
+      await supabaseServer
         .from("profiles")
         .update({
-          is_pro: true,
+          is_pro: isActiveStatus(sub.status),
           stripe_subscription_id: subscriptionId,
           plan_type,
         })
@@ -121,30 +142,29 @@ export async function POST(req: Request) {
     }
 
     // -------------------------------------------------
-    // customer.subscription.updated (switch monthly ↔ yearly)
+    // customer.subscription.updated (switch monthly ↔ yearly, status changes)
     // -------------------------------------------------
     if (event.type === "customer.subscription.updated") {
       const sub = event.data.object as Stripe.Subscription;
 
-      const customerId = sub.customer as string | null;
+      const customerId = (sub.customer as string | null) ?? null;
       const subscriptionId = sub.id;
-      const stripePriceId = sub.items.data[0]?.price?.id ?? null;
+      const stripePriceId = sub.items.data?.[0]?.price?.id ?? null;
 
       const plan_type = getPlanType(stripePriceId);
-      const status = sub.status;
 
-      const { data: profile } = await supabase
+      const { data: profile } = await supabaseServer
         .from("profiles")
         .select("id")
         .eq("stripe_customer_id", customerId)
         .single();
 
-      if (!profile) return NextResponse.json({ received: true });
+      if (!profile) return jsonNoStore({ received: true });
 
-      await supabase
+      await supabaseServer
         .from("profiles")
         .update({
-          is_pro: status === "active" || status === "trialing",
+          is_pro: isActiveStatus(sub.status),
           stripe_subscription_id: subscriptionId,
           plan_type,
         })
@@ -159,17 +179,17 @@ export async function POST(req: Request) {
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object as Stripe.Subscription;
 
-      const customerId = sub.customer as string | null;
+      const customerId = (sub.customer as string | null) ?? null;
 
-      const { data: profile } = await supabase
+      const { data: profile } = await supabaseServer
         .from("profiles")
         .select("id")
         .eq("stripe_customer_id", customerId)
         .single();
 
-      if (!profile) return NextResponse.json({ received: true });
+      if (!profile) return jsonNoStore({ received: true });
 
-      await supabase
+      await supabaseServer
         .from("profiles")
         .update({
           is_pro: false,
@@ -181,10 +201,11 @@ export async function POST(req: Request) {
       console.log("❌ Subscription canceled:", profile.id);
     }
 
-    return NextResponse.json({ received: true });
+    // Always return 200 for successfully processed events
+    return jsonNoStore({ received: true });
   } catch (err: any) {
     console.error("❌ WEBHOOK HANDLER ERROR:", err?.message || err);
     // Webhooks should generally return 200 so Stripe doesn’t endlessly retry
-    return NextResponse.json({ received: true });
+    return jsonNoStore({ received: true });
   }
 }

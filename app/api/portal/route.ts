@@ -6,66 +6,103 @@ export const runtime = "nodejs";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-// Admin Supabase client
-const supabase = createClient(
+// Server-side Supabase client (service role key required)
+const supabaseServer = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!
+  process.env.SUPABASE_SECRET_KEY!,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
 );
+
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function getBearerToken(req: Request): string | null {
+  const authHeader = req.headers.get("authorization") || "";
+  if (authHeader.toLowerCase().startsWith("bearer ")) {
+    const t = authHeader.slice(7).trim();
+    return t.length ? t : null;
+  }
+  return null;
+}
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-const { token: tokenFromBody } = body ?? {};
-
-// Prefer Authorization header: "Bearer <token>"
-const authHeader = req.headers.get("authorization") || "";
-const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
-  ? authHeader.slice(7).trim()
-  : null;
-
-const token = tokenFromHeader || tokenFromBody;
-
-if (!token) {
-  return NextResponse.json(
-    { error: "Missing auth token" },
-    { status: 401 }
-  );
-}
-
-    // Authenticate user
-    const { data } = await supabase.auth.getUser(token);
-    const user = data?.user;
-
-    if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+    // Parse body safely (avoid Promise.catch chaining)
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
     }
 
-    // Get stripe customer ID
-    const { data: profile } = await supabase
+    const tokenFromBody = body?.token;
+    const token = getBearerToken(req) || tokenFromBody;
+
+    if (!token || typeof token !== "string") {
+      return jsonNoStore({ error: "Missing auth token" }, { status: 401 });
+    }
+
+    // Authenticate user
+    const { data: authData, error: authError } =
+      await supabaseServer.auth.getUser(token);
+
+    if (authError || !authData?.user) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const user = authData.user;
+
+    // Get Stripe customer ID
+    const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
       .select("stripe_customer_id")
       .eq("id", user.id)
       .single();
 
+    if (profileError) {
+      return jsonNoStore({ error: "Profile lookup failed" }, { status: 500 });
+    }
+
     if (!profile?.stripe_customer_id) {
-      return NextResponse.json(
-        { error: "No Stripe customer found" },
-        { status: 400 }
+      return jsonNoStore({ error: "No Stripe customer found" }, { status: 400 });
+    }
+
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    if (!siteUrl) {
+      return jsonNoStore(
+        { error: "Server misconfigured (missing NEXT_PUBLIC_SITE_URL)" },
+        { status: 500 }
       );
     }
 
     // Create portal session
     const portal = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id,
-      return_url: `${process.env.NEXT_PUBLIC_SITE_URL}/account`,
+      return_url: `${siteUrl}/account`,
     });
 
-    return NextResponse.json({ url: portal.url });
-  } catch (err: any) {
-    console.error("PORTAL ERROR:", err.message);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    if (!portal.url) {
+      return jsonNoStore(
+        { error: "Failed to create billing portal session" },
+        { status: 502 }
+      );
+    }
+
+    return jsonNoStore({ url: portal.url });
+  } catch (err) {
+    console.error("PORTAL ERROR:", err);
+    return jsonNoStore(
+      { error: "Server error while creating billing portal session" },
+      { status: 500 }
+    );
   }
 }

@@ -1,6 +1,27 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* --------------------------------------------------
+   Global base tweaks
+-------------------------------------------------- */
+html,
+body {
+  @apply bg-white text-slate-900 antialiased;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Improve text rendering consistency */
+body {
+  text-rendering: optimizeLegibility;
+}
+
+/* --------------------------------------------------
+   Reusable animations
+-------------------------------------------------- */
 .fade-scale-in {
   animation: fadeScaleIn 0.4s ease-out forwards;
   opacity: 0;
@@ -11,5 +32,31 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+/* Slightly faster variant for small UI elements */
+.fade-scale-in-fast {
+  animation: fadeScaleInFast 0.25s ease-out forwards;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}
+
+@keyframes fadeScaleInFast {
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* --------------------------------------------------
+   Accessibility helpers
+-------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .fade-scale-in,
+  .fade-scale-in-fast {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }

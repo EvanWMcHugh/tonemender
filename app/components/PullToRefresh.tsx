@@ -4,43 +4,75 @@ import type { ReactNode } from "react";
 import { useRef, useState } from "react";
 
 type PullToRefreshProps = {
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   children: ReactNode;
 };
 
 export default function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+
   const startYRef = useRef<number | null>(null);
   const pullingRef = useRef(false);
 
   function maybeVibrate(ms = 30) {
-    if (typeof window !== "undefined" && "vibrate" in navigator) {
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
       navigator.vibrate(ms);
     }
   }
 
-  function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
-    if (refreshing) return;
-    if (typeof window !== "undefined" && window.scrollY > 0) return;
+  function canStartPull() {
+    if (refreshing) return false;
 
-    const touch = e.touches[0];
+    // Only allow pull-to-refresh when at the top.
+    // window.scrollY can be flaky on mobile; fall back to document scroll.
+    const scrollTop =
+      typeof window !== "undefined"
+        ? window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0
+        : 0;
+
+    return scrollTop <= 0;
+  }
+
+  function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
+    if (!canStartPull()) return;
+
+    const touch = e.touches?.[0];
+    if (!touch) return;
+
     startYRef.current = touch.clientY;
     pullingRef.current = true;
   }
 
   function handleTouchMove(e: React.TouchEvent<HTMLDivElement>) {
     if (!pullingRef.current || startYRef.current === null) return;
-    const touch = e.touches[0];
+
+    const touch = e.touches?.[0];
+    if (!touch) return;
+
     const delta = touch.clientY - startYRef.current;
 
+    // If user scrolls up or returns to neutral, reset.
     if (delta <= 0) {
       setPullDistance(0);
       return;
     }
 
-    const limited = Math.min(delta, 100);
+    // Resist + cap
+    const limited = Math.min(delta * 0.9, 110);
     setPullDistance(limited);
+
+    // Prevent the browser bounce-scroll while we’re actively pulling
+    if (limited > 5) e.preventDefault();
+  }
+
+  async function runRefresh() {
+    try {
+      await onRefresh();
+    } catch (err) {
+      // Don’t crash the UI if refresh throws
+      console.error("PullToRefresh onRefresh error:", err);
+    }
   }
 
   function handleTouchEnd() {
@@ -51,9 +83,11 @@ export default function PullToRefresh({ onRefresh, children }: PullToRefreshProp
     if (pullDistance >= threshold && !refreshing) {
       setRefreshing(true);
       maybeVibrate(40);
-      onRefresh();
 
-      // Reset UI after a short delay
+      // Fire refresh (supports async)
+      void runRefresh();
+
+      // Keep indicator briefly so it feels responsive even if refresh is instant
       setTimeout(() => {
         setRefreshing(false);
         setPullDistance(0);
@@ -69,7 +103,7 @@ export default function PullToRefresh({ onRefresh, children }: PullToRefreshProp
   const indicatorStyle: React.CSSProperties = {
     transform: `translateY(${pullDistance / 2}px)`,
     opacity: pullDistance > 5 || refreshing ? 1 : 0,
-    transition: refreshing ? "opacity 0.2s ease-out" : "opacity 0.15s ease-out",
+    transition: "opacity 0.15s ease-out",
   };
 
   const contentStyle: React.CSSProperties = {

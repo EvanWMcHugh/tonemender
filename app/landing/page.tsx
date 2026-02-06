@@ -10,37 +10,44 @@ export default function MarketingLandingPage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
 
-  // 🔥 If user is logged in → redirect to main dashboard "/"
+  // If user is logged in → redirect to main dashboard "/"
   useEffect(() => {
-  // 1️⃣ Check current session on mount
-  const checkSession = async () => {
-    const { data } = await supabase.auth.getSession();
-    if (data.session?.user) {
-      router.replace("/"); // redirect to your logged-in page
-    } else {
-      setChecking(false); // show marketing page
-    }
-  };
+    let cancelled = false;
 
-  checkSession();
+    const checkSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
 
-  // 2️⃣ Listen for login events
-  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-    if (session?.user) {
-      router.replace("/"); // redirect to logged-in page
-    }
-  });
+        if (data.session?.user) {
+          router.replace("/");
+        } else {
+          setChecking(false);
+        }
+      } catch (err) {
+        console.error("LANDING SESSION CHECK ERROR:", err);
+        if (!cancelled) setChecking(false);
+      }
+    };
 
-  return () => {
-    listener.subscription.unsubscribe(); // clean up listener
-  };
-}, [router]);
+    checkSession();
 
-if (checking) return null; // prevent flicker
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session?.user) {
+          router.replace("/");
+        }
+      }
+    );
 
-  // --------------------------------------------------------
-  // ❤️ Logged-out Marketing Landing Page
-  // --------------------------------------------------------
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
+  }, [router]);
+
+  if (checking) return null;
+
   return (
     <main className="min-h-screen bg-white text-slate-900">
       {/* HERO SECTION */}
@@ -52,7 +59,7 @@ if (checking) return null; // prevent flicker
           className="text-5xl sm:text-6xl font-extrabold tracking-tight"
         >
           An AI relationship message rewriter
-<span className="text-blue-600"> that fixes text tone.</span>
+          <span className="text-blue-600"> that fixes text tone.</span>
         </motion.h1>
 
         <motion.p
@@ -62,7 +69,8 @@ if (checking) return null; // prevent flicker
           className="mt-6 text-lg sm:text-xl text-slate-600 max-w-3xl mx-auto"
         >
           ToneMender rewrites emotionally charged text messages into calm, clear,
-  relationship-safe communication — so conversations don’t turn into arguments.
+          relationship-safe communication — so conversations don’t turn into
+          arguments.
         </motion.p>
 
         {/* CTA BUTTONS */}
@@ -98,35 +106,39 @@ if (checking) return null; // prevent flicker
           <h2 className="text-3xl font-bold mb-10 text-center">
             What ToneMender helps you do
           </h2>
-<p className="text-slate-600 text-center mb-12">
-  Learn more about how a{" "}
-  <Link
-    href="/relationship-message-rewriter"
-    className="text-blue-600 underline font-medium"
-  >
-    relationship message rewriter
-  </Link>{" "}
-  helps prevent misunderstandings.
-</p>
+
+          <p className="text-slate-600 text-center mb-12">
+            Learn more about how a{" "}
+            <Link
+              href="/relationship-message-rewriter"
+              className="text-blue-600 underline font-medium"
+            >
+              relationship message rewriter
+            </Link>{" "}
+            helps prevent misunderstandings.
+          </p>
+
           <div className="grid sm:grid-cols-3 gap-8">
             <div className="p-6 bg-white rounded-2xl shadow-sm border">
               <h3 className="text-lg font-semibold mb-2">🧘 Calm the tone</h3>
               <p className="text-slate-600 text-sm">
-                Turn reactive, heated messages into steady, grounded communication.
+                Turn reactive, heated messages into steady, grounded
+                communication.
               </p>
             </div>
 
             <div className="p-6 bg-white rounded-2xl shadow-sm border">
               <h3 className="text-lg font-semibold mb-2">❤️ Reduce conflict</h3>
               <p className="text-slate-600 text-sm">
-                Say what you mean *without* starting a fight or sounding harsh.
+                Say what you mean without starting a fight or sounding harsh.
               </p>
             </div>
 
             <div className="p-6 bg-white rounded-2xl shadow-sm border">
               <h3 className="text-lg font-semibold mb-2">✨ Rewrite in seconds</h3>
               <p className="text-slate-600 text-sm">
-                Instantly transform messages into soft, calm, or clear variations.
+                Instantly transform messages into soft, calm, or clear
+                variations.
               </p>
             </div>
           </div>
@@ -153,7 +165,8 @@ if (checking) return null; // prevent flicker
           <div className="grid sm:grid-cols-3 gap-8">
             <div className="bg-white p-6 rounded-2xl shadow border">
               <p className="text-slate-700 text-sm">
-                “I avoided a fight with my boyfriend because of this app. Legit insane.”
+                “I avoided a fight with my boyfriend because of this app. Legit
+                insane.”
               </p>
               <p className="mt-4 text-xs text-slate-500">— Sarah</p>
             </div>
@@ -177,10 +190,15 @@ if (checking) return null; // prevent flicker
 
       {/* FOOTER */}
       <footer className="py-10 text-center text-slate-500 text-sm">
-        <p>© {new Date().getFullYear()} ToneMender — Say it better. Save it together.</p>
+        <p>
+          © {new Date().getFullYear()} ToneMender — Say it better. Save it
+          together.
+        </p>
+
         <Link href="/blog" className="underline block mb-2">
-  Read the Blog
-</Link>
+          Read the Blog
+        </Link>
+
         <Link href="/sign-in" className="mt-2 underline block">
           Go to App
         </Link>
@@ -190,7 +208,7 @@ if (checking) return null; // prevent flicker
 }
 
 /* ======================================================
-   ✅ ONLY LOGIC CHANGE IS INSIDE THIS COMPONENT
+   Email capture form (client-side)
 ====================================================== */
 
 function EmailForm() {
@@ -199,28 +217,29 @@ function EmailForm() {
   const [loading, setLoading] = useState(false);
 
   async function joinWaitlist() {
-  if (!email || loading) return;
+    if (!email || loading) return;
 
-  setLoading(true);
+    setLoading(true);
 
-  try {
-    await fetch("/api/newsletter", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
-    });
+    try {
+      const res = await fetch("/api/newsletter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
 
-    // ✅ Always show confirmation message
-    setSubmitted(true);
-    setEmail("");
-  } catch (err) {
-    console.warn("Newsletter request failed", err);
-    // still show confirmation UX
-    setSubmitted(true);
-  } finally {
-    setLoading(false);
+      // Always show confirmation UX (privacy-friendly; no email enumeration)
+      setSubmitted(true);
+
+      // Only clear on success so user can retry if they want
+      if (res.ok) setEmail("");
+    } catch (err) {
+      console.warn("Newsletter request failed", err);
+      setSubmitted(true);
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   return !submitted ? (
     <div className="mt-6 flex flex-col sm:flex-row gap-3">
@@ -230,6 +249,9 @@ function EmailForm() {
         value={email}
         className="border rounded-2xl px-4 py-3 text-sm w-full bg-slate-50 focus:bg-white focus:border-blue-500 transition"
         onChange={(e) => setEmail(e.target.value)}
+        autoComplete="email"
+        inputMode="email"
+        aria-label="Email address"
       />
       <button
         onClick={joinWaitlist}

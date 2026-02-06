@@ -1,14 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 
-const Turnstile = dynamic(() => import("react-turnstile"), {
-  ssr: false,
-});
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
 // ✅ Only these are excluded from captcha
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
@@ -21,6 +19,7 @@ type PendingAction = null | "login" | "reset";
 
 export default function LoginPage() {
   const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -30,48 +29,36 @@ export default function LoginPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [resetSent, setResetSent] = useState(false);
 
-  const [isBypassEmail, setIsBypassEmail] = useState(false);
   const [showCaptcha, setShowCaptcha] = useState(false);
-
-  // ✅ NEW: what the user is trying to do when captcha appears
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
+  const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
+  const isBypassEmail = useMemo(
+    () => CAPTCHA_BYPASS_EMAILS.has(normalizedEmail),
+    [normalizedEmail]
+  );
+
   useEffect(() => {
+    let cancelled = false;
+
     async function checkSession() {
       const { data } = await supabase.auth.getSession();
-      if (data?.session?.user) router.replace("/");
+      if (!cancelled && data?.session?.user) router.replace("/");
     }
+
     checkSession();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
+  // Reset captcha state when email changes
   useEffect(() => {
-    const normalized = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalized);
-    setIsBypassEmail(bypass);
-
-    // Always reset captcha when email changes
     setShowCaptcha(false);
     setCaptchaToken(null);
     setPendingAction(null);
-  }, [email]);
-
-  async function verifyTurnstileOrBypass(normalizedEmail: string, token: string | null) {
-    const resp = await fetch("/api/turnstile/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: normalizedEmail,
-        token: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : token,
-      }),
-    });
-
-    const json = await resp.json().catch(() => ({}));
-
-    // Your API returns { ok: true } on success per your current sign-in file.
-    if (!resp.ok || !json?.ok) {
-      throw new Error(json?.error || "Captcha verification failed");
-    }
-  }
+  }, [normalizedEmail]);
 
   function cleanupCaptchaState() {
     setCaptchaToken(null);
@@ -79,15 +66,35 @@ export default function LoginPage() {
     setPendingAction(null);
   }
 
+  async function verifyTurnstileOrBypass(emailToVerify: string, token: string | null) {
+    const resp = await fetch("/api/turnstile/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // If bypass email, server will bypass even if token is null
+      body: JSON.stringify({
+        email: emailToVerify,
+        token: CAPTCHA_BYPASS_EMAILS.has(emailToVerify) ? null : token,
+      }),
+    });
+
+    let json: any = {};
+    try {
+      json = await resp.json();
+    } catch {
+      json = {};
+    }
+
+    if (!resp.ok || !json?.ok) {
+      throw new Error(json?.error || "Captcha verification failed");
+    }
+  }
+
   async function doLogin(withToken: string | null) {
     setError("");
     setResetSent(false);
 
-    const normalizedEmail = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
-
     // show captcha only after click
-    if (!bypass && !withToken) {
+    if (!isBypassEmail && !withToken) {
       setPendingAction("login");
       setShowCaptcha(true);
       return;
@@ -104,8 +111,8 @@ export default function LoginPage() {
 
       if (error) throw new Error(error.message);
 
-      router.replace("/");
       cleanupCaptchaState();
+      router.replace("/");
     } catch (err: any) {
       setError(err?.message || "Login failed");
       cleanupCaptchaState();
@@ -118,16 +125,13 @@ export default function LoginPage() {
     setError("");
     setResetSent(false);
 
-    const normalizedEmail = normalizeEmail(email);
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(normalizedEmail);
-
-    if (!email) {
+    if (!normalizedEmail) {
       setError("Enter your email first.");
       return;
     }
 
     // show captcha only after click
-    if (!bypass && !withToken) {
+    if (!isBypassEmail && !withToken) {
       setPendingAction("reset");
       setShowCaptcha(true);
       return;
@@ -137,8 +141,13 @@ export default function LoginPage() {
     try {
       await verifyTurnstileOrBypass(normalizedEmail, withToken);
 
+      const redirectTo =
+        process.env.NEXT_PUBLIC_SITE_URL
+          ? `${process.env.NEXT_PUBLIC_SITE_URL}/reset-password`
+          : "https://tonemender.com/reset-password";
+
       const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: "https://tonemender.com/reset-password",
+        redirectTo,
       });
 
       if (error) throw new Error(error.message);
@@ -155,20 +164,17 @@ export default function LoginPage() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    // start login flow (captcha may appear)
     await doLogin(null);
   }
 
   async function handleResetPassword() {
-    // start reset flow (captcha may appear)
     await doReset(null);
   }
 
-  // ✅ NEW: when captcha succeeds, automatically finish the pending action
+  // When captcha succeeds, automatically finish the pending action
   async function handleCaptchaSuccess(token: string) {
     setCaptchaToken(token);
 
-    // If for some reason there is no pending action, do nothing.
     if (!pendingAction) return;
 
     if (pendingAction === "login") {
@@ -190,7 +196,7 @@ export default function LoginPage() {
 
         <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
 
-        {error && <p className="text-red-500">{error}</p>}
+        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
 
         <form onSubmit={handleLogin} className="flex flex-col gap-3">
           <input
@@ -200,6 +206,8 @@ export default function LoginPage() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
+            autoComplete="email"
+            inputMode="email"
           />
 
           <input
@@ -209,6 +217,7 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
+            autoComplete="current-password"
           />
 
           {!isBypassEmail && showCaptcha && (
@@ -224,7 +233,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded"
+            className="bg-blue-600 text-white p-2 rounded disabled:opacity-60"
           >
             {loading ? "Logging in..." : "Login"}
           </button>
@@ -234,7 +243,7 @@ export default function LoginPage() {
           type="button"
           onClick={handleResetPassword}
           disabled={loading}
-          className="mt-3 text-sm text-blue-600 underline text-center w-full"
+          className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60"
         >
           Forgot your password?
         </button>
@@ -247,9 +256,9 @@ export default function LoginPage() {
 
         <p className="mt-4 text-center text-sm">
           Don’t have an account?{" "}
-          <a href="/sign-up" className="text-blue-600 underline">
+          <Link href="/sign-up" className="text-blue-600 underline">
             Sign Up
-          </a>
+          </Link>
         </p>
       </div>
     </main>

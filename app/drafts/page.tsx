@@ -4,40 +4,64 @@ import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 
+type Draft = {
+  id: string;
+  created_at: string;
+  original: string | null;
+  tone: string | null;
+  soft_rewrite: string | null;
+  calm_rewrite: string | null;
+  clear_rewrite: string | null;
+};
+
 export default function DraftsPage() {
   const router = useRouter();
+
   const [loading, setLoading] = useState(true);
-  const [drafts, setDrafts] = useState<any[]>([]);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [error, setError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
+
     async function init() {
-      // Check auth
-      const { data } = await supabase.auth.getSession();
-      const user = data.session?.user;
+      try {
+        const { data } = await supabase.auth.getSession();
+        const user = data.session?.user;
 
-      if (!user) {
-        router.replace("/sign-in?error=not-authenticated");
-        return;
-      }
+        if (!user) {
+          router.replace("/sign-in?error=not-authenticated");
+          return;
+        }
 
-      // Load drafts for this user
-      await loadDrafts(user.id);
-      setLoading(false);
-    }
+        const { data: rows, error } = await supabase
+          .from("messages")
+          .select("id, created_at, original, tone, soft_rewrite, calm_rewrite, clear_rewrite")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false });
 
-    async function loadDrafts(userId: string) {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("user_id", userId)
-        .order("created_at", { ascending: false });
+        if (cancelled) return;
 
-      if (!error && data) {
-        setDrafts(data);
+        if (error) {
+          console.error("DRAFTS LOAD ERROR:", error);
+          setError("Could not load drafts. Try again.");
+          setDrafts([]);
+        } else {
+          setDrafts((rows ?? []) as Draft[]);
+        }
+      } catch (err) {
+        console.error("DRAFTS INIT ERROR:", err);
+        if (!cancelled) setError("Could not load drafts. Try again.");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
 
     init();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   async function handleDeleteDraft(id: string) {
@@ -47,6 +71,7 @@ export default function DraftsPage() {
     const { error } = await supabase.from("messages").delete().eq("id", id);
 
     if (error) {
+      console.error("DRAFT DELETE ERROR:", error);
       alert("Failed to delete draft.");
       return;
     }
@@ -55,66 +80,69 @@ export default function DraftsPage() {
   }
 
   if (loading) {
-    return (
-      <main className="p-6 text-center">
-        Checking authentication…
-      </main>
-    );
+    return <main className="p-6 text-center">Checking authentication…</main>;
   }
 
   return (
     <main className="p-6 max-w-2xl mx-auto">
-      {/* Back button */}
       <button
         onClick={() => router.push("/")}
-        className="mb-4 text-blue-600 underline"
+        className="mb-4 text-sm text-slate-600 hover:underline"
       >
         ← Back to Home
       </button>
 
       <h1 className="text-2xl font-bold mb-4">Your Drafts</h1>
 
-      {drafts.length === 0 && (
-        <p className="text-gray-500">No drafts saved yet.</p>
+      {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+
+      {drafts.length === 0 && !error && (
+        <p className="text-slate-500">No drafts saved yet.</p>
       )}
 
       <div className="flex flex-col gap-4">
-        {drafts.map((d) => (
-          <div key={d.id} className="border p-4 rounded bg-white shadow">
-            <p className="text-sm text-gray-400 mb-2">
-              {new Date(d.created_at).toLocaleString()}
-            </p>
+        {drafts.map((d) => {
+          const created = d.created_at
+            ? new Date(d.created_at).toLocaleString()
+            : "";
 
-            <p className="mt-1">
-              <strong>Original:</strong> {d.original}
-            </p>
+          return (
+            <div key={d.id} className="border p-4 rounded-2xl bg-white shadow-sm">
+              <p className="text-xs text-slate-400 mb-2">{created}</p>
 
-            {d.soft_rewrite && (
-              <p className="mt-1">
-                <strong>Soft:</strong> {d.soft_rewrite}
-              </p>
-            )}
+              {d.original && (
+                <p className="mt-1 text-sm">
+                  <strong>Original:</strong> {d.original}
+                </p>
+              )}
 
-            {d.calm_rewrite && (
-              <p className="mt-1">
-                <strong>Calm:</strong> {d.calm_rewrite}
-              </p>
-            )}
+              {d.soft_rewrite && (
+                <p className="mt-2 text-sm">
+                  <strong>Soft:</strong> {d.soft_rewrite}
+                </p>
+              )}
 
-            {d.clear_rewrite && (
-              <p className="mt-1">
-                <strong>Clear:</strong> {d.clear_rewrite}
-              </p>
-            )}
+              {d.calm_rewrite && (
+                <p className="mt-2 text-sm">
+                  <strong>Calm:</strong> {d.calm_rewrite}
+                </p>
+              )}
 
-            <button
-              onClick={() => handleDeleteDraft(d.id)}
-              className="mt-3 text-sm text-red-600 underline"
-            >
-              Delete draft
-            </button>
-          </div>
-        ))}
+              {d.clear_rewrite && (
+                <p className="mt-2 text-sm">
+                  <strong>Clear:</strong> {d.clear_rewrite}
+                </p>
+              )}
+
+              <button
+                onClick={() => handleDeleteDraft(d.id)}
+                className="mt-4 text-xs text-red-600 underline"
+              >
+                Delete draft
+              </button>
+            </div>
+          );
+        })}
       </div>
     </main>
   );

@@ -4,94 +4,149 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-// No apiVersion — avoids deploy errors
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-// Server-side supabase client (admin privileges)
-const supabase = createClient(
+// Server-side Supabase client (service role key required)
+const supabaseServer = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!
+  process.env.SUPABASE_SECRET_KEY!,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
 );
+
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function getBearerToken(req: Request): string | null {
+  const authHeader = req.headers.get("authorization") || "";
+  if (authHeader.toLowerCase().startsWith("bearer ")) {
+    const t = authHeader.slice(7).trim();
+    return t.length ? t : null;
+  }
+  return null;
+}
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-const { token: tokenFromBody, type } = body ?? {};
-
-// Prefer Authorization header: "Bearer <token>"
-const authHeader = req.headers.get("authorization") || "";
-const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
-  ? authHeader.slice(7).trim()
-  : null;
-
-const token = tokenFromHeader || tokenFromBody;
-
-if (!token) {
-  return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
-}
-
-    // Authenticate user
-    const { data: authData, error: authError } = await supabase.auth.getUser(token);
-
-    if (authError || !authData.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // Parse body safely (avoid Promise.catch chaining)
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
     }
 
-    const userId = authData.user.id;
+    const tokenFromBody = body?.token;
+    const type = body?.type;
 
-    // Choose correct price
-    const priceId =
-      type === "yearly"
-        ? process.env.STRIPE_PRICE_YEARLY
-        : process.env.STRIPE_PRICE_MONTHLY;
+    const token = getBearerToken(req) || tokenFromBody;
+
+    if (!token || typeof token !== "string") {
+      return jsonNoStore({ error: "Missing auth token" }, { status: 401 });
+    }
+
+    // Authenticate user
+    const { data: authData, error: authError } =
+      await supabaseServer.auth.getUser(token);
+
+    if (authError || !authData?.user) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const user = authData.user;
+    const userId = user.id;
+
+    // Validate plan type
+    const planType = type === "yearly" ? "yearly" : "monthly";
+
+    // Choose correct price ID
+    const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY!;
+    const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
+    const priceId = planType === "yearly" ? PRICE_YEARLY : PRICE_MONTHLY;
 
     if (!priceId) {
-      return NextResponse.json(
-        { error: "Missing Stripe price ID" },
-        { status: 400 }
+      return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
+    }
+
+    // Site URL sanity
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+    if (!siteUrl) {
+      return jsonNoStore(
+        { error: "Server misconfigured (missing NEXT_PUBLIC_SITE_URL)" },
+        { status: 500 }
       );
     }
 
-    // Create Stripe customer if needed
-    const { data: profile } = await supabase
+    // Fetch existing Stripe customer id
+    const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
       .select("stripe_customer_id")
       .eq("id", userId)
       .single();
 
-    let customerId = profile?.stripe_customer_id;
+    if (profileError) {
+      return jsonNoStore({ error: "Profile lookup failed" }, { status: 500 });
+    }
 
+    let customerId: string | null = profile?.stripe_customer_id ?? null;
+
+    // Create Stripe customer if needed
     if (!customerId) {
       const customer = await stripe.customers.create({
-        email: authData.user.email!,
+        email: user.email ?? undefined,
         metadata: { userId },
       });
 
       customerId = customer.id;
 
-      // Store customer ID in profile
-      await supabase
+      const { error: updateError } = await supabaseServer
         .from("profiles")
         .update({ stripe_customer_id: customerId })
         .eq("id", userId);
+
+      if (updateError) {
+        // Customer exists now in Stripe; fail safely so you can retry without duplicates later
+        return jsonNoStore(
+          { error: "Failed to store Stripe customer ID" },
+          { status: 500 }
+        );
+      }
     }
 
     // Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,
-      payment_method_types: ["card"],
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/account?success=true`,
-      cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/upgrade?canceled=true`,
-
-      // Important — lets webhook know who upgraded
-      metadata: { userId },
+      success_url: `${siteUrl}/account?success=true`,
+      cancel_url: `${siteUrl}/upgrade?canceled=true`,
+      metadata: {
+        userId,
+        planType,
+      },
     });
 
-    return NextResponse.json({ url: session.url });
-  } catch (err: any) {
+    if (!session.url) {
+      return jsonNoStore(
+        { error: "Failed to create checkout session" },
+        { status: 502 }
+      );
+    }
+
+    return jsonNoStore({ url: session.url });
+  } catch (err) {
     console.error("CHECKOUT ERROR:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return jsonNoStore(
+      { error: "Server error while creating checkout session" },
+      { status: 500 }
+    );
   }
 }

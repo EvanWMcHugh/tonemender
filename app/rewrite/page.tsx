@@ -1,18 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Toast from "../components/Toast";
 import html2canvas from "html2canvas";
 import PullToRefresh from "../components/PullToRefresh";
+import { isProReviewer } from "../../lib/reviewers";
+
+type ToneKey = "soft" | "calm" | "clear";
 
 export default function RewritePage() {
   const router = useRouter();
 
   // Auth state
   const [ready, setReady] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
 
   // Pro status
   const [isPro, setIsPro] = useState(false);
@@ -21,14 +23,16 @@ export default function RewritePage() {
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
   const [tone, setTone] = useState("");
- const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
+
+  // If user clicks "Use This", keep original
+  const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
   const [usedRewrite, setUsedRewrite] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
 
-  const [results, setResults] = useState({
+  const [results, setResults] = useState<{ soft: string; calm: string; clear: string }>({
     soft: "",
     calm: "",
     clear: "",
@@ -54,63 +58,43 @@ export default function RewritePage() {
   // AUTH CHECK + FETCH PRO STATUS
   // ---------------------------------------------------------
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
 
-    async function checkSession() {
-      const { data } = await supabase.auth.getSession();
+    async function load() {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const user = data.session?.user;
 
-      if (!mounted) return;
+        if (!user) {
+          router.replace("/sign-in");
+          return;
+        }
 
-      if (data.session) {
-        setLoggedIn(true);
-        setReady(true);
-
-        const user = data.session.user;
-
+        // Check Pro
         const { data: profile } = await supabase
           .from("profiles")
           .select("is_pro")
           .eq("id", user.id)
           .single();
 
-        setIsPro(profile?.is_pro === true);
-        return;
+        if (cancelled) return;
+
+        setIsPro(Boolean(profile?.is_pro) || isProReviewer(user.email ?? null));
+        setReady(true);
+      } catch (err) {
+        console.error("REWRITE AUTH LOAD ERROR:", err);
+        router.replace("/sign-in");
       }
-
-      setTimeout(async () => {
-        const { data: retry } = await supabase.auth.getSession();
-
-        if (!mounted) return;
-
-        if (retry.session) {
-          setLoggedIn(true);
-          setReady(true);
-
-          const user = retry.session.user;
-
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("is_pro")
-            .eq("id", user.id)
-            .single();
-
-          setIsPro(profile?.is_pro === true);
-        } else {
-          router.replace("/sign-in");
-        }
-      }, 300);
     }
 
-    checkSession();
+    load();
 
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setLoggedIn(!!session);
-      }
-    );
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) router.replace("/sign-in");
+    });
 
     return () => {
-      mounted = false;
+      cancelled = true;
       listener.subscription.unsubscribe();
     };
   }, [router]);
@@ -118,8 +102,6 @@ export default function RewritePage() {
   if (!ready) {
     return <main className="p-8 text-center">Checking authentication…</main>;
   }
-
-  if (!loggedIn) return null;
 
   // ---------------------------------------------------------
   // HANDLE REWRITE
@@ -130,6 +112,7 @@ export default function RewritePage() {
     setToneScore(null);
     setEmotion("");
     setResults({ soft: "", calm: "", clear: "" });
+    setToast("");
     setLoading(true);
 
     const trimmedMessage = message.trim();
@@ -137,16 +120,15 @@ export default function RewritePage() {
     try {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
+      const user = data.session?.user;
 
-      if (!token) {
+      if (!token || !user) {
         setError("You must be logged in to use ToneMender.");
-        setLoading(false);
         return;
       }
 
       if (!trimmedMessage) {
         setError("Please paste a message to rewrite.");
-        setLoading(false);
         return;
       }
 
@@ -155,45 +137,49 @@ export default function RewritePage() {
 
       const res = await fetch("/api/rewrite", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // Prefer header auth (your API supports it)
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
-          token,
           message: trimmedMessage,
           recipient: finalRecipient,
           tone: finalTone,
         }),
       });
 
-      const json = await res.json();
+      let json: any = {};
+      try {
+        json = await res.json();
+      } catch {
+        json = {};
+      }
 
       if (res.status === 429) {
         setLimitReached(true);
-        setLoading(false);
         return;
       }
 
       if (!res.ok) {
-        setError(json.error || "Something went wrong.");
-        setLoading(false);
+        setError(json?.error || "Something went wrong.");
         return;
       }
 
       const newResults = {
-        soft: json.soft?.trim() || "",
-        calm: json.calm?.trim() || "",
-        clear: json.clear?.trim() || "",
+        soft: String(json.soft ?? "").trim(),
+        calm: String(json.calm ?? "").trim(),
+        clear: String(json.clear ?? "").trim(),
       };
 
       setResults(newResults);
 
       // Tone score + emotion
-      setToneScore(json.tone_score ?? null);
-      setEmotion(json.emotion_prediction || "");
+      setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
+      setEmotion(String(json.emotion_prediction ?? "").trim());
 
-      const chosenToneKey = isPro
-        ? finalTone === "default"
-          ? "soft"
-          : finalTone
+      const chosenToneKey: ToneKey = isPro
+        ? (finalTone === "default" ? "soft" : (finalTone as ToneKey))
         : "soft";
 
       const chosenText =
@@ -206,9 +192,9 @@ export default function RewritePage() {
       setOriginalForCard(trimmedMessage);
       setRewrittenForCard(chosenText);
 
-      // Tiny haptic bump on success
       vibrate(15);
-    } catch {
+    } catch (err) {
+      console.error("REWRITE REQUEST ERROR:", err);
       setError("Network error. Try again.");
     } finally {
       setLoading(false);
@@ -218,17 +204,21 @@ export default function RewritePage() {
   // ---------------------------------------------------------
   // SAVE, COPY, USE
   // ---------------------------------------------------------
-  function copyToClipboard(text: string) {
+  async function copyToClipboard(text: string) {
     if (!text) {
       setToast("Nothing to copy yet.");
       return;
     }
-    navigator.clipboard.writeText(text);
-    setToast("Copied!");
-    vibrate(10);
+    try {
+      await navigator.clipboard.writeText(text);
+      setToast("Copied!");
+      vibrate(10);
+    } catch {
+      setToast("Could not copy. Try again.");
+    }
   }
 
- function useThis(text: string) {
+  function useThis(text: string) {
     if (!text) return;
 
     if (!usedRewrite) {
@@ -251,32 +241,36 @@ export default function RewritePage() {
 
     vibrate(15);
   }
-  async function saveMessage(text: string, tone: "soft" | "calm" | "clear") {
+
+  async function saveMessage(text: string, toneKey: ToneKey) {
     const { data } = await supabase.auth.getSession();
     const user = data.session?.user;
 
     if (!user) {
-      alert("You must be logged in to save messages.");
+      setToast("You must be logged in to save messages.");
       return;
     }
 
     const insertData: any = {
       user_id: user.id,
       original: originalMessageSnapshot || message,
-      tone,
+      tone: toneKey,
+      soft_rewrite: null,
+      calm_rewrite: null,
+      clear_rewrite: null,
     };
 
-    if (tone === "soft") insertData.soft_rewrite = text;
-    if (tone === "calm") insertData.calm_rewrite = text;
-    if (tone === "clear") insertData.clear_rewrite = text;
+    if (toneKey === "soft") insertData.soft_rewrite = text;
+    if (toneKey === "calm") insertData.calm_rewrite = text;
+    if (toneKey === "clear") insertData.clear_rewrite = text;
 
     const { error } = await supabase.from("messages").insert(insertData);
 
     if (error) {
       console.error("SAVE ERROR:", error);
-      alert("Failed to save message.");
+      setToast("Failed to save.");
     } else {
-      alert("Saved!");
+      setToast("Saved!");
       vibrate(15);
     }
   }
@@ -306,15 +300,16 @@ export default function RewritePage() {
   }
 
   async function shareRewrite() {
-    const key = isPro ? tone || "soft" : "soft";
-    const current = key ? (results as any)[key] : results.soft;
+    const key: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
+    const current = (results as any)[key] || results.soft;
 
     if (!current) {
       setToast("Rewrite a message first.");
       return;
     }
 
-    const shareText = `Before:\n${message.trim()}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
+    const beforeText = (usedRewrite ? originalMessageSnapshot : message).trim();
+    const shareText = `Before:\n${beforeText}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
 
     try {
       if (navigator.share) {
@@ -334,7 +329,7 @@ export default function RewritePage() {
   }
 
   async function shareBeforeAfterImage() {
-    if (!shareCardRef.current) {
+    if (!shareCardRef.current || !originalForCard || !rewrittenForCard) {
       setToast("Rewrite a message first.");
       return;
     }
@@ -378,9 +373,11 @@ export default function RewritePage() {
   // ---------------------------------------------------------
   // UI — FINAL RENDER
   // ---------------------------------------------------------
-  const displayKey = isPro ? tone || "soft" : "soft";
-  const displayText =
-    (displayKey && (results as any)[displayKey]) || results.soft;
+  const displayKey: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
+  const displayText = (results as any)[displayKey] || results.soft;
+
+  const rewriteButtonDisabled =
+    loading || !message.trim() || (isPro && (!recipient || !tone));
 
   return (
     <main className="w-full max-w-2xl">
@@ -408,9 +405,9 @@ export default function RewritePage() {
             Rewrite your message
           </h1>
           <p className="text-sm text-slate-600 mb-4">
-            Paste the message you&apos;re worried about sending. ToneMender
-            keeps your meaning but removes the heat so you don&apos;t start a
-            fight by accident.
+            Paste the message you&apos;re worried about sending. ToneMender keeps
+            your meaning but removes the heat so you don&apos;t start a fight by
+            accident.
           </p>
 
           {limitReached && (
@@ -445,13 +442,13 @@ export default function RewritePage() {
               onChange={(e) => setMessage(e.target.value)}
             />
             {usedRewrite && (
-            <button
-              onClick={revertToOriginal}
-              className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
-            >
-              Revert to original message
-            </button>
-          )}
+              <button
+                onClick={revertToOriginal}
+                className="mt-2 text-xs text-slate-600 underline hover:text-slate-800"
+              >
+                Revert to original message
+              </button>
+            )}
           </div>
 
           {/* Relationship & Tone */}
@@ -499,9 +496,7 @@ export default function RewritePage() {
           {/* Rewrite button */}
           <button
             onClick={handleRewrite}
-            disabled={
-              loading || !message.trim() || (isPro && (!recipient || !tone))
-            }
+            disabled={rewriteButtonDisabled}
             className="w-full rounded-2xl bg-blue-600 text-white py-3 text-sm font-semibold mt-1 disabled:bg-slate-400 disabled:cursor-not-allowed shadow-sm hover:bg-blue-500 transition"
           >
             {loading ? "Rewriting…" : "Rewrite my message"}
@@ -510,7 +505,7 @@ export default function RewritePage() {
           {/* Results */}
           {displayText && (
             <div className="mt-8 space-y-6">
-              {/* Tone score + emotion block (above card) */}
+              {/* Tone score + emotion block */}
               {(toneScore !== null || emotion) && (
                 <div className="space-y-4">
                   {toneScore !== null && (
@@ -526,8 +521,7 @@ export default function RewritePage() {
                         {toneScore}
                       </div>
                       <p className="mt-2 text-xs text-slate-500">
-                        Tone Score — higher means calmer, clearer, safer to
-                        send.
+                        Tone Score — higher means calmer, clearer, safer to send.
                       </p>
                     </div>
                   )}
@@ -575,7 +569,7 @@ export default function RewritePage() {
               {/* Visible result card */}
               <div className="border border-slate-200 p-4 rounded-2xl bg-slate-50 fade-scale-in">
                 <h2 className="text-base font-semibold text-blue-800 mb-2">
-                  {(isPro ? displayKey : "soft").toUpperCase()} rewrite
+                  {displayKey.toUpperCase()} rewrite
                 </h2>
 
                 <p className="whitespace-pre-wrap text-sm text-slate-800">
@@ -598,12 +592,7 @@ export default function RewritePage() {
                   </button>
 
                   <button
-                    onClick={() =>
-                      saveMessage(
-                        displayText,
-                        (isPro ? displayKey : "soft") as any
-                      )
-                    }
+                    onClick={() => saveMessage(displayText, displayKey)}
                     className="border border-emerald-500 px-3 py-1.5 rounded-full text-xs text-white bg-emerald-500 hover:bg-emerald-400"
                   >
                     Save

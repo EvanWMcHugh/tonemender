@@ -4,17 +4,23 @@
 node_modules/
 .next/
 dist/
+out/
+.vercel/
 
 # =========================
-# Environment variables
+# Environment variables (NEVER COMMIT)
 # =========================
 .env
-.env.local
+.env.*
+!.env.example
 
 # =========================
 # Logs
 # =========================
 *.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
 
 # =========================
 # Android Studio / IntelliJ
@@ -24,9 +30,26 @@ android/.idea/
 android/.gradle/
 android/**/build/
 android/local.properties
+*.iml
+
+# =========================
+# iOS / Xcode (future-proof)
+# =========================
+ios/DerivedData/
+ios/Pods/
+ios/*.xcworkspace
+ios/*.xcuserstate
+ios/.DS_Store
 
 # =========================
 # OS junk
 # =========================
 .DS_Store
 Thumbs.db
+
+# =========================
+# Editor / tooling
+# =========================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
