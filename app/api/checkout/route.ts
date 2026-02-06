@@ -15,11 +15,20 @@ const supabase = createClient(
 
 export async function POST(req: Request) {
   try {
-    const { type, token } = await req.json();
+    const body = await req.json().catch(() => ({}));
+const { token: tokenFromBody, type } = body ?? {};
 
-    if (!token) {
-      return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
-    }
+// Prefer Authorization header: "Bearer <token>"
+const authHeader = req.headers.get("authorization") || "";
+const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
+  ? authHeader.slice(7).trim()
+  : null;
+
+const token = tokenFromHeader || tokenFromBody;
+
+if (!token) {
+  return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
+}
 
     // Authenticate user
     const { data: authData, error: authError } = await supabase.auth.getUser(token);

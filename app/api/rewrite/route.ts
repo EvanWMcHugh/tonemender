@@ -16,38 +16,29 @@ const client = new OpenAI({
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-const { token: tokenFromBody, message, recipient, tone } = body ?? {};
+    const { token: tokenFromBody, message, recipient, tone } = body ?? {};
 
-// Prefer Authorization header: "Bearer <token>"
-const authHeader = request.headers.get("authorization") || "";
-const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
-  ? authHeader.slice(7).trim()
-  : null;
+    // Prefer Authorization header: "Bearer <token>"
+    const authHeader = request.headers.get("authorization") || "";
+    const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : null;
 
-const token = tokenFromHeader || tokenFromBody;
+    const token = tokenFromHeader || tokenFromBody;
 
-if (!token) {
-  return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
-}
+    if (!token) {
+      return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
+    }
 
     if (!message || typeof message !== "string" || message.trim().length === 0) {
-      return NextResponse.json(
-        { error: "Message is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
     // -------- AUTH CHECK (SERVER SAFE) --------
-    const {
-      data: auth,
-      error: authError,
-    } = await supabaseServer.auth.getUser(token);
+    const { data: auth, error: authError } = await supabaseServer.auth.getUser(token);
 
     if (authError || !auth?.user) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const user = auth.user;
@@ -66,7 +57,7 @@ if (!token) {
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
-}).format(new Date()); // yields YYYY-MM-DD
+      }).format(new Date()); // yields YYYY-MM-DD
 
       if (profile.last_reset_date !== today) {
         await supabaseServer
@@ -81,10 +72,7 @@ if (!token) {
       }
 
       if (profile.free_rewrites_remaining <= 0) {
-        return NextResponse.json(
-          { error: "Daily limit reached" },
-          { status: 429 }
-        );
+        return NextResponse.json({ error: "Daily limit reached" }, { status: 429 });
       }
     }
 
@@ -175,9 +163,7 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const tone_score = parseInt(toneScoreRaw, 10) || 0;
 
     // -------- LOG REWRITE USAGE --------
-    await supabaseServer.from("rewrite_usage").insert({
-      user_id: user.id,
-    });
+    await supabaseServer.from("rewrite_usage").insert({ user_id: user.id });
 
     // Decrement free rewrite count only for non-pro users
     if (profile && !profile.is_pro) {
