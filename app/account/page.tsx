@@ -17,6 +17,10 @@ function getPacificDateString(date = new Date()) {
   }).format(date);
 }
 
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 export default function AccountPage() {
   const router = useRouter();
 
@@ -29,6 +33,7 @@ export default function AccountPage() {
   const [newEmail, setNewEmail] = useState("");
   const [emailMessage, setEmailMessage] = useState("");
   const [emailError, setEmailError] = useState("");
+  const [emailLoading, setEmailLoading] = useState(false);
 
   const todayStr = useMemo(() => getPacificDateString(), []);
 
@@ -78,11 +83,12 @@ export default function AccountPage() {
           setStats({ today: 0, total: 0 });
         } else {
           const total = usageRows?.length ?? 0;
+
           // created_at is ISO string; take YYYY-MM-DD and compare to Pacific day string
+          // (keeps behavior consistent with your current approach)
           const today = (usageRows ?? []).filter((u: any) => {
             const created = typeof u?.created_at === "string" ? u.created_at : "";
             const utcDay = created.split("T")[0]; // YYYY-MM-DD
-            // This is not perfect for Pacific vs UTC, but aligns with your existing approach
             return utcDay === todayStr;
           }).length;
 
@@ -98,8 +104,20 @@ export default function AccountPage() {
 
     load();
 
+    // Optional: keep UI email in sync after auth state changes (e.g., email change finalizes)
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const user = session?.user;
+      if (!user) {
+        router.replace("/sign-in");
+        return;
+      }
+      setEmail(user.email ?? null);
+      setIsPro((prev) => prev || isProReviewer(user.email ?? null));
+    });
+
     return () => {
       cancelled = true;
+      listener?.subscription?.unsubscribe();
     };
   }, [router, todayStr]);
 
@@ -125,7 +143,6 @@ export default function AccountPage() {
     }
 
     alert("All drafts deleted.");
-    // Refresh stats/drafts view
     location.reload();
   }
 
@@ -145,7 +162,7 @@ export default function AccountPage() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // header-first (your API supports this pattern)
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({}),
     });
@@ -198,26 +215,44 @@ export default function AccountPage() {
     e.preventDefault();
     setEmailError("");
     setEmailMessage("");
+    setEmailLoading(true);
 
-    const candidate = newEmail.trim().toLowerCase();
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    try {
+      const candidate = normalizeEmail(newEmail);
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-    if (!emailRegex.test(candidate)) {
-      setEmailError("Please enter a valid email address");
-      return;
+      if (!emailRegex.test(candidate)) {
+        setEmailError("Please enter a valid email address");
+        return;
+      }
+
+      // Optional: prevent “changing” to the same email
+      if (email && normalizeEmail(email) === candidate) {
+        setEmailError("That is already your current email.");
+        return;
+      }
+
+      const redirectTo = `${
+        process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin
+      }/auth/callback`;
+
+      const { error } = await supabase.auth.updateUser(
+        { email: candidate },
+        { emailRedirectTo: redirectTo }
+      );
+
+      if (error) {
+        setEmailError(error.message);
+        return;
+      }
+
+      setEmailMessage(
+        "We sent a confirmation link to your new email. Open it to complete the change."
+      );
+      setNewEmail("");
+    } finally {
+      setEmailLoading(false);
     }
-
-    const { error } = await supabase.auth.updateUser({ email: candidate });
-
-    if (error) {
-      setEmailError(error.message);
-      return;
-    }
-
-    setEmailMessage(
-      "We sent a confirmation link to your new email. Please verify it to complete the change."
-    );
-    setNewEmail("");
   }
 
   if (loading) return <p className="p-5">Loading...</p>;
@@ -288,14 +323,21 @@ export default function AccountPage() {
               required
               autoComplete="email"
               inputMode="email"
+              disabled={emailLoading}
             />
             <button
               type="submit"
-              className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition"
+              disabled={emailLoading}
+              className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Update
+              {emailLoading ? "Sending…" : "Update"}
             </button>
           </div>
+
+          {/* Optional hint */}
+          <p className="text-[11px] text-slate-500 mt-2">
+            After confirming, you may need to log in again using the new email.
+          </p>
         </form>
 
         <button
