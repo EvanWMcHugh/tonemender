@@ -27,10 +27,16 @@ export default function RewritePage() {
   const [tone, setTone] = useState("");
 
   // ---------------------------------------------------------
-  // TOGGLE: original <-> used rewrite
+  // ORIGINAL SNAPSHOT + "USE THIS" TRACKING
   // ---------------------------------------------------------
+  // Snapshot is captured when the first rewrite happens (so revert works even
+  // if user never clicks "Use This"), and is never auto-cleared.
   const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
+
+  // Stores the last rewrite the user clicked "Use This" on (optional future use).
   const [usedRewriteText, setUsedRewriteText] = useState("");
+
+  // Indicates the textarea is currently showing a "used rewrite" (optional, used for share logic).
   const [usedRewrite, setUsedRewrite] = useState(false);
 
   // ---------------------------------------------------------
@@ -54,7 +60,7 @@ export default function RewritePage() {
   const [toast, setToast] = useState("");
 
   // ---------------------------------------------------------
-  // SHARE CARD
+  // SHARE CARD (Before/After image)
   // ---------------------------------------------------------
   const [originalForCard, setOriginalForCard] = useState("");
   const [rewrittenForCard, setRewrittenForCard] = useState("");
@@ -131,28 +137,12 @@ export default function RewritePage() {
     setResults({ soft: "", calm: "", clear: "" });
   }
 
-  // Capture original snapshot once per “session”.
-  // We keep it until user edits the textarea in a way that makes the snapshot stale.
-  function ensureOriginalSnapshot(current: string) {
+  // Capture the original snapshot ONCE (first successful rewrite in a session).
+  // We intentionally never auto-clear it—user wants revert available anytime
+  // the message differs from that snapshot.
+  function ensureOriginalSnapshot(original: string) {
     if (!originalMessageSnapshot) {
-      setOriginalMessageSnapshot(current);
-    }
-  }
-
-  function clearToggleSessionIfUserEdits(newValue: string) {
-    // If user manually edits the textarea, the previous “used rewrite” and snapshot
-    // may no longer represent a clean toggle pair. Reset toggle session.
-    if (!originalMessageSnapshot) return;
-
-    // If they're editing while viewing original or used rewrite, we consider this a new session.
-    // Only clear if they typed something different from both snapshot and used text.
-    const isDifferentFromOriginal = newValue !== originalMessageSnapshot;
-    const isDifferentFromUsed = usedRewriteText ? newValue !== usedRewriteText : true;
-
-    if (isDifferentFromOriginal && isDifferentFromUsed) {
-      setOriginalMessageSnapshot("");
-      setUsedRewriteText("");
-      setUsedRewrite(false);
+      setOriginalMessageSnapshot(original);
     }
   }
 
@@ -180,7 +170,7 @@ export default function RewritePage() {
         return;
       }
 
-      // ✅ Ensure revert/toggle works even if user never clicks “Use This”
+      // ✅ Save original so revert works even if user never clicks "Use This"
       ensureOriginalSnapshot(trimmedMessage);
 
       const finalRecipient = isPro ? recipient : "default";
@@ -190,7 +180,7 @@ export default function RewritePage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`, // header-first auth
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           message: trimmedMessage,
@@ -224,7 +214,6 @@ export default function RewritePage() {
 
       setResults(newResults);
 
-      // Tone score + emotion
       setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
       setEmotion(String(json.emotion_prediction ?? "").trim());
 
@@ -253,7 +242,7 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // COPY, USE, TOGGLE
+  // COPY, USE, REVERT
   // ---------------------------------------------------------
   async function copyToClipboard(text: string) {
     if (!text) {
@@ -272,15 +261,13 @@ export default function RewritePage() {
   function useThis(text: string) {
     if (!text) return;
 
-    // Capture original only once
+    // If snapshot doesn't exist yet, capture current textarea as original.
+    // (Usually already captured on first rewrite, but this is safe.)
     if (!originalMessageSnapshot) {
-      setOriginalMessageSnapshot(message);
+      setOriginalMessageSnapshot(message.trim());
     }
 
-    // Remember the used rewrite so we can toggle
     setUsedRewriteText(text);
-
-    // Put rewrite into textarea
     setMessage(text);
     setUsedRewrite(true);
 
@@ -288,23 +275,12 @@ export default function RewritePage() {
     vibrate(10);
   }
 
-  // Toggle behavior: when not original, show button that takes you to original.
-  // If user wants to go back to rewrite, they can hit "Use This" again OR we can
-  // provide an optional “Back to rewrite” button — see below.
-  function toggleToOriginal() {
+  // ✅ Revert always returns textarea to original snapshot and keeps results visible.
+  function revertToOriginal() {
     if (!originalMessageSnapshot) return;
 
     setMessage(originalMessageSnapshot);
     setUsedRewrite(false);
-    vibrate(15);
-  }
-
-  // Optional: toggle back to used rewrite (handy once you're viewing original)
-  function toggleToRewrite() {
-    if (!usedRewriteText) return;
-
-    setMessage(usedRewriteText);
-    setUsedRewrite(true);
     vibrate(15);
   }
 
@@ -377,7 +353,9 @@ export default function RewritePage() {
       return;
     }
 
-    const beforeText = (usedRewrite && originalMessageSnapshot ? originalMessageSnapshot : message).trim();
+    // If user used a rewrite and then edited, the "before" we want is still the original snapshot if available.
+    const beforeText = (originalMessageSnapshot || message).trim();
+
     const shareText = `Before:\n${beforeText}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
 
     try {
@@ -445,17 +423,12 @@ export default function RewritePage() {
   const displayKey: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
   const displayText = results[displayKey] || results.soft;
 
-  const rewriteButtonDisabled = loading || !message.trim() || (isPro && (!recipient || !tone));
+  const rewriteButtonDisabled =
+    loading || !message.trim() || (isPro && (!recipient || !tone));
 
-  // Show a button only when textarea is NOT original.
+  // Show the revert button any time the current message differs from the original snapshot.
   const showRevertButton =
     !!originalMessageSnapshot && message !== originalMessageSnapshot;
-
-  // Optional “Back to rewrite” button when viewing original but we have a used rewrite stored
-  const showBackToRewriteButton =
-    !!originalMessageSnapshot &&
-    message === originalMessageSnapshot &&
-    !!usedRewriteText;
 
   return (
     <main className="w-full max-w-2xl">
@@ -508,7 +481,7 @@ export default function RewritePage() {
 
           {error && <p className="text-red-500 mb-3 text-sm">{error}</p>}
 
-          {/* Original message */}
+          {/* Message */}
           <div className="mb-4">
             <label className="block mb-2 text-sm font-medium text-slate-700">
               Your message
@@ -518,41 +491,29 @@ export default function RewritePage() {
               className="border border-slate-300 bg-slate-50 focus:bg-white focus:border-blue-500 transition-colors p-3 w-full rounded-2xl min-h-[130px] text-sm"
               placeholder='Example: "I’m so tired of you ignoring my texts."'
               value={message}
-              onChange={(e) => {
-                const v = e.target.value;
-                setMessage(v);
-                clearToggleSessionIfUserEdits(v);
-              }}
+              onChange={(e) => setMessage(e.target.value)}
             />
 
-            <div className="mt-2 flex flex-wrap gap-3">
-              {showRevertButton && (
-                <button
-                  type="button"
-                  onClick={toggleToOriginal}
-                  className="text-xs text-slate-600 underline hover:text-slate-800"
-                >
-                  View original message
-                </button>
-              )}
-
-              {showBackToRewriteButton && (
-                <button
-                  type="button"
-                  onClick={toggleToRewrite}
-                  className="text-xs text-slate-600 underline hover:text-slate-800"
-                >
-                  Back to used rewrite
-                </button>
-              )}
-
-              {/* Optional helper badge */}
-              {originalMessageSnapshot && (
+            {/* Status + Revert */}
+            {originalMessageSnapshot && (
+              <div className="mt-2 flex items-center gap-3">
                 <span className="text-[11px] text-slate-500">
-                  {message === originalMessageSnapshot ? "Viewing: Original" : "Viewing: Edited/Rewrite"}
+                  {message === originalMessageSnapshot
+                    ? "Viewing original"
+                    : "Changed from original"}
                 </span>
-              )}
-            </div>
+
+                {showRevertButton && (
+                  <button
+                    type="button"
+                    onClick={revertToOriginal}
+                    className="text-xs text-slate-600 underline hover:text-slate-800"
+                  >
+                    Revert back to original
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Relationship & Tone */}
