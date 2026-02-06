@@ -105,7 +105,7 @@ export default function AccountPage() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.replace("/landing");
+    router.replace("/sign-in");
   }
 
   async function deleteAllMessages() {
