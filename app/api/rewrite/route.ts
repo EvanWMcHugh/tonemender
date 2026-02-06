@@ -15,14 +15,20 @@ const client = new OpenAI({
 
 export async function POST(request: Request) {
   try {
-    const { token, message, recipient, tone } = await request.json();
+    const body = await request.json().catch(() => ({}));
+const { token: tokenFromBody, message, recipient, tone } = body ?? {};
 
-    if (!token) {
-      return NextResponse.json(
-        { error: "Missing auth token" },
-        { status: 401 }
-      );
-    }
+// Prefer Authorization header: "Bearer <token>"
+const authHeader = request.headers.get("authorization") || "";
+const tokenFromHeader = authHeader.toLowerCase().startsWith("bearer ")
+  ? authHeader.slice(7).trim()
+  : null;
+
+const token = tokenFromHeader || tokenFromBody;
+
+if (!token) {
+  return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
+}
 
     if (!message || typeof message !== "string" || message.trim().length === 0) {
       return NextResponse.json(
