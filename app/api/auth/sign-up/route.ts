@@ -74,19 +74,51 @@ export async function POST(req: Request) {
     // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const { data: user, error: userErr } = await supabaseAdmin
-      .from("users")
-      .insert({
-        email,
-        password_hash: passwordHash,
-        email_verified_at: null,
-      })
-      .select("id,email")
-      .single();
+   // ✅ Insert user (don’t depend on RETURNING/select)
+const { error: insertErr } = await supabaseAdmin.from("users").insert({
+  email,
+  password_hash: passwordHash,
+  email_verified_at: null,
+});
 
-    if (userErr || !user) {
-      return jsonNoStore({ error: "Sign up failed" }, { status: 400 });
-    }
+if (insertErr) {
+  console.error("USER INSERT ERROR:", insertErr);
+  return jsonNoStore(
+    {
+      error: "Sign up failed",
+      supabase: {
+        message: insertErr.message,
+        code: (insertErr as any)?.code ?? null,
+        details: (insertErr as any)?.details ?? null,
+        hint: (insertErr as any)?.hint ?? null,
+      },
+    },
+    { status: 400 }
+  );
+}
+
+// ✅ Fetch created user (service role should always be able to read)
+const { data: user, error: fetchErr } = await supabaseAdmin
+  .from("users")
+  .select("id,email")
+  .eq("email", email)
+  .single();
+
+if (fetchErr || !user) {
+  console.error("USER FETCH ERROR:", fetchErr);
+  return jsonNoStore(
+    {
+      error: "Sign up failed (user created but could not be fetched)",
+      supabase: {
+        message: fetchErr?.message ?? null,
+        code: (fetchErr as any)?.code ?? null,
+        details: (fetchErr as any)?.details ?? null,
+        hint: (fetchErr as any)?.hint ?? null,
+      },
+    },
+    { status: 500 }
+  );
+}
 
     // Delete any previous unconsumed verification token(s)
     try {
