@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256 } from "@/lib/authTokens";
+import { sha256Hex } from "@/lib/security";
 
 export const runtime = "nodejs";
 
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
-    const tokenHash = sha256(token);
+    const tokenHash = sha256Hex(token);
 
     // Look up subscriber by confirm_token_hash
     const { data, error } = await supabaseAdmin
@@ -60,6 +60,9 @@ export async function POST(req: Request) {
     return jsonNoStore({ success: true, email: data.email });
   } catch (err) {
     console.error("CONFIRM ERROR:", err);
-    return jsonNoStore({ error: "Server error while confirming" }, { status: 500 });
+    return jsonNoStore(
+      { error: "Server error while confirming" },
+      { status: 500 }
+    );
   }
 }
