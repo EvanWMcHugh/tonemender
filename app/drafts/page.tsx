@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 
 type Draft = {
@@ -25,30 +24,32 @@ export default function DraftsPage() {
     let cancelled = false;
 
     async function init() {
-      try {
-        const { data } = await supabase.auth.getSession();
-        const user = data.session?.user;
+      setLoading(true);
+      setError("");
 
-        if (!user) {
+      try {
+        // ✅ cookie-auth session check
+        const meResp = await fetch("/api/me", { method: "GET" });
+        const meJson = await meResp.json().catch(() => ({ user: null }));
+
+        if (!meJson?.user?.id) {
           router.replace("/sign-in?error=not-authenticated");
           return;
         }
 
-        const { data: rows, error } = await supabase
-          .from("messages")
-          .select("id, created_at, original, tone, soft_rewrite, calm_rewrite, clear_rewrite")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false });
+        // ✅ fetch drafts via server route
+        const resp = await fetch("/api/messages", { method: "GET" });
+        const json = await resp.json().catch(() => ({}));
 
         if (cancelled) return;
 
-        if (error) {
-          console.error("DRAFTS LOAD ERROR:", error);
-          setError("Could not load drafts. Try again.");
+        if (!resp.ok) {
+          setError(json?.error || "Could not load drafts. Try again.");
           setDrafts([]);
-        } else {
-          setDrafts((rows ?? []) as Draft[]);
+          return;
         }
+
+        setDrafts((json?.drafts ?? []) as Draft[]);
       } catch (err) {
         console.error("DRAFTS INIT ERROR:", err);
         if (!cancelled) setError("Could not load drafts. Try again.");
@@ -68,19 +69,29 @@ export default function DraftsPage() {
     const ok = confirm("Delete this draft?");
     if (!ok) return;
 
-    const { error } = await supabase.from("messages").delete().eq("id", id);
+    try {
+      const resp = await fetch("/api/messages/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
 
-    if (error) {
-      console.error("DRAFT DELETE ERROR:", error);
+      const json = await resp.json().catch(() => ({}));
+
+      if (!resp.ok) {
+        alert(json?.error || "Failed to delete draft.");
+        return;
+      }
+
+      setDrafts((prev) => prev.filter((d) => d.id !== id));
+    } catch (err) {
+      console.error("DRAFT DELETE ERROR:", err);
       alert("Failed to delete draft.");
-      return;
     }
-
-    setDrafts((prev) => prev.filter((d) => d.id !== id));
   }
 
   if (loading) {
-    return <main className="p-6 text-center">Checking authentication…</main>;
+    return <main className="p-6 text-center">Loading drafts…</main>;
   }
 
   return (
@@ -102,9 +113,7 @@ export default function DraftsPage() {
 
       <div className="flex flex-col gap-4">
         {drafts.map((d) => {
-          const created = d.created_at
-            ? new Date(d.created_at).toLocaleString()
-            : "";
+          const created = d.created_at ? new Date(d.created_at).toLocaleString() : "";
 
           return (
             <div key={d.id} className="border p-4 rounded-2xl bg-white shadow-sm">

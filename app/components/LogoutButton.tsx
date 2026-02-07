@@ -1,19 +1,22 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { supabase } from "../../lib/supabase";
 
 export default function LogoutButton() {
   const router = useRouter();
 
   async function handleLogout() {
-    // 1) Immediately navigate (fast UX)
+    // Fast UX: move user immediately
     router.replace("/sign-in");
 
-    // 2) Then sign out (even if signOut is slow, user already moved)
-    await supabase.auth.signOut();
+    // Then invalidate session cookie + DB session
+    try {
+      await fetch("/api/auth/sign-out", { method: "POST" });
+    } catch {
+      // ignore — user is already redirected
+    }
 
-    // Optional: clear any Supabase cookie/local keys (fine to keep)
+    // Optional: clear any leftover Supabase keys from past builds
     if (typeof document !== "undefined") {
       document.cookie
         .split(";")

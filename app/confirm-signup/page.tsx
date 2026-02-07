@@ -14,6 +14,7 @@ export default function ConfirmSignupPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     async function run() {
       if (!token) {
@@ -38,8 +39,9 @@ export default function ConfirmSignupPage() {
         if (!cancelled) {
           setStatus("ok");
           setMessage("Email confirmed! You can sign in now.");
-          // optional redirect after a moment:
-          setTimeout(() => router.replace("/sign-in"), 800);
+          timeoutId = setTimeout(() => {
+            router.replace("/sign-in");
+          }, 800);
         }
       } catch (e: any) {
         if (!cancelled) {
@@ -50,8 +52,10 @@ export default function ConfirmSignupPage() {
     }
 
     run();
+
     return () => {
       cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
     };
   }, [token, router]);
 

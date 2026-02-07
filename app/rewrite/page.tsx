@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Toast from "../components/Toast";
 import html2canvas from "html2canvas";
@@ -10,6 +9,13 @@ import { isProReviewer } from "../../lib/reviewers";
 
 type ToneKey = "soft" | "calm" | "clear";
 
+type MeUser = {
+  id: string;
+  email: string;
+  isPro?: boolean;
+  planType?: string | null;
+};
+
 export default function RewritePage() {
   const router = useRouter();
 
@@ -17,6 +23,7 @@ export default function RewritePage() {
   // AUTH / PLAN
   // ---------------------------------------------------------
   const [ready, setReady] = useState(false);
+  const [me, setMe] = useState<MeUser | null>(null);
   const [isPro, setIsPro] = useState(false);
 
   // ---------------------------------------------------------
@@ -29,14 +36,8 @@ export default function RewritePage() {
   // ---------------------------------------------------------
   // ORIGINAL SNAPSHOT + "USE THIS" TRACKING
   // ---------------------------------------------------------
-  // Snapshot is captured when the first rewrite happens (so revert works even
-  // if user never clicks "Use This"), and is never auto-cleared.
   const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
-
-  // Stores the last rewrite the user clicked "Use This" on (optional future use).
   const [usedRewriteText, setUsedRewriteText] = useState("");
-
-  // Indicates the textarea is currently showing a "used rewrite" (optional, used for share logic).
   const [usedRewrite, setUsedRewrite] = useState(false);
 
   // ---------------------------------------------------------
@@ -84,24 +85,23 @@ export default function RewritePage() {
 
     async function load() {
       try {
-        const { data } = await supabase.auth.getSession();
-        const user = data.session?.user;
+        const meResp = await fetch("/api/me", { method: "GET" });
+        const meJson = await meResp.json().catch(() => ({ user: null }));
+        const u: MeUser | null = meJson?.user ?? null;
 
-        if (!user) {
+        if (!u?.id) {
           router.replace("/sign-in");
           return;
         }
 
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("is_pro")
-          .eq("id", user.id)
-          .single();
-
         if (cancelled) return;
 
-        const email = normalizeEmail(user.email ?? null);
-        setIsPro(Boolean(profile?.is_pro) || isProReviewer(email));
+        setMe(u);
+
+        const email = normalizeEmail(u.email ?? null);
+        const pro = Boolean(u.isPro) || isProReviewer(email);
+        setIsPro(pro);
+
         setReady(true);
       } catch (err) {
         console.error("REWRITE AUTH LOAD ERROR:", err);
@@ -111,13 +111,8 @@ export default function RewritePage() {
 
     load();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session?.user) router.replace("/sign-in");
-    });
-
     return () => {
       cancelled = true;
-      listener.subscription.unsubscribe();
     };
   }, [router]);
 
@@ -137,9 +132,6 @@ export default function RewritePage() {
     setResults({ soft: "", calm: "", clear: "" });
   }
 
-  // Capture the original snapshot ONCE (first successful rewrite in a session).
-  // We intentionally never auto-clear it—user wants revert available anytime
-  // the message differs from that snapshot.
   function ensureOriginalSnapshot(original: string) {
     if (!originalMessageSnapshot) {
       setOriginalMessageSnapshot(original);
@@ -156,12 +148,9 @@ export default function RewritePage() {
     const trimmedMessage = message.trim();
 
     try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      const user = data.session?.user;
-
-      if (!token || !user) {
+      if (!me?.id) {
         setError("You must be logged in to use ToneMender.");
+        router.replace("/sign-in");
         return;
       }
 
@@ -170,7 +159,6 @@ export default function RewritePage() {
         return;
       }
 
-      // ✅ Save original so revert works even if user never clicks "Use This"
       ensureOriginalSnapshot(trimmedMessage);
 
       const finalRecipient = isPro ? recipient : "default";
@@ -178,10 +166,8 @@ export default function RewritePage() {
 
       const res = await fetch("/api/rewrite", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json" },
+        // ✅ cookie-auth; no Authorization header
         body: JSON.stringify({
           message: trimmedMessage,
           recipient: finalRecipient,
@@ -228,7 +214,6 @@ export default function RewritePage() {
         newResults.clear ||
         "";
 
-      // Share card content
       setOriginalForCard(trimmedMessage);
       setRewrittenForCard(chosenText);
 
@@ -261,8 +246,6 @@ export default function RewritePage() {
   function useThis(text: string) {
     if (!text) return;
 
-    // If snapshot doesn't exist yet, capture current textarea as original.
-    // (Usually already captured on first rewrite, but this is safe.)
     if (!originalMessageSnapshot) {
       setOriginalMessageSnapshot(message.trim());
     }
@@ -275,7 +258,6 @@ export default function RewritePage() {
     vibrate(10);
   }
 
-  // ✅ Revert always returns textarea to original snapshot and keeps results visible.
   function revertToOriginal() {
     if (!originalMessageSnapshot) return;
 
@@ -285,38 +267,39 @@ export default function RewritePage() {
   }
 
   // ---------------------------------------------------------
-  // SAVE
+  // SAVE (cookie-auth API route)
   // ---------------------------------------------------------
   async function saveMessage(text: string, toneKey: ToneKey) {
-    const { data } = await supabase.auth.getSession();
-    const user = data.session?.user;
-
-    if (!user) {
-      setToast("You must be logged in to save messages.");
+    if (!text) {
+      setToast("Nothing to save yet.");
       return;
     }
 
-    const insertData: any = {
-      user_id: user.id,
-      original: originalMessageSnapshot || message,
-      tone: toneKey,
-      soft_rewrite: null,
-      calm_rewrite: null,
-      clear_rewrite: null,
-    };
+    try {
+      const resp = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          original: originalMessageSnapshot || message,
+          tone: toneKey,
+          soft_rewrite: toneKey === "soft" ? text : null,
+          calm_rewrite: toneKey === "calm" ? text : null,
+          clear_rewrite: toneKey === "clear" ? text : null,
+        }),
+      });
 
-    if (toneKey === "soft") insertData.soft_rewrite = text;
-    if (toneKey === "calm") insertData.calm_rewrite = text;
-    if (toneKey === "clear") insertData.clear_rewrite = text;
+      const json = await resp.json().catch(() => ({}));
 
-    const { error } = await supabase.from("messages").insert(insertData);
+      if (!resp.ok) {
+        setToast(json?.error || "Failed to save.");
+        return;
+      }
 
-    if (error) {
-      console.error("SAVE ERROR:", error);
-      setToast("Failed to save.");
-    } else {
       setToast("Saved!");
       vibrate(15);
+    } catch (err) {
+      console.error("SAVE ERROR:", err);
+      setToast("Failed to save.");
     }
   }
 
@@ -353,7 +336,6 @@ export default function RewritePage() {
       return;
     }
 
-    // If user used a rewrite and then edited, the "before" we want is still the original snapshot if available.
     const beforeText = (originalMessageSnapshot || message).trim();
 
     const shareText = `Before:\n${beforeText}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
@@ -426,7 +408,6 @@ export default function RewritePage() {
   const rewriteButtonDisabled =
     loading || !message.trim() || (isPro && (!recipient || !tone));
 
-  // Show the revert button any time the current message differs from the original snapshot.
   const showRevertButton =
     !!originalMessageSnapshot && message !== originalMessageSnapshot;
 
@@ -434,7 +415,6 @@ export default function RewritePage() {
     <main className="w-full max-w-2xl">
       <PullToRefresh onRefresh={() => window.location.reload()}>
         <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
-          {/* Header row */}
           <div className="flex items-center justify-between mb-4">
             <button
               onClick={() => router.push("/")}
@@ -481,7 +461,6 @@ export default function RewritePage() {
 
           {error && <p className="text-red-500 mb-3 text-sm">{error}</p>}
 
-          {/* Message */}
           <div className="mb-4">
             <label className="block mb-2 text-sm font-medium text-slate-700">
               Your message
@@ -494,7 +473,6 @@ export default function RewritePage() {
               onChange={(e) => setMessage(e.target.value)}
             />
 
-            {/* Status + Revert */}
             {originalMessageSnapshot && (
               <div className="mt-2 flex items-center gap-3">
                 <span className="text-[11px] text-slate-500">
@@ -516,7 +494,6 @@ export default function RewritePage() {
             )}
           </div>
 
-          {/* Relationship & Tone */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
             <div>
               <label className="block mb-1 text-sm font-medium text-slate-700">
@@ -558,7 +535,6 @@ export default function RewritePage() {
             </div>
           </div>
 
-          {/* Rewrite button */}
           <button
             onClick={handleRewrite}
             disabled={rewriteButtonDisabled}
@@ -567,10 +543,8 @@ export default function RewritePage() {
             {loading ? "Rewriting…" : "Rewrite my message"}
           </button>
 
-          {/* Results */}
           {displayText && (
             <div className="mt-8 space-y-6">
-              {/* Tone score + emotion block */}
               {(toneScore !== null || emotion) && (
                 <div className="space-y-4">
                   {toneScore !== null && (
@@ -599,7 +573,6 @@ export default function RewritePage() {
                 </div>
               )}
 
-              {/* Hidden Before/After card used for image sharing */}
               {originalForCard && rewrittenForCard && (
                 <div
                   ref={shareCardRef}
@@ -631,7 +604,6 @@ export default function RewritePage() {
                 </div>
               )}
 
-              {/* Visible result card */}
               <div className="border border-slate-200 p-4 rounded-2xl bg-slate-50 fade-scale-in">
                 <h2 className="text-base font-semibold text-blue-800 mb-2">
                   {displayKey.toUpperCase()} rewrite

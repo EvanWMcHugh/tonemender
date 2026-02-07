@@ -4,9 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-import { supabase } from "../lib/supabase";
 import LogoutButton from "./components/LogoutButton";
 import { isProReviewer } from "../lib/reviewers";
+
+type MeResponse =
+  | { user: null }
+  | { user: { id: string; email: string; isPro?: boolean; planType?: string | null } };
 
 export default function AppHomePage() {
   const router = useRouter();
@@ -19,32 +22,25 @@ export default function AppHomePage() {
 
     async function load() {
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const user = sessionData?.session?.user;
+        const resp = await fetch("/api/me", { method: "GET" });
+        const json = (await resp.json().catch(() => ({ user: null }))) as MeResponse;
+
+        const user = json?.user;
 
         // 🔥 If NO USER → send to landing page
-        if (!user) {
+        if (!user?.id) {
           router.replace("/landing");
           return;
         }
 
-        // Fetch profile status
-        const { data: profile, error } = await supabase
-          .from("profiles")
-          .select("is_pro")
-          .eq("id", user.id)
-          .single();
-
         if (cancelled) return;
 
         // Reviewer emails always count as Pro
-        const pro =
-          Boolean(profile?.is_pro) || isProReviewer(user.email ?? null);
+        const pro = Boolean(user.isPro) || isProReviewer(user.email ?? null);
 
         setIsPro(pro);
         setAuthReady(true);
       } catch (err) {
-        // If anything unexpected happens, fail safely to landing
         console.error("HOME LOAD ERROR:", err);
         router.replace("/landing");
       }
@@ -71,9 +67,7 @@ export default function AppHomePage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">ToneMender</h1>
-              <p className="text-xs text-slate-500">
-                Say it better. Save it together.
-              </p>
+              <p className="text-xs text-slate-500">Say it better. Save it together.</p>
             </div>
           </div>
 
@@ -82,8 +76,7 @@ export default function AppHomePage() {
 
         {/* DESCRIPTION */}
         <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-          Welcome back! Rewrite your messages into calm, clear,
-          relationship-safe communication.
+          Welcome back! Rewrite your messages into calm, clear, relationship-safe communication.
         </p>
 
         {/* NAVIGATION */}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
@@ -10,16 +9,18 @@ export default function MarketingLandingPage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
 
-  // If user is logged in → redirect to main dashboard "/"
+  // ✅ If user is logged in (cookie session) → redirect to "/"
   useEffect(() => {
     let cancelled = false;
 
-    const checkSession = async () => {
+    async function checkSession() {
       try {
-        const { data } = await supabase.auth.getSession();
+        const resp = await fetch("/api/me", { method: "GET" });
+        const json = await resp.json().catch(() => ({ user: null }));
+
         if (cancelled) return;
 
-        if (data.session?.user) {
+        if (json?.user?.id) {
           router.replace("/");
         } else {
           setChecking(false);
@@ -28,21 +29,12 @@ export default function MarketingLandingPage() {
         console.error("LANDING SESSION CHECK ERROR:", err);
         if (!cancelled) setChecking(false);
       }
-    };
+    }
 
     checkSession();
 
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (session?.user) {
-          router.replace("/");
-        }
-      }
-    );
-
     return () => {
       cancelled = true;
-      listener.subscription.unsubscribe();
     };
   }, [router]);
 

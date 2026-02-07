@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -26,14 +25,12 @@ export default function SignUpPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [showCaptcha, setShowCaptcha] = useState(false);
-
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
   const isBypassEmail = useMemo(
-    () => CAPTCHA_BYPASS_EMAILS.has(normalizedEmail),
+    () => (normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false),
     [normalizedEmail]
   );
 
@@ -41,8 +38,11 @@ export default function SignUpPage() {
     let cancelled = false;
 
     async function checkSession() {
-      const { data } = await supabase.auth.getSession();
-      if (!cancelled && data?.session?.user) router.replace("/");
+      try {
+        const resp = await fetch("/api/me", { method: "GET" });
+        const json = await resp.json().catch(() => ({ user: null }));
+        if (!cancelled && json?.user?.id) router.replace("/");
+      } catch {}
     }
 
     checkSession();
@@ -55,18 +55,34 @@ export default function SignUpPage() {
   // Reset captcha when email changes
   useEffect(() => {
     setShowCaptcha(false);
-    setCaptchaToken(null);
     setPendingAction(null);
+    setError("");
   }, [normalizedEmail]);
 
   function cleanupCaptchaState() {
-    setCaptchaToken(null);
     setShowCaptcha(false);
     setPendingAction(null);
   }
 
   async function doSignUp(withToken: string | null) {
     setError("");
+
+    if (!normalizedEmail) {
+      setError("Enter your email.");
+      return;
+    }
+
+    if (!password || password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
+    if (password.length > 200) {
+      setError("Password is too long.");
+      return;
+    }
+
+    if (loading) return;
 
     // show captcha only after click
     if (!isBypassEmail && !withToken) {
@@ -83,8 +99,8 @@ export default function SignUpPage() {
         body: JSON.stringify({
           email: normalizedEmail,
           password,
-          // ✅ bypass emails send null; others send the Turnstile token
-          captchaToken: CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) ? null : withToken,
+          // server bypasses based on email; for non-bypass we must pass the token
+          captchaToken: isBypassEmail ? null : withToken,
         }),
       });
 
@@ -95,7 +111,9 @@ export default function SignUpPage() {
       }
 
       cleanupCaptchaState();
-      router.replace("/check-email");
+
+      // ✅ Match CheckEmailPage types
+      router.replace("/check-email?type=signup");
     } catch (err: any) {
       setError(err?.message || "Sign up failed");
       cleanupCaptchaState();
@@ -110,8 +128,8 @@ export default function SignUpPage() {
   }
 
   async function handleCaptchaSuccess(token: string) {
-    setCaptchaToken(token);
     if (pendingAction !== "signup") return;
+    if (loading) return;
     await doSignUp(token);
   }
 
@@ -147,6 +165,7 @@ export default function SignUpPage() {
             required
             autoComplete="new-password"
             minLength={8}
+            disabled={loading}
           />
 
           {!isBypassEmail && showCaptcha && (
@@ -154,8 +173,8 @@ export default function SignUpPage() {
               sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
               theme="light"
               onSuccess={handleCaptchaSuccess}
-              onExpire={() => setCaptchaToken(null)}
-              onError={() => setCaptchaToken(null)}
+              onExpire={() => {}}
+              onError={() => {}}
             />
           )}
 

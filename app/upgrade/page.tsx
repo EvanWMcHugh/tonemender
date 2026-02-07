@@ -1,49 +1,60 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase } from "../../lib/supabase";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { isProReviewer } from "../../lib/reviewers";
+
+type MeUser = {
+  id: string;
+  email: string;
+  isPro?: boolean;
+  planType?: string | null;
+};
 
 export default function UpgradePage() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true); // while checking auth + pro status
   const [error, setError] = useState("");
+  const [me, setMe] = useState<MeUser | null>(null);
+
+  const reviewerIsPro = useMemo(() => {
+    const email = (me?.email ?? "").trim().toLowerCase();
+    return isProReviewer(email);
+  }, [me?.email]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function check() {
       try {
-        const { data } = await supabase.auth.getSession();
-        const user = data.session?.user;
+        const resp = await fetch("/api/me", { method: "GET" });
+        const json = await resp.json().catch(() => ({ user: null }));
+        const user: MeUser | null = json?.user ?? null;
 
         // Not logged in → go to sign-in
-        if (!user) {
+        if (!user?.id) {
           router.replace("/sign-in");
           return;
         }
 
+        if (cancelled) return;
+
+        setMe(user);
+
         // Reviewer pro accounts should never see upgrade page
-        if (isProReviewer(user.email ?? null)) {
+        if (isProReviewer(user.email ?? "")) {
           router.replace("/");
           return;
         }
 
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("is_pro")
-          .eq("id", user.id)
-          .single();
-
-        if (!cancelled) {
-          if (profile?.is_pro) {
-            router.replace("/");
-            return;
-          }
-          setLoading(false);
+        // Already pro → send home
+        if (user.isPro) {
+          router.replace("/");
+          return;
         }
+
+        setLoading(false);
       } catch (err) {
         console.error("UPGRADE CHECK ERROR:", err);
         if (!cancelled) {
@@ -63,31 +74,37 @@ export default function UpgradePage() {
   async function startCheckout(type: "monthly" | "yearly") {
     setError("");
 
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-
-    if (!token) {
-      setError("You must be logged in to upgrade.");
+    // extra guard
+    if (!me?.id) {
+      router.replace("/sign-in");
       return;
     }
 
-    const res = await fetch("/api/checkout", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // header-first (your API supports it)
-      },
-      body: JSON.stringify({ type }),
-    });
-
-    const json = await res.json().catch(() => ({}));
-
-    if (!res.ok || !json?.url) {
-      setError(json?.error || "Could not start checkout.");
+    if (reviewerIsPro) {
+      router.replace("/");
       return;
     }
 
-    window.location.href = json.url;
+    try {
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // ✅ cookie-auth now; no Authorization header
+        body: JSON.stringify({ type }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok || !json?.url) {
+        setError(json?.error || "Could not start checkout.");
+        return;
+      }
+
+      window.location.href = json.url;
+    } catch (err) {
+      console.error("CHECKOUT START ERROR:", err);
+      setError("Network error. Please try again.");
+    }
   }
 
   if (loading) {

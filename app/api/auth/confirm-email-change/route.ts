@@ -1,103 +1,113 @@
-// app/api/auth/confirm-email-change/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
-import { sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 
-function isEmailInUseError(err: any) {
-  const msg = (err?.message || err?.error_description || "").toString().toLowerCase();
-  return msg.includes("already") && msg.includes("email");
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function isExpired(expiresAt: string) {
+  const t = new Date(expiresAt).getTime();
+  return Number.isNaN(t) || t < Date.now();
 }
 
 export async function POST(req: Request) {
   try {
-    const { token } = await req.json();
-    if (!token) return NextResponse.json({ error: "Missing token" }, { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const token = body?.token;
+
+    if (!token || typeof token !== "string") {
+      return jsonNoStore({ error: "Missing token" }, { status: 400 });
+    }
 
     const tokenHash = sha256Hex(token);
-    const now = new Date();
 
-    // ✅ Try to find the request (prefer unconfirmed, but allow already-confirmed for idempotency)
+    // 1) Lookup request
     const { data: reqRow, error: findErr } = await supabaseAdmin
       .from("email_change_requests")
-      .select("*")
+      .select("id,user_id,old_email,new_email,expires_at,confirmed_at")
       .eq("token_hash", tokenHash)
-      .single();
+      .maybeSingle();
 
     if (findErr || !reqRow) {
-      return NextResponse.json({ error: "Invalid or expired token" }, { status: 400 });
+      return jsonNoStore({ error: "Invalid token" }, { status: 400 });
     }
 
-    // ✅ If already confirmed, return OK (idempotent)
+    // Idempotent success
     if (reqRow.confirmed_at) {
-      return NextResponse.json({ ok: true, alreadyConfirmed: true });
+      return jsonNoStore({ ok: true, success: true });
     }
 
-    // ✅ Expired?
-    if (new Date(reqRow.expires_at) < now) {
-      return NextResponse.json({ error: "Token expired" }, { status: 400 });
+    if (!reqRow.expires_at || isExpired(reqRow.expires_at)) {
+      return jsonNoStore({ error: "Link expired" }, { status: 400 });
     }
 
-    // ✅ Update email in Supabase Auth (admin)
-    const { error: updErr } = await supabaseAdmin.auth.admin.updateUserById(reqRow.user_id, {
-      email: reqRow.new_email,
-      // We are doing our own confirmation link, so mark as confirmed.
-      email_confirm: true,
-    });
+    const newEmail = String(reqRow.new_email || "").trim().toLowerCase();
+    if (!newEmail) {
+      return jsonNoStore({ error: "Invalid request" }, { status: 400 });
+    }
+
+    // 2) Prevent switching to an email used by someone else
+    const { data: existing, error: existErr } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", newEmail)
+      .maybeSingle();
+
+    if (existErr) {
+      return jsonNoStore({ error: "Could not validate email" }, { status: 500 });
+    }
+    if (existing && existing.id !== reqRow.user_id) {
+      return jsonNoStore({ error: "Unable to use that email address." }, { status: 400 });
+    }
+
+    // 3) Atomic-ish: try to confirm first with a guard (prevents double-confirm race)
+    const nowIso = new Date().toISOString();
+    const { data: confirmData, error: confErr } = await supabaseAdmin
+      .from("email_change_requests")
+      .update({ confirmed_at: nowIso })
+      .eq("id", reqRow.id)
+      .is("confirmed_at", null)
+      .select("id")
+      .maybeSingle();
+
+    // If someone else confirmed it between our read and update, treat as success (idempotent)
+    if (confErr) {
+      return jsonNoStore({ error: "Failed to confirm request" }, { status: 500 });
+    }
+    if (!confirmData?.id) {
+      return jsonNoStore({ ok: true, success: true });
+    }
+
+    // 4) Update email on users table
+    const { error: updErr } = await supabaseAdmin
+      .from("users")
+      .update({ email: newEmail })
+      .eq("id", reqRow.user_id);
 
     if (updErr) {
-      // If the email is already in use, return a clean 400 for UI
-      if (isEmailInUseError(updErr)) {
-        return NextResponse.json(
-          { error: "That email address is already in use. Please choose another." },
-          { status: 400 }
-        );
-      }
-      return NextResponse.json({ error: "Failed to update email" }, { status: 500 });
+      // Roll back confirmation marker so the link isn't "dead" if the user email update failed
+      try {
+        await supabaseAdmin
+          .from("email_change_requests")
+          .update({ confirmed_at: null })
+          .eq("id", reqRow.id);
+      } catch {}
+      return jsonNoStore({ error: "Failed to update email" }, { status: 500 });
     }
 
-    // ✅ Mark confirmed
-    await supabaseAdmin
-      .from("email_change_requests")
-      .update({ confirmed_at: now.toISOString() })
-      .eq("id", reqRow.id);
+    // 5) Security: invalidate all sessions so user must log in again
+    try {
+      await supabaseAdmin.from("sessions").delete().eq("user_id", reqRow.user_id);
+    } catch {}
 
-    // ✅ Cleanup any other pending requests for this user (keeps table tidy)
-    await supabaseAdmin
-      .from("email_change_requests")
-      .delete()
-      .eq("user_id", reqRow.user_id)
-      .is("confirmed_at", null);
-
-    // ✅ Notify OLD email after success
-    await sendEmail({
-      to: reqRow.old_email,
-      subject: "Your ToneMender email was changed",
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.4">
-          <h2>Email changed</h2>
-          <p>Your ToneMender account email was changed to: <b>${reqRow.new_email}</b></p>
-          <p>If this wasn’t you, contact support immediately.</p>
-        </div>
-      `,
-    });
-
-    // ✅ Notify NEW email after success
-    await sendEmail({
-      to: reqRow.new_email,
-      subject: "Your ToneMender email is now active",
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.4">
-          <h2>All set</h2>
-          <p>This email is now the active email for your ToneMender account.</p>
-        </div>
-      `,
-    });
-
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return jsonNoStore({ ok: true, success: true });
+  } catch (err) {
+    console.error("CONFIRM EMAIL CHANGE ERROR:", err);
+    return jsonNoStore({ error: "Server error while confirming" }, { status: 500 });
   }
 }

@@ -1,91 +1,123 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
-import { makeToken, sha256 } from "@/lib/authTokens";
+import { generateToken, sha256Hex } from "@/lib/security";
+import { verifyTurnstile } from "@/lib/turnstile";
 
 export const runtime = "nodejs";
 
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-async function verifyTurnstile(email: string, token: string) {
-  if (CAPTCHA_BYPASS_EMAILS.has(email)) return;
-
-  if (!token || token === "bypass") throw new Error("Captcha required");
-
-  const secret = process.env.TURNSTILE_SECRET_KEY;
-  if (!secret) throw new Error("Missing TURNSTILE_SECRET_KEY");
-
-  const form = new FormData();
-  form.append("secret", secret);
-  form.append("response", token);
-
-  const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: form,
-  });
-
-  const json: any = await resp.json().catch(() => ({}));
-  if (!resp.ok || !json?.success) throw new Error("Captcha verification failed");
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const email = normalizeEmail(body?.email ?? "");
-    const turnstileToken: string = body?.turnstileToken ?? "";
+    const body = await req.json().catch(() => ({}));
+    const emailRaw = body?.email;
+    const turnstileToken = body?.turnstileToken;
 
     // Always return ok to avoid leaks
-    if (!email) return NextResponse.json({ ok: true });
+    if (!emailRaw || typeof emailRaw !== "string") return jsonNoStore({ ok: true });
 
-    await verifyTurnstile(email, turnstileToken);
+    const email = normalizeEmail(emailRaw);
+    if (!email) return jsonNoStore({ ok: true });
 
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("id,email_verified")
+    // ✅ Enforce captcha unless bypass email
+    if (!CAPTCHA_BYPASS_EMAILS.has(email)) {
+      if (!turnstileToken || typeof turnstileToken !== "string") {
+        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+      }
+
+      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+      if (!okCaptcha) {
+        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+      }
+    }
+
+    // ✅ Lookup user in your custom users table
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from("users")
+      .select("id,email_verified_at")
       .eq("email", email)
       .maybeSingle();
 
     // Don’t leak
-    if (!profile) return NextResponse.json({ ok: true });
-    if (profile.email_verified) return NextResponse.json({ ok: true });
+    if (userErr || !user) return jsonNoStore({ ok: true });
 
-    const token = makeToken();
-    const tokenHash = sha256(token);
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    // Already verified -> nothing to do
+    if (user.email_verified_at) return jsonNoStore({ ok: true });
 
-    await supabaseAdmin.from("signup_confirm_tokens").insert({
-      user_id: profile.id,
-      email,
+    // ✅ Keep only one valid signup confirmation token at a time
+    try {
+      await supabaseAdmin
+        .from("email_verification_tokens")
+        .delete()
+        .eq("user_id", user.id)
+        .is("consumed_at", null);
+    } catch {}
+
+    const token = generateToken(32);
+    const tokenHash = sha256Hex(token);
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+
+    const { error: insErr } = await supabaseAdmin.from("email_verification_tokens").insert({
+      user_id: user.id,
       token_hash: tokenHash,
-      expires_at: expiresAt,
+      expires_at: expiresAtIso,
+      consumed_at: null,
     });
 
-    const appUrl = process.env.APP_URL;
-    if (!appUrl) return NextResponse.json({ error: "Missing APP_URL" }, { status: 500 });
+    // Don’t leak
+    if (insErr) return jsonNoStore({ ok: true });
 
-    const confirmUrl = `${appUrl}/confirm-signup?token=${token}`;
+    const appUrl = process.env.APP_URL;
+    if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
+
+    // ✅ Match your confirm route (POST /api/auth/confirm-signup) called by your /confirm page flow
+    // If you have a dedicated page, keep the same destination as your app expects.
+    const confirmUrl = `${appUrl}/confirm?type=signup&token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: email,
       subject: "Confirm your ToneMender account",
       html: `
-        <p>Tap to confirm your email and activate your ToneMender account:</p>
-        <p><a href="${confirmUrl}">Confirm email</a></p>
-        <p>This link expires in 1 hour.</p>
+        <div style="font-family:Arial,sans-serif;line-height:1.4">
+          <h2>Confirm your email</h2>
+          <p>Tap below to confirm your email and activate your ToneMender account:</p>
+          <p>
+            <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
+              Confirm email
+            </a>
+          </p>
+          <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
+        </div>
       `,
     });
 
-    return NextResponse.json({ ok: true });
+    return jsonNoStore({ ok: true });
   } catch (e: any) {
+    console.error("RESEND SIGNUP CONFIRMATION ERROR:", e);
+
     // Avoid leaks, but surface true server misconfig
     const msg = String(e?.message ?? "");
     if (msg.includes("Missing APP_URL") || msg.includes("TURNSTILE_SECRET_KEY")) {
-      return NextResponse.json({ error: msg || "Server error" }, { status: 500 });
+      return jsonNoStore({ error: msg || "Server error" }, { status: 500 });
     }
-    return NextResponse.json({ ok: true });
+
+    return jsonNoStore({ ok: true });
   }
 }

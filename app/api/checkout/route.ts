@@ -1,23 +1,13 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { sha256Hex } from "@/lib/security";
 
 export const runtime = "nodejs";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
-// Server-side Supabase client (service role key required)
-const supabaseServer = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
+const SESSION_COOKIE = "tm_session";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -25,48 +15,49 @@ function jsonNoStore(data: any, init?: ResponseInit) {
   return res;
 }
 
-function getBearerToken(req: Request): string | null {
-  const authHeader = req.headers.get("authorization") || "";
-  if (authHeader.toLowerCase().startsWith("bearer ")) {
-    const t = authHeader.slice(7).trim();
-    return t.length ? t : null;
+function readCookie(req: Request, name: string) {
+  const cookie = req.headers.get("cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function getUserIdFromSession(req: Request) {
+  const raw = readCookie(req, SESSION_COOKIE);
+  if (!raw) return null;
+
+  const hash = sha256Hex(raw);
+
+  const { data: session, error } = await supabaseAdmin
+    .from("sessions")
+    .select("user_id,expires_at")
+    .eq("session_token_hash", hash)
+    .maybeSingle();
+
+  if (error || !session) return null;
+
+  const exp = new Date(session.expires_at).getTime();
+  if (Number.isNaN(exp) || exp < Date.now()) {
+    try {
+      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
+    } catch {}
+    return null;
   }
-  return null;
+
+  return session.user_id as string;
 }
 
 export async function POST(req: Request) {
   try {
-    // Parse body safely
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
-
-    const tokenFromBody = body?.token;
+    const body = await req.json().catch(() => ({}));
     const type = body?.type;
 
-    const token = getBearerToken(req) || tokenFromBody;
-
-    if (!token || typeof token !== "string") {
-      return jsonNoStore({ error: "Missing auth token" }, { status: 401 });
-    }
-
-    // Authenticate user
-    const { data: authData, error: authError } = await supabaseServer.auth.getUser(token);
-
-    if (authError || !authData?.user) {
+    const userId = await getUserIdFromSession(req);
+    if (!userId) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const user = authData.user;
-    const userId = user.id;
-
-    // Validate plan type
     const planType = type === "yearly" ? "yearly" : "monthly";
 
-    // Choose correct price ID
     const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY!;
     const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
     const priceId = planType === "yearly" ? PRICE_YEARLY : PRICE_MONTHLY;
@@ -75,27 +66,34 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
     }
 
-    // ✅ Canonical app URL (server-side)
     const appUrl = process.env.APP_URL;
     if (!appUrl) {
-      return jsonNoStore(
-        { error: "Server misconfigured (missing APP_URL)" },
-        { status: 500 }
-      );
+      return jsonNoStore({ error: "Server misconfigured (missing APP_URL)" }, { status: 500 });
     }
 
-    // Fetch existing Stripe customer id
-    const { data: profile, error: profileError } = await supabaseServer
-      .from("profiles")
-      .select("stripe_customer_id")
+    // ✅ Load user (custom users table)
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from("users")
+      .select("email,stripe_customer_id")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
 
-    if (profileError) {
-      return jsonNoStore({ error: "Profile lookup failed" }, { status: 500 });
+    if (userErr || !user) {
+      return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
     }
 
-    let customerId: string | null = profile?.stripe_customer_id ?? null;
+    let customerId: string | null = user.stripe_customer_id ?? null;
+
+    // Optional fallback if you still store stripe_customer_id in profiles (old supabase-auth world)
+    if (!customerId) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("stripe_customer_id")
+        .eq("id", userId)
+        .maybeSingle();
+
+      customerId = profile?.stripe_customer_id ?? null;
+    }
 
     // Create Stripe customer if needed
     if (!customerId) {
@@ -106,46 +104,36 @@ export async function POST(req: Request) {
 
       customerId = customer.id;
 
-      const { error: updateError } = await supabaseServer
-        .from("profiles")
+      // ✅ Preferred: store on users table (custom auth)
+      const { error: updUserErr } = await supabaseAdmin
+        .from("users")
         .update({ stripe_customer_id: customerId })
         .eq("id", userId);
 
-      if (updateError) {
-        // Customer exists now in Stripe; fail safely so you can retry without duplicates later
-        return jsonNoStore(
-          { error: "Failed to store Stripe customer ID" },
-          { status: 500 }
-        );
+      if (updUserErr) {
+        // Fallback: try profiles if users table doesn't have this column yet
+        try {
+          await supabaseAdmin.from("profiles").update({ stripe_customer_id: customerId }).eq("id", userId);
+        } catch {}
       }
     }
 
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId,
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${appUrl}/account?success=true`,
       cancel_url: `${appUrl}/upgrade?canceled=true`,
-      metadata: {
-        userId,
-        planType,
-      },
+      metadata: { userId, planType },
     });
 
     if (!session.url) {
-      return jsonNoStore(
-        { error: "Failed to create checkout session" },
-        { status: 502 }
-      );
+      return jsonNoStore({ error: "Failed to create checkout session" }, { status: 502 });
     }
 
     return jsonNoStore({ url: session.url });
   } catch (err) {
     console.error("CHECKOUT ERROR:", err);
-    return jsonNoStore(
-      { error: "Server error while creating checkout session" },
-      { status: 500 }
-    );
+    return jsonNoStore({ error: "Server error while creating checkout session" }, { status: 500 });
   }
 }

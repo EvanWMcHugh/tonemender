@@ -1,48 +1,91 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256 } from "@/lib/authTokens";
+import { sha256Hex } from "@/lib/security";
 
 export const runtime = "nodejs";
 
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+function isExpired(expiresAt: string) {
+  const t = new Date(expiresAt).getTime();
+  return Number.isNaN(t) || t < Date.now();
+}
+
 export async function POST(req: Request) {
   try {
-    const { token } = await req.json();
-    if (!token) return NextResponse.json({ error: "Missing token" }, { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const token = body?.token;
 
-    const tokenHash = sha256(token);
-
-    const { data, error } = await supabaseAdmin
-      .from("signup_confirm_tokens")
-      .select("id,user_id,expires_at,used_at")
-      .eq("token_hash", tokenHash)
-      .limit(1);
-
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-
-    const row = data?.[0];
-    if (!row) return NextResponse.json({ error: "Invalid link" }, { status: 400 });
-    if (row.used_at) return NextResponse.json({ error: "Link already used" }, { status: 400 });
-
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      return NextResponse.json({ error: "Link expired" }, { status: 400 });
+    if (!token || typeof token !== "string") {
+      return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
-    const { error: profErr } = await supabaseAdmin
-      .from("profiles")
-      .update({ email_verified: true })
+    const tokenHash = sha256Hex(token);
+
+    // 1) Find token row
+    const { data: row, error: findErr } = await supabaseAdmin
+      .from("email_verification_tokens")
+      .select("id,user_id,expires_at,consumed_at")
+      .eq("token_hash", tokenHash)
+      .maybeSingle();
+
+    if (findErr || !row) {
+      return jsonNoStore({ error: "Invalid link" }, { status: 400 });
+    }
+
+    // Idempotent success
+    if (row.consumed_at) {
+      return jsonNoStore({ ok: true, success: true });
+    }
+
+    if (!row.expires_at || isExpired(row.expires_at)) {
+      return jsonNoStore({ error: "Link expired" }, { status: 400 });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // 2) Consume token first with a guard (race-safe)
+    // If someone else consumes it between read and update, treat as success.
+    const { data: consumed, error: consumeErr } = await supabaseAdmin
+      .from("email_verification_tokens")
+      .update({ consumed_at: nowIso })
+      .eq("id", row.id)
+      .is("consumed_at", null)
+      .select("id")
+      .maybeSingle();
+
+    if (consumeErr) {
+      return jsonNoStore({ error: "Failed to confirm" }, { status: 500 });
+    }
+
+    if (!consumed?.id) {
+      return jsonNoStore({ ok: true, success: true });
+    }
+
+    // 3) Mark user verified (idempotent)
+    const { error: userErr } = await supabaseAdmin
+      .from("users")
+      .update({ email_verified_at: nowIso })
       .eq("id", row.user_id);
 
-    if (profErr) return NextResponse.json({ error: profErr.message }, { status: 500 });
+    if (userErr) {
+      // Roll back token consumption so user can retry if the user update failed
+      try {
+        await supabaseAdmin
+          .from("email_verification_tokens")
+          .update({ consumed_at: null })
+          .eq("id", row.id);
+      } catch {}
+      return jsonNoStore({ error: "Failed to verify email" }, { status: 500 });
+    }
 
-    const { error: usedErr } = await supabaseAdmin
-      .from("signup_confirm_tokens")
-      .update({ used_at: new Date().toISOString() })
-      .eq("id", row.id);
-
-    if (usedErr) return NextResponse.json({ error: usedErr.message }, { status: 500 });
-
-    return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+    return jsonNoStore({ ok: true, success: true });
+  } catch (err: any) {
+    console.error("CONFIRM SIGNUP ERROR:", err);
+    return jsonNoStore({ error: err?.message ?? "Server error" }, { status: 500 });
   }
 }

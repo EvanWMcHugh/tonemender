@@ -1,20 +1,10 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { sha256Hex } from "@/lib/security";
 
 export const runtime = "nodejs";
 
-// Server-side Supabase client (service role key required)
-const supabaseServer = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SECRET_KEY!,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
+const SESSION_COOKIE = "tm_session";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -22,87 +12,104 @@ function jsonNoStore(data: any, init?: ResponseInit) {
   return res;
 }
 
-function getBearerToken(req: Request): string | null {
-  const authHeader = req.headers.get("authorization") || "";
-  if (authHeader.toLowerCase().startsWith("bearer ")) {
-    const t = authHeader.slice(7).trim();
-    return t.length ? t : null;
+function readCookie(req: Request, name: string) {
+  const cookie = req.headers.get("cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function getUserIdFromSession(req: Request) {
+  const raw = readCookie(req, SESSION_COOKIE);
+  if (!raw) return null;
+
+  const hash = sha256Hex(raw);
+
+  const { data: session, error } = await supabaseAdmin
+    .from("sessions")
+    .select("user_id,expires_at")
+    .eq("session_token_hash", hash)
+    .maybeSingle();
+
+  if (error || !session) return null;
+
+  const exp = new Date(session.expires_at).getTime();
+  if (Number.isNaN(exp) || exp < Date.now()) {
+    // cleanup expired session
+    try {
+      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
+    } catch {}
+    return null;
   }
-  return null;
+
+  return session.user_id as string;
 }
 
 export async function POST(req: Request) {
   try {
-    // Parse body safely
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
+    const userId = await getUserIdFromSession(req);
 
-    const tokenFromBody = body?.token;
-    const token = getBearerToken(req) || tokenFromBody;
-
-    if (!token || typeof token !== "string") {
-      return jsonNoStore({ error: "Missing auth token" }, { status: 400 });
-    }
-
-    // Verify caller is a real logged-in user
-    const { data: authData, error: authError } =
-      await supabaseServer.auth.getUser(token);
-
-    if (authError || !authData?.user) {
+    if (!userId) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userId = authData.user.id;
-
-    // Fetch profile data for optional cleanup (Stripe metadata)
-    const { data: profile } = await supabaseServer
-      .from("profiles")
-      .select("stripe_customer_id, stripe_subscription_id")
+    // Fetch user for optional external reconciliation (Stripe IDs stored on users now)
+    const { data: userRow } = await supabaseAdmin
+      .from("users")
+      .select("stripe_customer_id, plan_type")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
 
-    // Clean up user-owned rows (add/remove tables as needed)
-    // Best-effort deletes so one failure doesn’t block account deletion
+    // Best-effort deletes (don’t let one failure block)
     try {
-      await supabaseServer.from("messages").delete().eq("user_id", userId);
+      await supabaseAdmin.from("messages").delete().eq("user_id", userId);
     } catch {}
 
     try {
-      await supabaseServer.from("rewrite_usage").delete().eq("user_id", userId);
+      await supabaseAdmin.from("rewrite_usage").delete().eq("user_id", userId);
     } catch {}
 
     try {
-      // profiles is usually 1:1 with auth user id
-      await supabaseServer.from("profiles").delete().eq("id", userId);
+      await supabaseAdmin.from("email_verification_tokens").delete().eq("user_id", userId);
     } catch {}
 
-    // If you store drafts in a different table, delete them too (safe if table doesn't exist? No—so only add if real)
-    // await supabaseServer.from("drafts").delete().eq("user_id", userId);
+    try {
+      await supabaseAdmin.from("password_reset_tokens").delete().eq("user_id", userId);
+    } catch {}
 
-    // Delete user from Supabase Auth
-    const { error: deleteError } = await supabaseServer.auth.admin.deleteUser(
-      userId
-    );
+    try {
+      await supabaseAdmin.from("email_change_requests").delete().eq("user_id", userId);
+    } catch {}
 
-    if (deleteError) {
-      return jsonNoStore({ error: deleteError.message }, { status: 500 });
+    try {
+      await supabaseAdmin.from("sessions").delete().eq("user_id", userId);
+    } catch {}
+
+    // Finally delete the user row
+    const { error: delErr } = await supabaseAdmin.from("users").delete().eq("id", userId);
+
+    if (delErr) {
+      return jsonNoStore({ error: delErr.message }, { status: 500 });
     }
 
-    return jsonNoStore({
+    // Clear session cookie
+    const res = jsonNoStore({
+      ok: true,
       success: true,
-      // Optional: return these so you can reconcile externally if needed
-      stripe_customer_id: profile?.stripe_customer_id ?? null,
-      stripe_subscription_id: profile?.stripe_subscription_id ?? null,
+      stripe_customer_id: userRow?.stripe_customer_id ?? null,
+      plan_type: userRow?.plan_type ?? null,
     });
+
+    res.cookies.set(SESSION_COOKIE, "", {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 0,
+    });
+
+    return res;
   } catch (err) {
     console.error("DELETE ACCOUNT ERROR:", err);
-    return jsonNoStore(
-      { error: "Server error while deleting account" },
-      { status: 500 }
-    );
+    return jsonNoStore({ error: "Server error while deleting account" }, { status: 500 });
   }
 }

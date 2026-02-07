@@ -1,110 +1,146 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
-import { makeToken, sha256 } from "@/lib/authTokens";
+import { generateToken, sha256Hex } from "@/lib/security";
+import { verifyTurnstile } from "@/lib/turnstile";
+import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";
 
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-async function verifyTurnstile(email: string, token: string | null) {
-  if (CAPTCHA_BYPASS_EMAILS.has(email)) return;
-
-  if (!token) throw new Error("Captcha verification required");
-
-  const secret = process.env.TURNSTILE_SECRET_KEY;
-  if (!secret) throw new Error("Missing TURNSTILE_SECRET_KEY");
-
-  const form = new FormData();
-  form.append("secret", secret);
-  form.append("response", token);
-
-  const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: form,
-  });
-
-  const json: any = await resp.json().catch(() => ({}));
-  if (!resp.ok || !json?.success) throw new Error("Captcha verification failed");
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const email = normalizeEmail(body?.email ?? "");
-    const password = body?.password ?? "";
-    const captchaToken: string | null = body?.captchaToken ?? null;
+    const body = await req.json().catch(() => ({}));
+    const emailRaw = body?.email;
+    const password = body?.password;
+    const captchaToken = body?.captchaToken;
 
-    if (!email) return NextResponse.json({ error: "Missing email" }, { status: 400 });
-    if (!password || password.length < 8) {
-      return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
+    if (!emailRaw || typeof emailRaw !== "string") {
+      return jsonNoStore({ error: "Missing email" }, { status: 400 });
+    }
+    if (!password || typeof password !== "string") {
+      return jsonNoStore({ error: "Missing password" }, { status: 400 });
     }
 
-    await verifyTurnstile(email, captchaToken);
+    const email = normalizeEmail(emailRaw);
 
-    // ✅ Create Auth user (Supabase does NOT send email)
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: false,
-    });
-
-    if (error || !data?.user) {
-      return NextResponse.json({ error: error?.message ?? "Sign up failed" }, { status: 400 });
+    // Basic password rules (keep simple)
+    if (password.length < 8) {
+      return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
+    }
+    if (password.length > 200) {
+      return jsonNoStore({ error: "Password is too long" }, { status: 400 });
     }
 
-    const userId = data.user.id;
-
-    // ✅ Ensure profile exists + mark unverified
-    const { error: profileErr } = await supabaseAdmin.from("profiles").upsert({
-      id: userId,
-      email,
-      email_verified: false,
-    });
-
-    if (profileErr) {
-      // fail-safe: don't leave an untracked state
-      return NextResponse.json({ error: profileErr.message }, { status: 500 });
+    // ✅ Captcha enforcement handled centrally (supports internal bypass via "bypass")
+    if (!captchaToken || typeof captchaToken !== "string") {
+      return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
     }
 
-    // ✅ Create confirmation token (hashed)
-    const token = makeToken();
-    const tokenHash = sha256(token);
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
+    if (!okCaptcha) {
+      return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+    }
 
-    const { error: tokenErr } = await supabaseAdmin.from("signup_confirm_tokens").insert({
-      user_id: userId,
-      email,
+    // ✅ Check if user already exists (assuming emails stored normalized lowercase)
+    const { data: existing, error: existErr } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (existErr) return jsonNoStore({ error: "Server error" }, { status: 500 });
+    if (existing) return jsonNoStore({ error: "Email already in use" }, { status: 409 });
+
+    // ✅ Hash password
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // ✅ Insert into users
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from("users")
+      .insert({
+        email,
+        password_hash: passwordHash,
+        email_verified_at: null,
+      })
+      .select("id,email")
+      .single();
+
+    if (userErr || !user) {
+      return jsonNoStore({ error: "Sign up failed" }, { status: 400 });
+    }
+
+    // ✅ Ensure only one active verification token at a time
+    try {
+      await supabaseAdmin
+        .from("email_verification_tokens")
+        .delete()
+        .eq("user_id", user.id)
+        .is("consumed_at", null);
+    } catch {}
+
+    // ✅ Create email verification token (hash only)
+    const rawToken = generateToken(32);
+    const tokenHash = sha256Hex(rawToken);
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+
+    const { error: tokenErr } = await supabaseAdmin.from("email_verification_tokens").insert({
+      user_id: user.id,
       token_hash: tokenHash,
-      expires_at: expiresAt,
+      expires_at: expiresAtIso,
+      consumed_at: null,
     });
 
     if (tokenErr) {
-      return NextResponse.json({ error: tokenErr.message }, { status: 500 });
+      // Best effort rollback: delete user to avoid orphan unverified account with no token
+      try {
+        await supabaseAdmin.from("users").delete().eq("id", user.id);
+      } catch {}
+      return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
     }
 
     const appUrl = process.env.APP_URL;
-    if (!appUrl) return NextResponse.json({ error: "Missing APP_URL" }, { status: 500 });
+    if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
-    const confirmUrl = `${appUrl}/confirm-signup?token=${token}`;
+    // ✅ Align with your unified /confirm page flow
+    const confirmUrl = `${appUrl}/confirm?type=signup&token=${encodeURIComponent(rawToken)}`;
 
     await sendEmail({
       to: email,
       subject: "Confirm your ToneMender account",
       html: `
-        <p>Tap to confirm your email and activate your ToneMender account:</p>
-        <p><a href="${confirmUrl}">Confirm email</a></p>
-        <p>This link expires in 1 hour.</p>
-        <p>If you didn’t request this, you can ignore this email.</p>
+        <div style="font-family:Arial,sans-serif;line-height:1.4">
+          <h2>Confirm your email</h2>
+          <p>Tap to confirm your email and activate your ToneMender account:</p>
+          <p>
+            <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
+              Confirm email
+            </a>
+          </p>
+          <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
+          <p style="color:#666;font-size:12px">If you didn’t request this, you can ignore this email.</p>
+        </div>
       `,
     });
 
-    return NextResponse.json({ ok: true });
+    return jsonNoStore({ ok: true, success: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+    console.error("SIGN UP ERROR:", e);
+    return jsonNoStore({ error: e?.message ?? "Server error" }, { status: 500 });
   }
 }

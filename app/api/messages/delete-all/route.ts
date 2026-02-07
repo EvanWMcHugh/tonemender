@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
 
 export const runtime = "nodejs";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 const SESSION_COOKIE = "tm_session";
 
@@ -49,42 +46,14 @@ async function getUserIdFromSession(req: Request) {
 export async function POST(req: Request) {
   try {
     const userId = await getUserIdFromSession(req);
-    if (!userId) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return jsonNoStore({ error: "Not authenticated" }, { status: 401 });
 
-    // ✅ Stripe customer id is stored on users now
-    const { data: user, error: userErr } = await supabaseAdmin
-      .from("users")
-      .select("stripe_customer_id")
-      .eq("id", userId)
-      .maybeSingle();
+    const { error } = await supabaseAdmin.from("messages").delete().eq("user_id", userId);
+    if (error) return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
 
-    if (userErr) {
-      return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
-    }
-
-    if (!user?.stripe_customer_id) {
-      return jsonNoStore({ error: "No Stripe customer found" }, { status: 400 });
-    }
-
-    const appUrl = process.env.APP_URL;
-    if (!appUrl) {
-      return jsonNoStore({ error: "Server misconfigured (missing APP_URL)" }, { status: 500 });
-    }
-
-    const portal = await stripe.billingPortal.sessions.create({
-      customer: user.stripe_customer_id,
-      return_url: `${appUrl}/account`,
-    });
-
-    if (!portal.url) {
-      return jsonNoStore({ error: "Failed to create billing portal session" }, { status: 502 });
-    }
-
-    return jsonNoStore({ url: portal.url });
+    return jsonNoStore({ ok: true });
   } catch (err) {
-    console.error("PORTAL ERROR:", err);
-    return jsonNoStore({ error: "Server error while creating billing portal session" }, { status: 500 });
+    console.error("DELETE ALL MESSAGES ERROR:", err);
+    return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

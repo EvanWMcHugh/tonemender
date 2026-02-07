@@ -20,18 +20,17 @@ function jsonNoStore(data: any, init?: ResponseInit) {
   return res;
 }
 
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
 // We never want to reveal whether an email exists.
 // Always return { ok: true } unless captcha is missing/invalid.
 export async function POST(req: Request) {
   try {
-    // Parse body safely
-    let body: any = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
-
+    const body = await req.json().catch(() => ({}));
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
 
@@ -47,53 +46,48 @@ export async function POST(req: Request) {
         return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
       }
 
-      const okCaptcha = await verifyTurnstile(
-        turnstileToken,
-        req.headers.get("x-forwarded-for")
-      );
-
+      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
       if (!okCaptcha) {
         return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
       }
     }
 
-    // ✅ Look up user by email using admin listUsers (types may lag; cast to any)
-    const { data: usersData, error: usersErr } = await (supabaseAdmin.auth.admin as any).listUsers({
-      page: 1,
-      perPage: 1,
-      filter: `email=eq.${email}`,
-    });
+    // ✅ Custom auth: look up user in your own users table (NO supabase.auth.admin usage)
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from("users")
+      .select("id,email")
+      .eq("email", email)
+      .maybeSingle();
 
-    // If lookup fails, still don't leak
-    if (usersErr) return jsonNoStore({ ok: true });
-
-    const user = usersData?.users?.[0];
-    if (!user) return jsonNoStore({ ok: true });
+    // Still don't leak
+    if (userErr || !user?.id) return jsonNoStore({ ok: true });
 
     // ✅ Keep only one valid reset link at a time
-    await supabaseAdmin
-      .from("password_reset_tokens")
-      .delete()
-      .eq("user_id", user.id)
-      .is("used_at", null);
+    try {
+      await supabaseAdmin
+        .from("password_reset_tokens")
+        .delete()
+        .eq("user_id", user.id)
+        .is("used_at", null);
+    } catch {}
 
     // ✅ Create token (store hash only)
     const raw = generateToken(32);
     const tokenHash = sha256Hex(raw);
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 30); // 30 minutes
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 minutes
 
     const { error: insErr } = await supabaseAdmin.from("password_reset_tokens").insert({
       user_id: user.id,
       email,
       token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
+      expires_at: expiresAtIso,
     });
 
-    // If insert fails, still don't leak
+    // Still don't leak
     if (insErr) return jsonNoStore({ ok: true });
 
     const appUrl = process.env.APP_URL || "https://tonemender.com";
-    const resetUrl = `${appUrl}/reset-password?token=${raw}`;
+    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(raw)}`;
 
     await sendEmail({
       to: email,
@@ -118,7 +112,8 @@ export async function POST(req: Request) {
     });
 
     return jsonNoStore({ ok: true });
-  } catch {
+  } catch (err) {
+    console.error("REQUEST PASSWORD RESET ERROR:", err);
     // ✅ Still don't leak
     return jsonNoStore({ ok: true });
   }

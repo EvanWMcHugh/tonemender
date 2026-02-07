@@ -1,20 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../../lib/supabase";
 import { useRouter } from "next/navigation";
 import { isProReviewer } from "../../lib/reviewers";
 import dynamic from "next/dynamic";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
-// ✅ Only these are excluded from captcha (match sign-in + API)
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
-
 type UsageStats = { today: number; total: number };
 
 function getPacificDateString(date = new Date()) {
-  // YYYY-MM-DD in America/Los_Angeles (matches your API reset logic)
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Los_Angeles",
     year: "numeric",
@@ -27,17 +22,18 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+type MeUser = { id: string; email: string; isPro?: boolean; planType?: string | null };
+
 export default function AccountPage() {
   const router = useRouter();
 
-  const [email, setEmail] = useState<string | null>(null);
+  const [user, setUser] = useState<MeUser | null>(null);
   const [isPro, setIsPro] = useState(false);
   const [stats, setStats] = useState<UsageStats>({ today: 0, total: 0 });
   const [loading, setLoading] = useState(true);
 
   // Change email state
   const [newEmail, setNewEmail] = useState("");
-  const [emailMessage, setEmailMessage] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
 
@@ -46,67 +42,40 @@ export default function AccountPage() {
   const [emailCaptchaToken, setEmailCaptchaToken] = useState<string | null>(null);
 
   const todayStr = useMemo(() => getPacificDateString(), []);
-  const normalizedCurrentEmail = useMemo(() => normalizeEmail(email || ""), [email]);
-  const isBypassEmail = useMemo(
-    () => (normalizedCurrentEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedCurrentEmail) : false),
-    [normalizedCurrentEmail]
-  );
+  const normalizedCurrentEmail = useMemo(() => normalizeEmail(user?.email || ""), [user?.email]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const user = sessionData.session?.user;
+        // ✅ Custom session-based auth
+        const meResp = await fetch("/api/me", { method: "GET" });
+        const meJson = await meResp.json().catch(() => ({ user: null }));
+        const meUser: MeUser | null = meJson?.user ?? null;
 
-        if (!user) {
+        if (!meUser?.id) {
           router.replace("/sign-in");
           return;
         }
 
         if (cancelled) return;
 
-        setEmail(user.email ?? null);
+        setUser(meUser);
 
-        const { data: profile, error: profileError } = await supabase
-          .from("profiles")
-          .select("is_pro")
-          .eq("id", user.id)
-          .single();
+        const pro = Boolean(meUser.isPro) || isProReviewer(meUser.email ?? null);
+        setIsPro(pro);
 
-        if (!cancelled) {
-          const pro = Boolean(profile?.is_pro) || isProReviewer(user.email ?? null);
-          setIsPro(pro);
+        // ✅ Usage stats fetched via server route (cookie auth)
+        const statsResp = await fetch(`/api/usage/stats?day=${encodeURIComponent(todayStr)}`, {
+          method: "GET",
+        });
+        const statsJson = await statsResp.json().catch(() => null);
 
-          if (profileError) {
-            // Not fatal; just log it
-            console.warn("PROFILE LOAD WARNING:", profileError);
-          }
-        }
-
-        // Stats: only pull created_at to reduce payload
-        const { data: usageRows, error: usageError } = await supabase
-          .from("rewrite_usage")
-          .select("created_at")
-          .eq("user_id", user.id);
-
-        if (cancelled) return;
-
-        if (usageError) {
-          console.warn("USAGE LOAD WARNING:", usageError);
+        if (!cancelled && statsResp.ok && statsJson?.stats) {
+          setStats(statsJson.stats);
+        } else if (!cancelled) {
           setStats({ today: 0, total: 0 });
-        } else {
-          const total = usageRows?.length ?? 0;
-
-          // created_at is ISO string; take YYYY-MM-DD and compare to Pacific day string
-          const today = (usageRows ?? []).filter((u: any) => {
-            const created = typeof u?.created_at === "string" ? u.created_at : "";
-            const utcDay = created.split("T")[0]; // YYYY-MM-DD
-            return utcDay === todayStr;
-          }).length;
-
-          setStats({ today, total });
         }
       } catch (err) {
         console.error("ACCOUNT LOAD ERROR:", err);
@@ -118,25 +87,15 @@ export default function AccountPage() {
 
     load();
 
-    // Keep UI email in sync after auth state changes
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const user = session?.user;
-      if (!user) {
-        router.replace("/sign-in");
-        return;
-      }
-      setEmail(user.email ?? null);
-      setIsPro((prev) => prev || isProReviewer(user.email ?? null));
-    });
-
     return () => {
       cancelled = true;
-      listener?.subscription?.unsubscribe();
     };
   }, [router, todayStr]);
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    try {
+      await fetch("/api/auth/sign-out", { method: "POST" });
+    } catch {}
     router.replace("/sign-in");
   }
 
@@ -144,14 +103,8 @@ export default function AccountPage() {
     const ok = confirm("Delete ALL saved drafts? This cannot be undone.");
     if (!ok) return;
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData.session?.user;
-    if (!user) return;
-
-    const { error } = await supabase.from("messages").delete().eq("user_id", user.id);
-
-    if (error) {
-      console.error("DELETE ALL MESSAGES ERROR:", error);
+    const resp = await fetch("/api/messages/delete-all", { method: "POST" });
+    if (!resp.ok) {
       alert("Failed to delete drafts.");
       return;
     }
@@ -164,29 +117,8 @@ export default function AccountPage() {
     const ok = confirm("Delete your ENTIRE account permanently?");
     if (!ok) return;
 
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-
-    if (!token) {
-      alert("You must be logged in.");
-      return;
-    }
-
-    const res = await fetch("/api/delete-account", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({}),
-    });
-
-    let json: any = {};
-    try {
-      json = await res.json();
-    } catch {
-      json = {};
-    }
+    const res = await fetch("/api/delete-account", { method: "POST" });
+    const json = await res.json().catch(() => ({}));
 
     if (!res.ok) {
       alert(json?.error || "Failed to delete account.");
@@ -198,23 +130,7 @@ export default function AccountPage() {
   }
 
   async function openBillingPortal() {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-
-    if (!token) {
-      alert("You must be logged in.");
-      return;
-    }
-
-    const res = await fetch("/api/portal", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({}),
-    });
-
+    const res = await fetch("/api/portal", { method: "POST" });
     const json = await res.json().catch(() => ({}));
 
     if (json?.url) {
@@ -233,7 +149,6 @@ export default function AccountPage() {
   async function handleChangeEmail(e: React.FormEvent) {
     e.preventDefault();
     setEmailError("");
-    setEmailMessage("");
 
     const candidate = normalizeEmail(newEmail);
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -243,14 +158,12 @@ export default function AccountPage() {
       return;
     }
 
-    // Optional: prevent “changing” to the same email
-    if (email && normalizeEmail(email) === candidate) {
+    if (user?.email && normalizeEmail(user.email) === candidate) {
       setEmailError("That is already your current email.");
       return;
     }
 
-    // If not bypass, require captcha token (show widget on first click)
-    if (!isBypassEmail && !emailCaptchaToken) {
+    if (!emailCaptchaToken) {
       setShowEmailCaptcha(true);
       return;
     }
@@ -258,21 +171,12 @@ export default function AccountPage() {
     setEmailLoading(true);
 
     try {
-      const { data } = await supabase.auth.getSession();
-      const accessToken = data.session?.access_token;
-
-      if (!accessToken) {
-        setEmailError("You must be logged in.");
-        return;
-      }
-
       const resp = await fetch("/api/auth/request-email-change", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          token: accessToken,
           newEmail: candidate,
-          turnstileToken: isBypassEmail ? "bypass" : emailCaptchaToken,
+          turnstileToken: emailCaptchaToken,
         }),
       });
 
@@ -286,8 +190,6 @@ export default function AccountPage() {
 
       setNewEmail("");
       resetEmailCaptchaState();
-
-      // ✅ Route to your new generalized check-email screen
       router.push("/check-email?type=email-change");
     } catch (err: any) {
       setEmailError(err?.message || "Failed to send confirmation email.");
@@ -315,7 +217,7 @@ export default function AccountPage() {
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
 
         <p className="text-sm">
-          <strong>Email:</strong> {email}
+          <strong>Email:</strong> {user?.email ?? ""}
         </p>
         <p className="text-sm mt-1">
           <strong>Status:</strong> {isPro ? "🚀 Pro Member" : "Free User"}
@@ -351,7 +253,6 @@ export default function AccountPage() {
           <p className="font-medium mb-2">Change Email</p>
 
           {emailError && <p className="text-red-500 text-sm mb-1">{emailError}</p>}
-          {emailMessage && <p className="text-green-600 text-sm mb-1">{emailMessage}</p>}
 
           <div className="flex gap-2">
             <input
@@ -370,11 +271,11 @@ export default function AccountPage() {
               disabled={emailLoading}
               className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {emailLoading ? "Sending…" : showEmailCaptcha && !isBypassEmail ? "Verify…" : "Update"}
+              {emailLoading ? "Sending…" : showEmailCaptcha ? "Verify…" : "Update"}
             </button>
           </div>
 
-          {!isBypassEmail && showEmailCaptcha && (
+          {showEmailCaptcha && (
             <div className="mt-3">
               <Turnstile
                 sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}

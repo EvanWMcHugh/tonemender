@@ -7,97 +7,149 @@ import { verifyTurnstile } from "@/lib/turnstile";
 
 export const runtime = "nodejs";
 
+const SESSION_COOKIE = "tm_session";
+
+function jsonNoStore(data: any, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function readCookie(req: Request, name: string) {
+  const cookie = req.headers.get("cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function getUserIdFromSession(req: Request) {
+  const raw = readCookie(req, SESSION_COOKIE);
+  if (!raw) return null;
+
+  const hash = sha256Hex(raw);
+
+  const { data: session, error } = await supabaseAdmin
+    .from("sessions")
+    .select("user_id,expires_at")
+    .eq("session_token_hash", hash)
+    .maybeSingle();
+
+  if (error || !session) return null;
+
+  const exp = new Date(session.expires_at).getTime();
+  if (Number.isNaN(exp) || exp < Date.now()) {
+    try {
+      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
+    } catch {}
+    return null;
+  }
+
+  return session.user_id as string;
+}
+
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
 export async function POST(req: Request) {
   try {
-    const { token, newEmail, turnstileToken } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const newEmailRaw = body?.newEmail;
+    const turnstileToken = body?.turnstileToken;
 
-    if (!token) {
-      return NextResponse.json({ error: "Missing auth token" }, { status: 401 });
+    if (!newEmailRaw || typeof newEmailRaw !== "string") {
+      return jsonNoStore({ error: "Missing newEmail" }, { status: 400 });
     }
-    if (!newEmail) {
-      return NextResponse.json({ error: "Missing newEmail" }, { status: 400 });
-    }
-    if (!turnstileToken) {
-      return NextResponse.json({ error: "Missing captcha" }, { status: 400 });
+    if (!turnstileToken || typeof turnstileToken !== "string") {
+      return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
     }
 
-    // ✅ Turnstile verification
-    const okCaptcha = await verifyTurnstile(
-      turnstileToken,
-      req.headers.get("x-forwarded-for")
-    );
+    // ✅ Auth via cookie session
+    const userId = await getUserIdFromSession(req);
+    if (!userId) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // ✅ Email validation
+    const nextEmail = normalizeEmail(newEmailRaw);
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!emailRegex.test(nextEmail)) {
+      return jsonNoStore({ error: "Invalid email" }, { status: 400 });
+    }
+
+    // ✅ Turnstile verification (helper should support "bypass" for your internal emails)
+    const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
     if (!okCaptcha) {
-      return NextResponse.json({ error: "Captcha failed" }, { status: 400 });
+      return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
     }
 
-    // ✅ Verify logged-in user via their JWT
-    const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
-    if (userErr || !userData?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    // Load current email from your users table
+    const { data: me, error: meErr } = await supabaseAdmin
+      .from("users")
+      .select("email")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (meErr || !me?.email) {
+      return jsonNoStore({ error: "User email missing" }, { status: 400 });
     }
 
-    const user = userData.user;
-    const oldEmail = normalizeEmail(user.email || "");
-    const nextEmail = normalizeEmail(newEmail);
+    const oldEmail = normalizeEmail(me.email);
 
-    if (!oldEmail) {
-      return NextResponse.json({ error: "User email missing" }, { status: 400 });
-    }
     if (oldEmail === nextEmail) {
-      return NextResponse.json({ error: "New email must be different" }, { status: 400 });
+      return jsonNoStore({ error: "New email must be different" }, { status: 400 });
     }
 
-    // ✅ Optional: prevent changing to an email already used by another account
-// Supabase typings may not include `filter`, so we cast to any.
-const { data: usersData, error: usersErr } = await (supabaseAdmin.auth.admin as any).listUsers({
-  page: 1,
-  perPage: 1,
-  filter: `email=eq.${nextEmail}`,
-});
+    // ✅ Prevent changing to an email already used by another user
+    // Prefer exact match if you store normalized lowercase emails.
+    const { data: existing, error: existErr } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", nextEmail)
+      .maybeSingle();
 
-if (!usersErr) {
-  const match = usersData?.users?.[0];
-  if (match && match.id !== user.id) {
-    return NextResponse.json(
-      { error: "Unable to use that email address." },
-      { status: 400 }
-    );
-  }
-}
-    // If listUsers errors, we just skip this optional check and let the update step handle conflicts.
+    if (existErr) {
+      return jsonNoStore({ error: "Could not validate email" }, { status: 500 });
+    }
 
-    // ✅ Optional: delete any previous pending requests (avoids multiple valid links)
-    await supabaseAdmin
-      .from("email_change_requests")
-      .delete()
-      .eq("user_id", user.id)
-      .is("confirmed_at", null);
+    if (existing && existing.id !== userId) {
+      return jsonNoStore({ error: "Unable to use that email address." }, { status: 400 });
+    }
+
+    // ✅ Delete any previous pending requests (avoids multiple valid links)
+    try {
+      await supabaseAdmin
+        .from("email_change_requests")
+        .delete()
+        .eq("user_id", userId)
+        .is("confirmed_at", null);
+    } catch {}
 
     // ✅ Create verification token (store hash only)
     const raw = generateToken(32);
     const tokenHash = sha256Hex(raw);
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 30); // 30 minutes
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 minutes
 
     // ✅ Store request
     const { error: insErr } = await supabaseAdmin.from("email_change_requests").insert({
-      user_id: user.id,
+      user_id: userId,
       old_email: oldEmail,
       new_email: nextEmail,
       token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
+      expires_at: expiresAtIso,
     });
 
     if (insErr) {
-      return NextResponse.json({ error: "Could not create request" }, { status: 500 });
+      return jsonNoStore({ error: "Could not create request" }, { status: 500 });
     }
 
-    // ✅ Use existing /confirm page with a type param
     const appUrl = process.env.APP_URL || "https://tonemender.com";
-    const confirmUrl = `${appUrl}/confirm?type=email-change&token=${raw}`;
+    const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
 
     await sendEmail({
       to: nextEmail,
@@ -117,8 +169,9 @@ if (!usersErr) {
       `,
     });
 
-    return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return jsonNoStore({ ok: true });
+  } catch (err) {
+    console.error("REQUEST EMAIL CHANGE ERROR:", err);
+    return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }
