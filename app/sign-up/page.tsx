@@ -29,6 +29,7 @@ export default function SignUpPage() {
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
+
   const isBypassEmail = useMemo(
     () => (normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false),
     [normalizedEmail]
@@ -42,7 +43,9 @@ export default function SignUpPage() {
         const resp = await fetch("/api/me", { method: "GET" });
         const json = await resp.json().catch(() => ({ user: null }));
         if (!cancelled && json?.user?.id) router.replace("/");
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     checkSession();
@@ -84,7 +87,7 @@ export default function SignUpPage() {
 
     if (loading) return;
 
-    // show captcha only after click
+    // Show captcha only after click
     if (!isBypassEmail && !withToken) {
       setPendingAction("signup");
       setShowCaptcha(true);
@@ -93,26 +96,32 @@ export default function SignUpPage() {
 
     setLoading(true);
     try {
+      const payload: any = {
+        email: normalizedEmail,
+        password,
+      };
+
+      // Only include captchaToken when needed
+      if (!isBypassEmail) payload.captchaToken = withToken;
+
       const resp = await fetch("/api/auth/sign-up", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: normalizedEmail,
-          password,
-          // server bypasses based on email; for non-bypass we must pass the token
-          captchaToken: isBypassEmail ? null : withToken,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const json = await resp.json().catch(() => ({}));
 
-      if (!resp.ok || !json?.ok) {
+      if (!resp.ok) {
+        throw new Error(json?.error || "Sign up failed");
+      }
+
+      // ✅ Your API returns { success: true }
+      if (!json?.success) {
         throw new Error(json?.error || "Sign up failed");
       }
 
       cleanupCaptchaState();
-
-      // ✅ Match CheckEmailPage types
       router.replace("/check-email?type=signup");
     } catch (err: any) {
       setError(err?.message || "Sign up failed");
@@ -136,7 +145,10 @@ export default function SignUpPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
-        <Link href="/landing" className="inline-block mb-4 text-sm text-slate-600 hover:underline">
+        <Link
+          href="/landing"
+          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
+        >
           ← Back to home
         </Link>
 
@@ -154,6 +166,7 @@ export default function SignUpPage() {
             required
             autoComplete="email"
             inputMode="email"
+            disabled={loading}
           />
 
           <input
@@ -173,8 +186,8 @@ export default function SignUpPage() {
               sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
               theme="light"
               onSuccess={handleCaptchaSuccess}
-              onExpire={() => {}}
-              onError={() => {}}
+              onExpire={() => setError("Captcha expired. Please try again.")}
+              onError={() => setError("Captcha error. Please try again.")}
             />
           )}
 
