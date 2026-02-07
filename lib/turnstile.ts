@@ -1,47 +1,40 @@
-export async function verifyTurnstile(
-  token: string | null | undefined,
-  ip?: string | null
-): Promise<boolean> {
-  // Explicit bypass token (used for reviewer emails)
-  if (token === "bypass") {
-    return true;
-  }
-
-  // Missing token = fail
-  if (!token || typeof token !== "string") {
-    return false;
-  }
-
+export async function verifyTurnstile(token: string, ip: string | null) {
   const secret = process.env.TURNSTILE_SECRET_KEY;
   if (!secret) {
-    console.error("TURNSTILE_SECRET_KEY missing");
+    console.error("TURNSTILE_SECRET_KEY is missing");
     return false;
   }
 
   try {
-    const body = new URLSearchParams();
-    body.set("secret", secret);
-    body.set("response", token);
-    if (ip) body.set("remoteip", ip);
+    const form = new FormData();
+    form.append("secret", secret);
+    form.append("response", token);
+    if (ip) form.append("remoteip", ip);
 
     const resp = await fetch(
       "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-      }
+      { method: "POST", body: form }
     );
 
-    if (!resp.ok) {
-      console.warn("Turnstile verification HTTP error:", resp.status);
-      return false;
+    const data = (await resp.json()) as {
+      success: boolean;
+      "error-codes"?: string[];
+      hostname?: string;
+      action?: string;
+      cdata?: string;
+    };
+
+    if (!data.success) {
+      console.error("Turnstile verify failed:", {
+        codes: data["error-codes"] ?? [],
+        hostname: data.hostname ?? null,
+        action: data.action ?? null,
+      });
     }
 
-    const data = (await resp.json()) as { success?: boolean };
-    return data?.success === true;
-  } catch (err) {
-    console.error("Turnstile verification failed:", err);
+    return !!data.success;
+  } catch (e) {
+    console.error("Turnstile verify error:", e);
     return false;
   }
 }
