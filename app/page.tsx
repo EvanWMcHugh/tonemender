@@ -9,7 +9,14 @@ import { isProReviewer } from "../lib/reviewers";
 
 type MeResponse =
   | { user: null }
-  | { user: { id: string; email: string; isPro?: boolean; planType?: string | null } };
+  | {
+      user: {
+        id: string;
+        email: string;
+        isPro?: boolean;
+        planType?: string | null;
+      };
+    };
 
 export default function AppHomePage() {
   const router = useRouter();
@@ -21,36 +28,39 @@ export default function AppHomePage() {
     let cancelled = false;
 
     async function load() {
-  try {
-    const fetchMe = async () => {
-      const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
-      const json = (await resp.json().catch(() => ({ user: null }))) as MeResponse;
-      return json?.user ?? null;
-    };
+      try {
+        const fetchMe = async () => {
+          const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
+          const json = (await resp.json().catch(() => ({ user: null }))) as MeResponse;
+          return json?.user ?? null;
+        };
 
-    let user = await fetchMe();
+        let user = await fetchMe();
 
-    // Retry once (helps right after login cookie set)
-    if (!user?.id) {
-      await new Promise((r) => setTimeout(r, 200));
-      user = await fetchMe();
+        // Retry once (helps right after login/logout navigation)
+        if (!user?.id) {
+          await new Promise((r) => setTimeout(r, 200));
+          user = await fetchMe();
+        }
+
+        if (!user?.id) {
+          router.replace("/landing");
+          return;
+        }
+
+        if (cancelled) return;
+
+        // Reviewer emails always count as Pro
+        const pro = Boolean(user.isPro) || isProReviewer(user.email ?? null);
+
+        setIsPro(pro);
+        setAuthReady(true);
+      } catch (err) {
+        console.error("HOME LOAD ERROR:", err);
+        router.replace("/landing");
+      }
     }
 
-    if (!user?.id) {
-      router.replace("/landing");
-      return;
-    }
-
-    if (cancelled) return;
-
-    const pro = Boolean(user.isPro) || isProReviewer(user.email ?? null);
-    setIsPro(pro);
-    setAuthReady(true);
-  } catch (err) {
-    console.error("HOME LOAD ERROR:", err);
-    router.replace("/landing");
-  }
-}
     load();
 
     return () => {

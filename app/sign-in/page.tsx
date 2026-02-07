@@ -48,10 +48,18 @@ export default function LoginPage() {
 
     async function checkSession() {
       try {
-        const resp = await fetch("/api/me", { method: "GET" });
+        const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
         const json = await resp.json().catch(() => ({}));
-        if (!cancelled && json?.user?.id) router.replace("/");
-      } catch {}
+
+        if (cancelled) return;
+
+        if (json?.user?.id) {
+          // hard redirect avoids any SPA auth race
+          window.location.href = "/";
+        }
+      } catch {
+        // ignore
+      }
     }
 
     checkSession();
@@ -59,7 +67,7 @@ export default function LoginPage() {
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, []);
 
   // Reset captcha + messaging when email changes
   useEffect(() => {
@@ -127,7 +135,9 @@ export default function LoginPage() {
       }
 
       cleanupCaptchaState();
-      router.replace("/");
+
+      // 🔥 Hard redirect ensures tm_session cookie is present before /api/me runs on home
+      window.location.href = "/";
     } catch (err: any) {
       setError(err?.message || "Login failed");
       cleanupCaptchaState();
