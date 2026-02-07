@@ -1,3 +1,4 @@
+// app/api/confirm/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
@@ -12,17 +13,24 @@ function jsonNoStore(data: any, init?: ResponseInit) {
 
 type ConfirmType = "signup" | "newsletter";
 
+type ConfirmBody = {
+  token?: unknown;
+  type?: unknown;
+};
+
 export async function POST(req: Request) {
   try {
-    let body: any = {};
+    let body: ConfirmBody = {};
     try {
-      body = await req.json();
-    } catch {}
+      body = (await req.json()) as ConfirmBody;
+    } catch {
+      // ignore invalid JSON, will fail validation below
+    }
 
     const token = body?.token;
     const typeRaw = body?.type;
 
-    if (!token || typeof token !== "string") {
+    if (typeof token !== "string" || !token) {
       return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
@@ -33,10 +41,12 @@ export async function POST(req: Request) {
 
     // ---------- SIGNUP CONFIRM ----------
     const handleSignup = async (): Promise<NextResponse | null> => {
+      // ✅ Enforce single-use tokens by requiring consumed_at IS NULL
       const { data: tok, error } = await supabaseAdmin
         .from("email_verification_tokens")
-        .select("id, user_id, expires_at, consumed_at")
+        .select("id, user_id, expires_at")
         .eq("token_hash", tokenHash)
+        .is("consumed_at", null)
         .single();
 
       if (error || !tok) return null;
@@ -45,32 +55,50 @@ export async function POST(req: Request) {
         typeof tok.expires_at === "string" ? Date.parse(tok.expires_at) : NaN;
 
       if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) {
-        return jsonNoStore({ error: "Token expired", type: "signup" }, { status: 400 });
+        return jsonNoStore(
+          { error: "Token expired", type: "signup" },
+          { status: 400 }
+        );
       }
 
-      const { data: user } = await supabaseAdmin
+      const { data: user, error: userErr } = await supabaseAdmin
         .from("users")
         .select("id, email, email_verified_at")
         .eq("id", tok.user_id)
         .single();
 
-      if (!user) {
-        return jsonNoStore({ error: "User not found", type: "signup" }, { status: 400 });
+      if (userErr || !user) {
+        return jsonNoStore(
+          { error: "User not found", type: "signup" },
+          { status: 400 }
+        );
       }
 
       const now = new Date().toISOString();
 
+      // Idempotent: only set if missing
       if (!user.email_verified_at) {
-        await supabaseAdmin
+        const { error: updErr } = await supabaseAdmin
           .from("users")
           .update({ email_verified_at: now })
           .eq("id", user.id);
+
+        if (updErr) {
+          console.error("CONFIRM signup: update users failed", updErr);
+          return jsonNoStore({ error: "Server error" }, { status: 500 });
+        }
       }
 
-      await supabaseAdmin
+      // Consume token (single-use)
+      const { error: consumeErr } = await supabaseAdmin
         .from("email_verification_tokens")
         .update({ consumed_at: now })
         .eq("id", tok.id);
+
+      if (consumeErr) {
+        console.error("CONFIRM signup: consume token failed", consumeErr);
+        return jsonNoStore({ error: "Server error" }, { status: 500 });
+      }
 
       return jsonNoStore({
         success: true,
@@ -89,6 +117,7 @@ export async function POST(req: Request) {
 
       if (error || !data) return null;
 
+      // Idempotent success if already confirmed
       if (data.confirmed) {
         return jsonNoStore({
           success: true,
@@ -97,14 +126,21 @@ export async function POST(req: Request) {
         });
       }
 
-      await supabaseAdmin
+      const now = new Date().toISOString();
+
+      const { error: updErr } = await supabaseAdmin
         .from("newsletter_subscribers")
         .update({
           confirmed: true,
-          confirmed_at: new Date().toISOString(),
+          confirmed_at: now,
           confirm_token_hash: null,
         })
         .eq("id", data.id);
+
+      if (updErr) {
+        console.error("CONFIRM newsletter: update failed", updErr);
+        return jsonNoStore({ error: "Server error" }, { status: 500 });
+      }
 
       return jsonNoStore({
         success: true,
@@ -115,15 +151,23 @@ export async function POST(req: Request) {
 
     // ---------- DISPATCH ----------
     if (type === "signup") {
-      return (await handleSignup()) ??
-        jsonNoStore({ error: "Invalid token", type: "signup" }, { status: 400 });
+      return (
+        (await handleSignup()) ??
+        jsonNoStore({ error: "Invalid token", type: "signup" }, { status: 400 })
+      );
     }
 
     if (type === "newsletter") {
-      return (await handleNewsletter()) ??
-        jsonNoStore({ error: "Invalid token", type: "newsletter" }, { status: 400 });
+      return (
+        (await handleNewsletter()) ??
+        jsonNoStore(
+          { error: "Invalid token", type: "newsletter" },
+          { status: 400 }
+        )
+      );
     }
 
+    // If type not provided, try both without revealing which one matched
     return (
       (await handleSignup()) ||
       (await handleNewsletter()) ||
