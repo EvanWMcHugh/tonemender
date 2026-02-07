@@ -1,31 +1,25 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-
 export default function LogoutButton() {
-  const router = useRouter();
-
   async function handleLogout() {
-    // Fast UX: move user immediately
-    router.replace("/sign-in");
-
-    // Then invalidate session cookie + DB session
     try {
-      await fetch("/api/auth/sign-out", { method: "POST" });
+      // Invalidate session cookie + DB session
+      await fetch("/api/auth/sign-out", {
+        method: "POST",
+        cache: "no-store",
+      });
     } catch {
-      // ignore — user is already redirected
+      // ignore — best effort
     }
 
-    // Optional: clear any leftover Supabase keys from past builds
+    // Clear any leftover Supabase artifacts from legacy builds
     if (typeof document !== "undefined") {
-      document.cookie
-        .split(";")
-        .forEach((cookie) => {
-          const name = cookie.split("=")[0].trim();
-          if (name.startsWith("sb-")) {
-            document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
-          }
-        });
+      document.cookie.split(";").forEach((cookie) => {
+        const name = cookie.split("=")[0].trim();
+        if (name.startsWith("sb-")) {
+          document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+        }
+      });
     }
 
     if (typeof window !== "undefined") {
@@ -33,6 +27,9 @@ export default function LogoutButton() {
         if (k.startsWith("sb-")) localStorage.removeItem(k);
       });
     }
+
+    // 🔒 Hard redirect AFTER session is gone
+    window.location.href = "/sign-in";
   }
 
   return (

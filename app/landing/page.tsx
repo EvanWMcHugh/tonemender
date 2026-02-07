@@ -14,23 +14,33 @@ export default function MarketingLandingPage() {
     let cancelled = false;
 
     async function checkSession() {
-      try {
-        const resp = await fetch("/api/me", { method: "GET" });
-        const json = await resp.json().catch(() => ({ user: null }));
+  try {
+    const fetchMe = async () => {
+      const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
+      const json = await resp.json().catch(() => ({ user: null }));
+      return json?.user ?? null;
+    };
 
-        if (cancelled) return;
+    let user = await fetchMe();
 
-        if (json?.user?.id) {
-          router.replace("/");
-        } else {
-          setChecking(false);
-        }
-      } catch (err) {
-        console.error("LANDING SESSION CHECK ERROR:", err);
-        if (!cancelled) setChecking(false);
-      }
+    // retry once (helps immediately after login/logout)
+    if (!user?.id) {
+      await new Promise((r) => setTimeout(r, 200));
+      user = await fetchMe();
     }
 
+    if (cancelled) return;
+
+    if (user?.id) {
+      router.replace("/");
+    } else {
+      setChecking(false);
+    }
+  } catch (err) {
+    console.error("LANDING SESSION CHECK ERROR:", err);
+    if (!cancelled) setChecking(false);
+  }
+}
     checkSession();
 
     return () => {
