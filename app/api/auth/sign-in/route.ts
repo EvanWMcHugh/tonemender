@@ -19,14 +19,24 @@ function normalizeEmail(email: string) {
 }
 
 function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
   const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+  const cfIp = req.headers.get("cf-connecting-ip");
+  return (forwardedFor ?? cfIp)?.split(",")[0]?.trim() ?? null;
 }
 
 function cryptoRandomHex(bytes: number) {
   const crypto = require("crypto") as typeof import("crypto");
   return crypto.randomBytes(bytes).toString("hex");
+}
+
+// ✅ Share cookie across tonemender.com + www.tonemender.com
+function getCookieDomain(req: Request) {
+  const host = req.headers.get("host") || "";
+  // only set domain on real production hostnames; avoid breaking localhost/preview deploys
+  if (host === "tonemender.com" || host === "www.tonemender.com" || host.endsWith(".tonemender.com")) {
+    return ".tonemender.com";
+  }
+  return undefined;
 }
 
 export async function POST(req: Request) {
@@ -45,7 +55,6 @@ export async function POST(req: Request) {
 
     const email = normalizeEmail(emailRaw);
 
-    // ✅ Captcha enforcement handled centrally (supports "bypass" internally)
     if (!captchaToken || typeof captchaToken !== "string") {
       return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
     }
@@ -55,7 +64,6 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
     }
 
-    // ✅ Custom users table lookup (prefer exact match if stored normalized lowercase)
     const { data: user, error } = await supabaseAdmin
       .from("users")
       .select("id,email,password_hash,email_verified_at,is_pro,plan_type")
@@ -63,7 +71,6 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (error) return jsonNoStore({ error: "Server error" }, { status: 500 });
-
     if (!user) return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
 
     if (!user.email_verified_at) {
@@ -73,7 +80,6 @@ export async function POST(req: Request) {
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
 
-    // ✅ Create session (raw token in cookie, hash in DB)
     const rawSession = cryptoRandomHex(32);
     const sessionHash = sha256Hex(rawSession);
 
@@ -93,12 +99,15 @@ export async function POST(req: Request) {
       user: { id: user.id, email: user.email, isPro: user.is_pro, planType: user.plan_type },
     });
 
+    const cookieDomain = getCookieDomain(req);
+
     res.cookies.set(SESSION_COOKIE, rawSession, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
       path: "/",
       maxAge: maxAgeSeconds,
+      ...(cookieDomain ? { domain: cookieDomain } : {}),
     });
 
     return res;
