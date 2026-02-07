@@ -39,17 +39,21 @@ export async function POST(req: Request) {
 
     const email = normalizeEmail(emailRaw);
 
-    // Basic password rules (keep simple)
     if (password.length < 8) {
-      return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
+      return jsonNoStore(
+        { error: "Password must be at least 8 characters" },
+        { status: 400 }
+      );
     }
     if (password.length > 200) {
       return jsonNoStore({ error: "Password is too long" }, { status: 400 });
     }
 
-    // ✅ Captcha enforcement handled centrally (supports internal bypass via "bypass")
     if (!captchaToken || typeof captchaToken !== "string") {
-      return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+      return jsonNoStore(
+        { error: "Captcha verification required" },
+        { status: 400 }
+      );
     }
 
     const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
@@ -57,7 +61,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
     }
 
-    // ✅ Check if user already exists (assuming emails stored normalized lowercase)
+    // Check if user exists
     const { data: existing, error: existErr } = await supabaseAdmin
       .from("users")
       .select("id")
@@ -67,10 +71,9 @@ export async function POST(req: Request) {
     if (existErr) return jsonNoStore({ error: "Server error" }, { status: 500 });
     if (existing) return jsonNoStore({ error: "Email already in use" }, { status: 409 });
 
-    // ✅ Hash password
+    // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // ✅ Insert into users
     const { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .insert({
@@ -85,7 +88,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Sign up failed" }, { status: 400 });
     }
 
-    // ✅ Ensure only one active verification token at a time
+    // Delete any previous unconsumed verification token(s)
     try {
       await supabaseAdmin
         .from("email_verification_tokens")
@@ -94,31 +97,37 @@ export async function POST(req: Request) {
         .is("consumed_at", null);
     } catch {}
 
-    // ✅ Create email verification token (hash only)
+    // Create verification token (store hash only)
     const rawToken = generateToken(32);
     const tokenHash = sha256Hex(rawToken);
     const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
 
-    const { error: tokenErr } = await supabaseAdmin.from("email_verification_tokens").insert({
-      user_id: user.id,
-      token_hash: tokenHash,
-      expires_at: expiresAtIso,
-      consumed_at: null,
-    });
+    const { error: tokenErr } = await supabaseAdmin
+      .from("email_verification_tokens")
+      .insert({
+        user_id: user.id,
+        token_hash: tokenHash,
+        expires_at: expiresAtIso,
+        consumed_at: null,
+      });
 
     if (tokenErr) {
-      // Best effort rollback: delete user to avoid orphan unverified account with no token
+      // Best effort rollback
       try {
         await supabaseAdmin.from("users").delete().eq("id", user.id);
       } catch {}
-      return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
+      return jsonNoStore(
+        { error: "Could not create verification link" },
+        { status: 500 }
+      );
     }
 
     const appUrl = process.env.APP_URL;
     if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
-    // ✅ Align with your unified /confirm page flow
-    const confirmUrl = `${appUrl}/confirm?type=signup&token=${encodeURIComponent(rawToken)}`;
+    const confirmUrl = `${appUrl}/confirm?type=signup&token=${encodeURIComponent(
+      rawToken
+    )}`;
 
     await sendEmail({
       to: email,
@@ -138,7 +147,7 @@ export async function POST(req: Request) {
       `,
     });
 
-    return jsonNoStore({ ok: true, success: true });
+    return jsonNoStore({ success: true });
   } catch (e: any) {
     console.error("SIGN UP ERROR:", e);
     return jsonNoStore({ error: e?.message ?? "Server error" }, { status: 500 });
