@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Toast from "../components/Toast";
 import html2canvas from "html2canvas";
+
+import Toast from "../components/Toast";
 import PullToRefresh from "../components/PullToRefresh";
 import { isProReviewer } from "../../lib/reviewers";
 
@@ -15,6 +16,25 @@ type MeUser = {
   isPro?: boolean;
   planType?: string | null;
 };
+
+type RewriteResponse = {
+  soft?: string;
+  calm?: string;
+  clear?: string;
+  tone_score?: number;
+  emotion_prediction?: string;
+  error?: string;
+};
+
+function normalizeEmail(email: string | null | undefined) {
+  return (email ?? "").trim().toLowerCase();
+}
+
+function vibrate(ms = 20) {
+  if (typeof window !== "undefined" && "vibrate" in navigator) {
+    navigator.vibrate(ms);
+  }
+}
 
 export default function RewritePage() {
   const router = useRouter();
@@ -31,7 +51,7 @@ export default function RewritePage() {
   // ---------------------------------------------------------
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
-  const [tone, setTone] = useState("");
+  const [tone, setTone] = useState<ToneKey | "">("");
 
   // ---------------------------------------------------------
   // ORIGINAL SNAPSHOT + "USE THIS" TRACKING
@@ -67,25 +87,26 @@ export default function RewritePage() {
   const [rewrittenForCard, setRewrittenForCard] = useState("");
   const shareCardRef = useRef<HTMLDivElement | null>(null);
 
-  function vibrate(ms = 20) {
-    if (typeof window !== "undefined" && "vibrate" in navigator) {
-      navigator.vibrate(ms);
-    }
-  }
-
-  function normalizeEmail(email: string | null) {
-    return (email ?? "").trim().toLowerCase();
-  }
+  // Avoid updating state after unmount & prevent overlapping requests
+  const mountedRef = useRef(true);
+  const rewriteAbortRef = useRef<AbortController | null>(null);
 
   // ---------------------------------------------------------
   // AUTH CHECK + FETCH PRO STATUS
   // ---------------------------------------------------------
   useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
+
+    const controller = new AbortController();
 
     async function load() {
       try {
-        const meResp = await fetch("/api/me", { method: "GET" });
+        const meResp = await fetch("/api/me", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+
         const meJson = await meResp.json().catch(() => ({ user: null }));
         const u: MeUser | null = meJson?.user ?? null;
 
@@ -94,16 +115,17 @@ export default function RewritePage() {
           return;
         }
 
-        if (cancelled) return;
+        if (!mountedRef.current) return;
 
         setMe(u);
 
-        const email = normalizeEmail(u.email ?? null);
+        const email = normalizeEmail(u.email);
         const pro = Boolean(u.isPro) || isProReviewer(email);
         setIsPro(pro);
 
         setReady(true);
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
         console.error("REWRITE AUTH LOAD ERROR:", err);
         router.replace("/sign-in");
       }
@@ -112,36 +134,61 @@ export default function RewritePage() {
     load();
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      controller.abort();
+      rewriteAbortRef.current?.abort();
     };
   }, [router]);
-
-  if (!ready) {
-    return <main className="p-8 text-center">Checking authentication…</main>;
-  }
 
   // ---------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------
-  function resetUiForNewRewrite() {
+  const resetUiForNewRewrite = useCallback(() => {
     setError("");
     setLimitReached(false);
     setToneScore(null);
     setEmotion("");
     setToast("");
     setResults({ soft: "", calm: "", clear: "" });
-  }
+  }, []);
 
-  function ensureOriginalSnapshot(original: string) {
-    if (!originalMessageSnapshot) {
-      setOriginalMessageSnapshot(original);
-    }
-  }
+  const ensureOriginalSnapshot = useCallback(
+    (original: string) => {
+      if (!originalMessageSnapshot) setOriginalMessageSnapshot(original);
+    },
+    [originalMessageSnapshot]
+  );
+
+  const displayKey: ToneKey = useMemo(() => {
+    return (isPro ? (tone || "soft") : "soft") as ToneKey;
+  }, [isPro, tone]);
+
+  const displayText = useMemo(() => {
+    return results[displayKey] || results.soft;
+  }, [results, displayKey]);
+
+  const rewriteButtonDisabled = useMemo(() => {
+    if (loading) return true;
+    if (!message.trim()) return true;
+    if (isPro && (!recipient || !tone)) return true;
+    return false;
+  }, [loading, message, isPro, recipient, tone]);
+
+  const showRevertButton = useMemo(() => {
+    return !!originalMessageSnapshot && message !== originalMessageSnapshot;
+  }, [originalMessageSnapshot, message]);
 
   // ---------------------------------------------------------
   // HANDLE REWRITE
   // ---------------------------------------------------------
-  async function handleRewrite() {
+  const handleRewrite = useCallback(async () => {
+    if (rewriteButtonDisabled) return;
+
+    // Cancel any in-flight rewrite before starting a new one
+    rewriteAbortRef.current?.abort();
+    const controller = new AbortController();
+    rewriteAbortRef.current = controller;
+
     resetUiForNewRewrite();
     setLoading(true);
 
@@ -162,11 +209,13 @@ export default function RewritePage() {
       ensureOriginalSnapshot(trimmedMessage);
 
       const finalRecipient = isPro ? recipient : "default";
-      const finalTone = isPro ? tone : "default";
+      const finalTone = isPro ? (tone || "default") : "default";
 
       const res = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
         // ✅ cookie-auth; no Authorization header
         body: JSON.stringify({
           message: trimmedMessage,
@@ -175,12 +224,14 @@ export default function RewritePage() {
         }),
       });
 
-      let json: any = {};
+      let json: RewriteResponse = {};
       try {
-        json = await res.json();
+        json = (await res.json()) as RewriteResponse;
       } catch {
         json = {};
       }
+
+      if (!mountedRef.current) return;
 
       if (res.status === 429) {
         setLimitReached(true);
@@ -199,10 +250,10 @@ export default function RewritePage() {
       };
 
       setResults(newResults);
-
       setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
       setEmotion(String(json.emotion_prediction ?? "").trim());
 
+      // Pick the "chosen" text for the share-card:
       const chosenToneKey: ToneKey = isPro
         ? ((finalTone === "default" ? "soft" : finalTone) as ToneKey)
         : "soft";
@@ -218,18 +269,29 @@ export default function RewritePage() {
       setRewrittenForCard(chosenText);
 
       vibrate(15);
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === "AbortError") return;
       console.error("REWRITE REQUEST ERROR:", err);
-      setError("Network error. Try again.");
+      if (mountedRef.current) setError("Network error. Try again.");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }
+  }, [
+    rewriteButtonDisabled,
+    resetUiForNewRewrite,
+    message,
+    me?.id,
+    router,
+    ensureOriginalSnapshot,
+    isPro,
+    recipient,
+    tone,
+  ]);
 
   // ---------------------------------------------------------
   // COPY, USE, REVERT
   // ---------------------------------------------------------
-  async function copyToClipboard(text: string) {
+  const copyToClipboard = useCallback(async (text: string) => {
     if (!text) {
       setToast("Nothing to copy yet.");
       return;
@@ -241,72 +303,78 @@ export default function RewritePage() {
     } catch {
       setToast("Could not copy. Try again.");
     }
-  }
+  }, []);
 
-  function useThis(text: string) {
-    if (!text) return;
+  const useThis = useCallback(
+    (text: string) => {
+      if (!text) return;
 
-    if (!originalMessageSnapshot) {
-      setOriginalMessageSnapshot(message.trim());
-    }
+      if (!originalMessageSnapshot) {
+        setOriginalMessageSnapshot(message.trim());
+      }
 
-    setUsedRewriteText(text);
-    setMessage(text);
-    setUsedRewrite(true);
+      setUsedRewriteText(text);
+      setMessage(text);
+      setUsedRewrite(true);
 
-    window.scrollTo({ top: 0, behavior: "smooth" });
-    vibrate(10);
-  }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      vibrate(10);
+    },
+    [originalMessageSnapshot, message]
+  );
 
-  function revertToOriginal() {
+  const revertToOriginal = useCallback(() => {
     if (!originalMessageSnapshot) return;
 
     setMessage(originalMessageSnapshot);
     setUsedRewrite(false);
     vibrate(15);
-  }
+  }, [originalMessageSnapshot]);
 
   // ---------------------------------------------------------
   // SAVE (cookie-auth API route)
   // ---------------------------------------------------------
-  async function saveMessage(text: string, toneKey: ToneKey) {
-    if (!text) {
-      setToast("Nothing to save yet.");
-      return;
-    }
-
-    try {
-      const resp = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          original: originalMessageSnapshot || message,
-          tone: toneKey,
-          soft_rewrite: toneKey === "soft" ? text : null,
-          calm_rewrite: toneKey === "calm" ? text : null,
-          clear_rewrite: toneKey === "clear" ? text : null,
-        }),
-      });
-
-      const json = await resp.json().catch(() => ({}));
-
-      if (!resp.ok) {
-        setToast(json?.error || "Failed to save.");
+  const saveMessage = useCallback(
+    async (text: string, toneKey: ToneKey) => {
+      if (!text) {
+        setToast("Nothing to save yet.");
         return;
       }
 
-      setToast("Saved!");
-      vibrate(15);
-    } catch (err) {
-      console.error("SAVE ERROR:", err);
-      setToast("Failed to save.");
-    }
-  }
+      try {
+        const resp = await fetch("/api/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            original: originalMessageSnapshot || message,
+            tone: toneKey,
+            soft_rewrite: toneKey === "soft" ? text : null,
+            calm_rewrite: toneKey === "calm" ? text : null,
+            clear_rewrite: toneKey === "clear" ? text : null,
+          }),
+        });
+
+        const json = await resp.json().catch(() => ({}));
+
+        if (!resp.ok) {
+          setToast(json?.error || "Failed to save.");
+          return;
+        }
+
+        setToast("Saved!");
+        vibrate(15);
+      } catch (err) {
+        console.error("SAVE ERROR:", err);
+        setToast("Failed to save.");
+      }
+    },
+    [originalMessageSnapshot, message]
+  );
 
   // ---------------------------------------------------------
   // SHARE
   // ---------------------------------------------------------
-  async function shareApp() {
+  const shareApp = useCallback(async () => {
     const url = "https://tonemender.com";
 
     try {
@@ -323,11 +391,11 @@ export default function RewritePage() {
         vibrate(10);
       }
     } catch {
-      // ignore
+      // ignore (user cancelled)
     }
-  }
+  }, []);
 
-  async function shareRewrite() {
+  const shareRewrite = useCallback(async () => {
     const key: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
     const current = results[key] || results.soft;
 
@@ -337,7 +405,6 @@ export default function RewritePage() {
     }
 
     const beforeText = (originalMessageSnapshot || message).trim();
-
     const shareText = `Before:\n${beforeText}\n\nAfter:\n${current}\n\nWritten with ToneMender (https://tonemender.com)`;
 
     try {
@@ -355,9 +422,9 @@ export default function RewritePage() {
     } catch {
       // ignore
     }
-  }
+  }, [isPro, tone, results, originalMessageSnapshot, message]);
 
-  async function shareBeforeAfterImage() {
+  const shareBeforeAfterImage = useCallback(async () => {
     if (!shareCardRef.current || !originalForCard || !rewrittenForCard) {
       setToast("Rewrite a message first.");
       return;
@@ -394,22 +461,17 @@ export default function RewritePage() {
         vibrate(10);
       }
     } catch (err) {
-      console.error(err);
+      console.error("SHARE IMAGE ERROR:", err);
       setToast("Could not create share image. Try again.");
     }
+  }, [originalForCard, rewrittenForCard]);
+
+  // ---------------------------------------------------------
+  // INITIAL AUTH SCREEN
+  // ---------------------------------------------------------
+  if (!ready) {
+    return <main className="p-8 text-center">Checking authentication…</main>;
   }
-
-  // ---------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------
-  const displayKey: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
-  const displayText = results[displayKey] || results.soft;
-
-  const rewriteButtonDisabled =
-    loading || !message.trim() || (isPro && (!recipient || !tone));
-
-  const showRevertButton =
-    !!originalMessageSnapshot && message !== originalMessageSnapshot;
 
   return (
     <main className="w-full max-w-2xl">
@@ -419,13 +481,15 @@ export default function RewritePage() {
             <button
               onClick={() => router.push("/")}
               className="text-sm text-slate-500 hover:text-slate-700 flex items-center gap-1"
+              type="button"
             >
-              <span>←</span>
+              <span aria-hidden>←</span>
               <span>Back</span>
             </button>
 
             <button
               onClick={shareApp}
+              type="button"
               className="text-xs sm:text-sm border border-slate-300 rounded-full px-3 py-1.5 text-slate-700 hover:bg-slate-50"
             >
               Share ToneMender
@@ -471,6 +535,7 @@ export default function RewritePage() {
               placeholder='Example: "I’m so tired of you ignoring my texts."'
               value={message}
               onChange={(e) => setMessage(e.target.value)}
+              disabled={loading}
             />
 
             {originalMessageSnapshot && (
@@ -486,6 +551,7 @@ export default function RewritePage() {
                     type="button"
                     onClick={revertToOriginal}
                     className="text-xs text-slate-600 underline hover:text-slate-800"
+                    disabled={loading}
                   >
                     Revert back to original
                   </button>
@@ -503,7 +569,7 @@ export default function RewritePage() {
                 className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
-                disabled={!isPro}
+                disabled={!isPro || loading}
               >
                 <option value="" disabled>
                   {isPro ? "Select relationship" : "Pro Required: Locked"}
@@ -522,8 +588,8 @@ export default function RewritePage() {
               <select
                 className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
                 value={tone}
-                onChange={(e) => setTone(e.target.value)}
-                disabled={!isPro}
+                onChange={(e) => setTone(e.target.value as ToneKey)}
+                disabled={!isPro || loading}
               >
                 <option value="" disabled>
                   {isPro ? "Select tone" : "Pro Required: Locked"}
@@ -539,6 +605,7 @@ export default function RewritePage() {
             onClick={handleRewrite}
             disabled={rewriteButtonDisabled}
             className="w-full rounded-2xl bg-blue-600 text-white py-3 text-sm font-semibold mt-1 disabled:bg-slate-400 disabled:cursor-not-allowed shadow-sm hover:bg-blue-500 transition"
+            type="button"
           >
             {loading ? "Rewriting…" : "Rewrite my message"}
           </button>
@@ -560,7 +627,8 @@ export default function RewritePage() {
                         {toneScore}
                       </div>
                       <p className="mt-2 text-xs text-slate-500">
-                        Tone Score — higher means calmer, clearer, safer to send.
+                        Tone Score — higher means calmer, clearer, safer to
+                        send.
                       </p>
                     </div>
                   )}
@@ -615,6 +683,7 @@ export default function RewritePage() {
 
                 <div className="flex flex-wrap gap-3 mt-4">
                   <button
+                    type="button"
                     onClick={() => copyToClipboard(displayText)}
                     className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
                   >
@@ -622,6 +691,7 @@ export default function RewritePage() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => useThis(displayText)}
                     className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
                   >
@@ -629,6 +699,7 @@ export default function RewritePage() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => saveMessage(displayText, displayKey)}
                     className="border border-emerald-500 px-3 py-1.5 rounded-full text-xs text-white bg-emerald-500 hover:bg-emerald-400"
                   >
@@ -636,6 +707,7 @@ export default function RewritePage() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={shareRewrite}
                     className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
                   >
@@ -643,6 +715,7 @@ export default function RewritePage() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={shareBeforeAfterImage}
                     className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
                   >

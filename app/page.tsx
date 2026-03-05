@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -18,19 +18,32 @@ type MeResponse =
       };
     };
 
+function normalizeEmail(email: string | null | undefined) {
+  return (email ?? "").trim().toLowerCase();
+}
+
 export default function AppHomePage() {
   const router = useRouter();
 
   const [authReady, setAuthReady] = useState(false);
   const [isPro, setIsPro] = useState(false);
 
+  const mountedRef = useRef(true);
+
+  const brandInitial = useMemo(() => "T", []);
+
   useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
+    const controller = new AbortController();
 
     async function load() {
       try {
         const fetchMe = async () => {
-          const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
+          const resp = await fetch("/api/me", {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal,
+          });
           const json = (await resp.json().catch(() => ({ user: null }))) as MeResponse;
           return json?.user ?? null;
         };
@@ -48,14 +61,16 @@ export default function AppHomePage() {
           return;
         }
 
-        if (cancelled) return;
+        if (!mountedRef.current) return;
 
+        const email = normalizeEmail(user.email);
         // Reviewer emails always count as Pro
-        const pro = Boolean(user.isPro) || isProReviewer(user.email ?? null);
+        const pro = Boolean(user.isPro) || isProReviewer(email);
 
         setIsPro(pro);
         setAuthReady(true);
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
         console.error("HOME LOAD ERROR:", err);
         router.replace("/landing");
       }
@@ -64,7 +79,8 @@ export default function AppHomePage() {
     load();
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      controller.abort();
     };
   }, [router]);
 
@@ -77,12 +93,17 @@ export default function AppHomePage() {
         {/* HEADER */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-lg font-bold">
-              T
+            <div
+              className="h-9 w-9 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-lg font-bold"
+              aria-hidden="true"
+            >
+              {brandInitial}
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">ToneMender</h1>
-              <p className="text-xs text-slate-500">Say it better. Save it together.</p>
+              <p className="text-xs text-slate-500">
+                Say it better. Save it together.
+              </p>
             </div>
           </div>
 
@@ -91,7 +112,8 @@ export default function AppHomePage() {
 
         {/* DESCRIPTION */}
         <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-          Welcome back! Rewrite your messages into calm, clear, relationship-safe communication.
+          Welcome back! Rewrite your messages into calm, clear, relationship-safe
+          communication.
         </p>
 
         {/* NAVIGATION */}

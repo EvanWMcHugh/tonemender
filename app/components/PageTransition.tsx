@@ -1,19 +1,36 @@
 "use client";
 
-import { ReactNode, useRef } from "react";
-import { motion } from "framer-motion";
+import { ReactNode, useMemo, useRef } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { usePathname, useRouter } from "next/navigation";
+
+const EDGE_START_PX = 30;
+const SWIPE_TRIGGER_PX = 90;
+const MAX_VERTICAL_DRIFT_PX = 60; // prevent back gesture during scroll
 
 export default function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const reduceMotion = useReducedMotion();
 
-  const touchStartX = useRef(0);
+  const startX = useRef(0);
+  const startY = useRef(0);
   const tracking = useRef(false);
+  const triggered = useRef(false);
 
-  function vibrate(ms = 20) {
+  const transition = useMemo(
+    () => ({
+      duration: reduceMotion ? 0 : 0.35,
+      ease: "easeOut" as const,
+    }),
+    [reduceMotion]
+  );
+
+  function vibrate(ms = 15) {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-      navigator.vibrate(ms);
+      try {
+        navigator.vibrate(ms);
+      } catch {}
     }
   }
 
@@ -21,50 +38,67 @@ export default function PageTransition({ children }: { children: ReactNode }) {
     const t = e.touches?.[0];
     if (!t) return;
 
-    // Only start tracking when the touch begins near the left edge
-    if (t.clientX < 30) {
-      touchStartX.current = t.clientX;
+    triggered.current = false;
+
+    // Only begin swipe-back tracking from left edge
+    if (t.clientX <= EDGE_START_PX) {
+      startX.current = t.clientX;
+      startY.current = t.clientY;
       tracking.current = true;
+    } else {
+      tracking.current = false;
     }
   }
 
   function handleTouchMove(e: React.TouchEvent<HTMLDivElement>) {
-    if (!tracking.current) return;
+    if (!tracking.current || triggered.current) return;
 
     const t = e.touches?.[0];
     if (!t) return;
 
-    // Swipe right threshold
-    if (t.clientX - touchStartX.current > 80) {
+    const dx = t.clientX - startX.current;
+    const dy = t.clientY - startY.current;
+
+    // If the user is mainly scrolling vertically, cancel swipe-back tracking
+    if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX && Math.abs(dy) > Math.abs(dx)) {
+      tracking.current = false;
+      return;
+    }
+
+    // Trigger only for a strong right swipe
+    if (dx >= SWIPE_TRIGGER_PX && Math.abs(dx) > Math.abs(dy)) {
+      triggered.current = true;
+      tracking.current = false;
       vibrate(15);
 
-      // Prefer Next.js router back. Fallback to history.
+      // Prefer Next router, fallback to history
       try {
         router.back();
       } catch {
-        window.history.back();
+        if (typeof window !== "undefined") window.history.back();
       }
-
-      tracking.current = false;
     }
   }
 
   function handleTouchEnd() {
     tracking.current = false;
+    triggered.current = false;
   }
 
   return (
     <div
       className="min-h-screen px-4 py-6 bg-slate-100 overflow-hidden"
+      style={{ touchAction: "pan-y" }} // keep scroll smooth; we handle horizontal gesture
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
     >
       <motion.div
         key={pathname}
-        initial={{ opacity: 0, y: 20, scale: 0.98, filter: "blur(5px)" }}
-        animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 20, scale: 0.98, filter: "blur(5px)" }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        transition={transition}
         className="max-w-xl mx-auto"
       >
         {children}

@@ -18,29 +18,55 @@ function readCookie(req: Request, name: string) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
+function getUserAgent(req: Request) {
+  return req.headers.get("user-agent") ?? null;
+}
+
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
 async function getUserIdFromSession(req: Request) {
   const raw = readCookie(req, SESSION_COOKIE);
   if (!raw) return null;
 
   const hash = sha256Hex(raw);
+  const nowIso = new Date().toISOString();
 
   const { data: session, error } = await supabaseAdmin
     .from("sessions")
-    .select("user_id,expires_at")
+    .select("user_id,expires_at,revoked_at")
     .eq("session_token_hash", hash)
     .maybeSingle();
 
-  if (error || !session) return null;
+  if (error || !session?.user_id) return null;
+  if (session.revoked_at) return null;
+  if (!session.expires_at || session.expires_at <= nowIso) return null;
 
-  const exp = new Date(session.expires_at).getTime();
-  if (Number.isNaN(exp) || exp < Date.now()) {
-    try {
-      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
-    } catch {}
-    return null;
-  }
+  // Best-effort last_seen_at
+  try {
+    await supabaseAdmin
+      .from("sessions")
+      .update({ last_seen_at: nowIso })
+      .eq("session_token_hash", hash)
+      .is("revoked_at", null);
+  } catch {}
 
-  return session.user_id as string;
+  return String(session.user_id);
 }
 
 export async function POST(req: Request) {
@@ -49,8 +75,12 @@ export async function POST(req: Request) {
     if (!userId) return jsonNoStore({ error: "Not authenticated" }, { status: 401 });
 
     const { error } = await supabaseAdmin.from("messages").delete().eq("user_id", userId);
-    if (error) return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
+    if (error) {
+      await audit("DRAFTS_DELETE_ALL_FAILED", userId, req, {});
+      return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
+    }
 
+    await audit("DRAFTS_DELETE_ALL_OK", userId, req, {});
     return jsonNoStore({ ok: true });
   } catch (err) {
     console.error("DELETE ALL MESSAGES ERROR:", err);

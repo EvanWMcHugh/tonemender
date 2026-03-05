@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { isProReviewer } from "../../lib/reviewers";
 
@@ -11,24 +11,37 @@ type MeUser = {
   planType?: string | null;
 };
 
+type PlanType = "monthly" | "yearly";
+
+function normalizeEmail(email: string | null | undefined) {
+  return (email ?? "").trim().toLowerCase();
+}
+
 export default function UpgradePage() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true); // while checking auth + pro status
+  const [checkoutLoading, setCheckoutLoading] = useState<PlanType | null>(null);
   const [error, setError] = useState("");
   const [me, setMe] = useState<MeUser | null>(null);
 
+  const mountedRef = useRef(true);
+
   const reviewerIsPro = useMemo(() => {
-    const email = (me?.email ?? "").trim().toLowerCase();
-    return isProReviewer(email);
+    return isProReviewer(normalizeEmail(me?.email));
   }, [me?.email]);
 
   useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
+    const controller = new AbortController();
 
     async function check() {
       try {
-        const resp = await fetch("/api/me", { method: "GET" });
+        const resp = await fetch("/api/me", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+        });
         const json = await resp.json().catch(() => ({ user: null }));
         const user: MeUser | null = json?.user ?? null;
 
@@ -38,12 +51,12 @@ export default function UpgradePage() {
           return;
         }
 
-        if (cancelled) return;
+        if (!mountedRef.current) return;
 
         setMe(user);
 
         // Reviewer pro accounts should never see upgrade page
-        if (isProReviewer(user.email ?? "")) {
+        if (isProReviewer(normalizeEmail(user.email))) {
           router.replace("/");
           return;
         }
@@ -55,9 +68,10 @@ export default function UpgradePage() {
         }
 
         setLoading(false);
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
         console.error("UPGRADE CHECK ERROR:", err);
-        if (!cancelled) {
+        if (mountedRef.current) {
           setError("Could not verify your account. Please try again.");
           setLoading(false);
         }
@@ -67,23 +81,26 @@ export default function UpgradePage() {
     check();
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      controller.abort();
     };
   }, [router]);
 
-  async function startCheckout(type: "monthly" | "yearly") {
+  async function startCheckout(type: PlanType) {
     setError("");
 
-    // extra guard
+    // extra guards
     if (!me?.id) {
       router.replace("/sign-in");
       return;
     }
-
     if (reviewerIsPro) {
       router.replace("/");
       return;
     }
+    if (checkoutLoading) return;
+
+    setCheckoutLoading(type);
 
     try {
       const res = await fetch("/api/checkout", {
@@ -104,6 +121,8 @@ export default function UpgradePage() {
     } catch (err) {
       console.error("CHECKOUT START ERROR:", err);
       setError("Network error. Please try again.");
+    } finally {
+      if (mountedRef.current) setCheckoutLoading(null);
     }
   }
 
@@ -114,32 +133,41 @@ export default function UpgradePage() {
   return (
     <main className="max-w-xl mx-auto p-6">
       <button
+        type="button"
         onClick={() => router.push("/")}
-        className="mb-4 text-sm text-slate-600 hover:underline"
+        className="mb-4 text-sm text-slate-600 hover:underline inline-flex items-center gap-1"
       >
-        ← Back to Home
+        <span aria-hidden>←</span>
+        <span>Back to Home</span>
       </button>
 
-      <h1 className="text-3xl font-bold mb-4">Upgrade to ToneMender Pro</h1>
+      <header className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">Upgrade to ToneMender Pro</h1>
+        <p className="text-slate-700">
+          Unlock unlimited rewrites, tone control, relationship types, priority
+          processing, and access to future premium features.
+        </p>
+      </header>
 
-      <p className="mb-4 text-slate-700">
-        Unlock unlimited rewrites, priority processing, and access to all future
-        premium features.
-      </p>
+      {error && (
+        <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-3">
+          <p className="text-red-700 text-sm">{error}</p>
+        </div>
+      )}
 
-      {error && <p className="mb-3 text-red-500 text-sm">{error}</p>}
-
-      <div className="grid gap-4 md:grid-cols-2 mt-4">
+      <div className="grid gap-4 md:grid-cols-2">
         {/* Monthly plan */}
         <div className="border rounded-2xl p-5 bg-white shadow-sm">
           <h2 className="text-xl font-semibold mb-2">Monthly</h2>
           <p className="text-2xl font-bold mb-1">$7.99</p>
           <p className="text-sm text-slate-600 mb-4">Billed every month.</p>
           <button
+            type="button"
             onClick={() => startCheckout("monthly")}
-            className="w-full bg-blue-600 text-white py-2.5 rounded-xl hover:bg-blue-500 transition"
+            disabled={!!checkoutLoading}
+            className="w-full bg-blue-600 text-white py-2.5 rounded-xl hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Subscribe Monthly
+            {checkoutLoading === "monthly" ? "Starting..." : "Subscribe Monthly"}
           </button>
         </div>
 
@@ -151,10 +179,12 @@ export default function UpgradePage() {
             Billed once per year. Save big vs monthly.
           </p>
           <button
+            type="button"
             onClick={() => startCheckout("yearly")}
-            className="w-full bg-emerald-600 text-white py-2.5 rounded-xl hover:bg-emerald-500 transition"
+            disabled={!!checkoutLoading}
+            className="w-full bg-emerald-600 text-white py-2.5 rounded-xl hover:bg-emerald-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Subscribe Yearly
+            {checkoutLoading === "yearly" ? "Starting..." : "Subscribe Yearly"}
           </button>
         </div>
       </div>

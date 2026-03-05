@@ -25,35 +25,104 @@ function readCookie(req: Request, name: string) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-async function getUserIdFromSession(req: Request) {
-  const raw = readCookie(req, SESSION_COOKIE);
-  if (!raw) return null;
-
-  const hash = sha256Hex(raw);
-
-  const { data: session, error } = await supabaseAdmin
-    .from("sessions")
-    .select("user_id,expires_at")
-    .eq("session_token_hash", hash)
-    .maybeSingle();
-
-  if (error || !session) return null;
-
-  const exp = new Date(session.expires_at).getTime();
-  if (Number.isNaN(exp) || exp < Date.now()) {
-    try {
-      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
-    } catch {}
-    return null;
-  }
-
-  return session.user_id as string;
-}
-
 function getClientIp(req: Request) {
   const cfIp = req.headers.get("cf-connecting-ip");
   const forwardedFor = req.headers.get("x-forwarded-for");
   return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
+function getUserAgent(req: Request) {
+  return req.headers.get("user-agent") ?? null;
+}
+
+// Minimal DB-backed rate limit (no RPC needed)
+async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+  const now = Date.now();
+  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
+
+  // Ensure row exists
+  const { data: existing } = await supabaseAdmin
+    .from("rate_limits")
+    .select("count")
+    .eq("key", key)
+    .eq("window_start", windowStartIso)
+    .eq("window_seconds", windowSeconds)
+    .maybeSingle();
+
+  if (!existing) {
+    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+      key,
+      window_start: windowStartIso,
+      window_seconds: windowSeconds,
+      count: 1,
+    });
+    if (insErr) return true; // fail-open
+    return true;
+  }
+
+  const next = (existing.count ?? 0) + 1;
+  const { error: updErr } = await supabaseAdmin
+    .from("rate_limits")
+    .update({ count: next })
+    .eq("key", key)
+    .eq("window_start", windowStartIso)
+    .eq("window_seconds", windowSeconds);
+
+  if (updErr) return true; // fail-open
+  return next <= limit;
+}
+
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
+async function getUserFromSession(req: Request) {
+  const raw = readCookie(req, SESSION_COOKIE);
+  if (!raw) return null;
+
+  const hash = sha256Hex(raw);
+  const nowIso = new Date().toISOString();
+
+  // Check session is active
+  const { data: session, error } = await supabaseAdmin
+    .from("sessions")
+    .select("user_id,expires_at,revoked_at")
+    .eq("session_token_hash", hash)
+    .maybeSingle();
+
+  if (error || !session?.user_id) return null;
+  if (session.revoked_at) return null;
+  if (!session.expires_at || session.expires_at <= nowIso) return null;
+
+  // Check user is active
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select("id,email,disabled_at,deleted_at")
+    .eq("id", session.user_id)
+    .maybeSingle();
+
+  if (!user?.id || !user.email) return null;
+  if (user.disabled_at || user.deleted_at) return null;
+
+  // Best-effort last_seen_at update
+  try {
+    await supabaseAdmin
+      .from("sessions")
+      .update({ last_seen_at: nowIso })
+      .eq("session_token_hash", hash)
+      .is("revoked_at", null);
+  } catch {}
+
+  return { id: user.id as string, email: String(user.email) };
 }
 
 export async function POST(req: Request) {
@@ -69,84 +138,76 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
     }
 
-    // ✅ Auth via cookie session
-    const userId = await getUserIdFromSession(req);
-    if (!userId) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
-    }
+    const ip = getClientIp(req) || "unknown";
 
-    // ✅ Email validation
+    // Rate limit (IP + session/user bucket)
+    const ipAllowed = await rateLimitHit(`ip:${ip}:email_change_request`, 60, 10);
+    if (!ipAllowed) return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+
+    // Auth via cookie session (active + user not disabled/deleted)
+    const me = await getUserFromSession(req);
+    if (!me) return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+
+    const userId = me.id;
+    const oldEmail = normalizeEmail(me.email);
+
+    const userAllowed = await rateLimitHit(`user:${userId}:email_change_request`, 300, 5);
+    if (!userAllowed) return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+
     const nextEmail = normalizeEmail(newEmailRaw);
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
     if (!emailRegex.test(nextEmail)) {
       return jsonNoStore({ error: "Invalid email" }, { status: 400 });
     }
-
-    // ✅ Turnstile verification (helper should support "bypass" for your internal emails)
-    const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-    if (!okCaptcha) {
-      return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
-    }
-
-    // Load current email from your users table
-    const { data: me, error: meErr } = await supabaseAdmin
-      .from("users")
-      .select("email")
-      .eq("id", userId)
-      .maybeSingle();
-
-    if (meErr || !me?.email) {
-      return jsonNoStore({ error: "User email missing" }, { status: 400 });
-    }
-
-    const oldEmail = normalizeEmail(me.email);
-
     if (oldEmail === nextEmail) {
       return jsonNoStore({ error: "New email must be different" }, { status: 400 });
     }
 
-    // ✅ Prevent changing to an email already used by another user
-    // Prefer exact match if you store normalized lowercase emails.
+    // Turnstile verification (server-side)
+    const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+    if (!okCaptcha) {
+      await audit("EMAIL_CHANGE_REQUEST_CAPTCHA_FAILED", userId, req, { next_email: nextEmail });
+      return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+    }
+
+    // Prevent changing to an email used by another user
     const { data: existing, error: existErr } = await supabaseAdmin
       .from("users")
       .select("id")
       .eq("email", nextEmail)
       .maybeSingle();
 
-    if (existErr) {
-      return jsonNoStore({ error: "Could not validate email" }, { status: 500 });
-    }
-
+    if (existErr) return jsonNoStore({ error: "Could not validate email" }, { status: 500 });
     if (existing && existing.id !== userId) {
       return jsonNoStore({ error: "Unable to use that email address." }, { status: 400 });
     }
 
-    // ✅ Delete any previous pending requests (avoids multiple valid links)
+    // Replace any previous unconsumed token for this user/purpose
+    // (Required because you enforced one_unconsumed_per_user_purpose)
     try {
       await supabaseAdmin
-        .from("email_change_requests")
+        .from("auth_tokens")
         .delete()
         .eq("user_id", userId)
-        .is("confirmed_at", null);
+        .eq("purpose", "email_change")
+        .is("consumed_at", null);
     } catch {}
 
-    // ✅ Create verification token (store hash only)
     const raw = generateToken(32);
     const tokenHash = sha256Hex(raw);
     const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 minutes
 
-    // ✅ Store request
-    const { error: insErr } = await supabaseAdmin.from("email_change_requests").insert({
+    const { error: insErr } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
-      old_email: oldEmail,
-      new_email: nextEmail,
       token_hash: tokenHash,
+      purpose: "email_change",
       expires_at: expiresAtIso,
+      created_ip: getClientIp(req),
+      created_ua: getUserAgent(req),
+      data: { new_email: nextEmail, old_email: oldEmail },
     });
 
-    if (insErr) {
-      return jsonNoStore({ error: "Could not create request" }, { status: 500 });
-    }
+    if (insErr) return jsonNoStore({ error: "Could not create request" }, { status: 500 });
 
     const appUrl = process.env.APP_URL || "https://tonemender.com";
     const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
@@ -168,6 +229,8 @@ export async function POST(req: Request) {
         </div>
       `,
     });
+
+    await audit("EMAIL_CHANGE_REQUESTED", userId, req, { next_email: nextEmail });
 
     return jsonNoStore({ ok: true });
   } catch (err) {

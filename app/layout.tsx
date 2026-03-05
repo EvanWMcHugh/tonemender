@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import Script from "next/script";
+import Link from "next/link";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
@@ -8,6 +9,11 @@ export const metadata: Metadata = {
   description:
     "ToneMender is an AI relationship message rewriter that fixes tone in text messages before you send — helping prevent misunderstandings and arguments.",
   metadataBase: new URL("https://tonemender.com"),
+
+  alternates: {
+    canonical: "/",
+  },
+
   openGraph: {
     title: "ToneMender – AI Relationship Message Rewriter",
     description:
@@ -16,6 +22,7 @@ export const metadata: Metadata = {
     siteName: "ToneMender",
     type: "website",
   },
+
   twitter: {
     card: "summary_large_image",
     title: "ToneMender – AI Relationship Message Rewriter",
@@ -23,7 +30,6 @@ export const metadata: Metadata = {
       "Fix the tone of your texts before you send. Prevent misunderstandings and arguments with AI rewrites.",
   },
 };
-
 export const viewport = {
   width: "device-width",
   initialScale: 1,
@@ -60,12 +66,13 @@ export default function RootLayout({
         {/* ✅ Structured SEO Schema */}
         <script
           type="application/ld+json"
+          // NOTE: JSON.stringify is safe here; do not inject user content.
           dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         />
       </head>
 
       <body className="min-h-screen flex flex-col">
-        {/* Cloudflare Turnstile */}
+        {/* Cloudflare Turnstile (loaded once globally) */}
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js"
           strategy="afterInteractive"
@@ -81,12 +88,12 @@ export default function RootLayout({
             <span>© {new Date().getFullYear()} ToneMender</span>
 
             <nav className="flex gap-4" aria-label="Footer navigation">
-              <a href="/privacy" className="hover:text-gray-700">
+              <Link href="/privacy" className="hover:text-gray-700">
                 Privacy Policy
-              </a>
-              <a href="/terms" className="hover:text-gray-700">
+              </Link>
+              <Link href="/terms" className="hover:text-gray-700">
                 Terms of Service
-              </a>
+              </Link>
             </nav>
           </div>
         </footer>

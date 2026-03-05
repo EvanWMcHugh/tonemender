@@ -21,29 +21,55 @@ function readCookie(req: Request, name: string) {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
+function getUserAgent(req: Request) {
+  return req.headers.get("user-agent") ?? null;
+}
+
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
 async function getUserIdFromSession(req: Request) {
   const raw = readCookie(req, SESSION_COOKIE);
   if (!raw) return null;
 
   const hash = sha256Hex(raw);
+  const nowIso = new Date().toISOString();
 
   const { data: session, error } = await supabaseAdmin
     .from("sessions")
-    .select("user_id,expires_at")
+    .select("user_id,expires_at,revoked_at")
     .eq("session_token_hash", hash)
     .maybeSingle();
 
-  if (error || !session) return null;
+  if (error || !session?.user_id) return null;
+  if (session.revoked_at) return null;
+  if (!session.expires_at || session.expires_at <= nowIso) return null;
 
-  const exp = new Date(session.expires_at).getTime();
-  if (Number.isNaN(exp) || exp < Date.now()) {
-    try {
-      await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
-    } catch {}
-    return null;
-  }
+  // Best-effort last_seen_at update
+  try {
+    await supabaseAdmin
+      .from("sessions")
+      .update({ last_seen_at: nowIso })
+      .eq("session_token_hash", hash)
+      .is("revoked_at", null);
+  } catch {}
 
-  return session.user_id as string;
+  return String(session.user_id);
 }
 
 export async function POST(req: Request) {
@@ -52,9 +78,7 @@ export async function POST(req: Request) {
     const type = body?.type;
 
     const userId = await getUserIdFromSession(req);
-    if (!userId) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
 
     const planType = type === "yearly" ? "yearly" : "monthly";
 
@@ -62,40 +86,29 @@ export async function POST(req: Request) {
     const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
     const priceId = planType === "yearly" ? PRICE_YEARLY : PRICE_MONTHLY;
 
-    if (!priceId) {
-      return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
-    }
+    if (!priceId) return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
 
     const appUrl = process.env.APP_URL;
-    if (!appUrl) {
-      return jsonNoStore({ error: "Server misconfigured (missing APP_URL)" }, { status: 500 });
-    }
+    if (!appUrl) return jsonNoStore({ error: "Server misconfigured (missing APP_URL)" }, { status: 500 });
 
-    // ✅ Load user (custom users table)
+    // Load user
     const { data: user, error: userErr } = await supabaseAdmin
       .from("users")
-      .select("email,stripe_customer_id")
+      .select("email,stripe_customer_id,disabled_at,deleted_at,is_pro,plan_type")
       .eq("id", userId)
       .maybeSingle();
 
-    if (userErr || !user) {
-      return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
+    if (userErr || !user) return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
+    if (user.disabled_at || user.deleted_at) return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
+
+    // Optional: if already pro, send them to portal instead of checkout
+    // (You already have /api/portal for this)
+    if (user.is_pro) {
+      return jsonNoStore({ error: "Already subscribed" }, { status: 409 });
     }
 
     let customerId: string | null = user.stripe_customer_id ?? null;
 
-    // Optional fallback if you still store stripe_customer_id in profiles (old supabase-auth world)
-    if (!customerId) {
-      const { data: profile } = await supabaseAdmin
-        .from("profiles")
-        .select("stripe_customer_id")
-        .eq("id", userId)
-        .maybeSingle();
-
-      customerId = profile?.stripe_customer_id ?? null;
-    }
-
-    // Create Stripe customer if needed
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: user.email ?? undefined,
@@ -104,17 +117,14 @@ export async function POST(req: Request) {
 
       customerId = customer.id;
 
-      // ✅ Preferred: store on users table (custom auth)
-      const { error: updUserErr } = await supabaseAdmin
+      const { error: updErr } = await supabaseAdmin
         .from("users")
         .update({ stripe_customer_id: customerId })
         .eq("id", userId);
 
-      if (updUserErr) {
-        // Fallback: try profiles if users table doesn't have this column yet
-        try {
-          await supabaseAdmin.from("profiles").update({ stripe_customer_id: customerId }).eq("id", userId);
-        } catch {}
+      if (updErr) {
+        await audit("STRIPE_CUSTOMER_SAVE_FAILED", userId, req, {});
+        return jsonNoStore({ error: "Failed to initialize billing" }, { status: 500 });
       }
     }
 
@@ -125,12 +135,13 @@ export async function POST(req: Request) {
       success_url: `${appUrl}/account?success=true`,
       cancel_url: `${appUrl}/upgrade?canceled=true`,
       metadata: { userId, planType },
+      // Optional: collect tax or billing address based on your business needs
+      // billing_address_collection: "auto",
     });
 
-    if (!session.url) {
-      return jsonNoStore({ error: "Failed to create checkout session" }, { status: 502 });
-    }
+    if (!session.url) return jsonNoStore({ error: "Failed to create checkout session" }, { status: 502 });
 
+    await audit("STRIPE_CHECKOUT_CREATED", userId, req, { planType });
     return jsonNoStore({ url: session.url });
   } catch (err) {
     console.error("CHECKOUT ERROR:", err);

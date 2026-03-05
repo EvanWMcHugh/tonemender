@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -18,6 +18,8 @@ type PendingAction = null | "login" | "reset" | "resendConfirm";
 
 export default function LoginPage() {
   const router = useRouter();
+  const emailId = useId();
+  const passwordId = useId();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,15 +27,14 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const [resetSent, setResetSent] = useState(false);
-
   const [showCaptcha, setShowCaptcha] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
   const [needsEmailConfirm, setNeedsEmailConfirm] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
   const [resendSent, setResendSent] = useState(false);
 
-  // store the last captcha token; treat as single-use
+  // store last captcha token; treat as single-use
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
@@ -42,16 +43,25 @@ export default function LoginPage() {
     [normalizedEmail]
   );
 
+  const canAttemptLogin = useMemo(() => {
+    if (loading) return false;
+    if (!normalizedEmail) return false;
+    if (!password) return false;
+    return true;
+  }, [loading, normalizedEmail, password]);
+
   // If already logged in, go home
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function checkSession() {
       try {
-        const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
+        const resp = await fetch("/api/me", {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+        });
         const json = await resp.json().catch(() => ({}));
-
-        if (cancelled) return;
 
         if (json?.user?.id) {
           // hard redirect avoids any SPA auth race
@@ -63,20 +73,19 @@ export default function LoginPage() {
     }
 
     checkSession();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, []);
 
-  // Reset captcha + messaging when email changes
+  // Reset captcha + messaging when email changes (prevents token reuse across accounts)
   useEffect(() => {
     setShowCaptcha(false);
     setPendingAction(null);
     setCaptchaToken(null);
+
     setNeedsEmailConfirm(false);
     setResendSent(false);
     setResetSent(false);
+
     setError("");
   }, [normalizedEmail]);
 
@@ -84,6 +93,12 @@ export default function LoginPage() {
     setShowCaptcha(false);
     setPendingAction(null);
     setCaptchaToken(null);
+  }
+
+  function requireCaptcha(action: PendingAction) {
+    setPendingAction(action);
+    setShowCaptcha(true);
+    setError("");
   }
 
   async function doLogin(token: string | null) {
@@ -104,8 +119,7 @@ export default function LoginPage() {
 
     // Show captcha only after click
     if (!isBypassEmail && !token) {
-      setPendingAction("login");
-      setShowCaptcha(true);
+      requireCaptcha("login");
       return;
     }
 
@@ -159,8 +173,7 @@ export default function LoginPage() {
     if (loading) return;
 
     if (!isBypassEmail && !token) {
-      setPendingAction("reset");
-      setShowCaptcha(true);
+      requireCaptcha("reset");
       return;
     }
 
@@ -180,9 +193,7 @@ export default function LoginPage() {
 
       const json = await resp.json().catch(() => ({}));
 
-      if (!resp.ok) {
-        throw new Error(json?.error || "Password reset failed");
-      }
+      if (!resp.ok) throw new Error(json?.error || "Password reset failed");
 
       setResetSent(true);
       cleanupCaptchaState();
@@ -207,8 +218,7 @@ export default function LoginPage() {
     if (loading) return;
 
     if (!isBypassEmail && !token) {
-      setPendingAction("resendConfirm");
-      setShowCaptcha(true);
+      requireCaptcha("resendConfirm");
       return;
     }
 
@@ -245,6 +255,10 @@ export default function LoginPage() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
+    if (!canAttemptLogin) {
+      setError(!normalizedEmail ? "Enter your email." : "Enter your password.");
+      return;
+    }
     await doLogin(isBypassEmail ? null : captchaToken);
   }
 
@@ -273,63 +287,95 @@ export default function LoginPage() {
       <div className="w-[360px]">
         <Link
           href="/landing"
-          className="inline-block mb-4 text-sm text-slate-600 hover:underline"
+          className="inline-flex items-center gap-1 mb-4 text-sm text-slate-600 hover:underline"
         >
-          ← Back to home
+          <span aria-hidden>←</span>
+          <span>Back to home</span>
         </Link>
 
-        <h1 className="text-2xl font-bold mb-4 text-center">Sign In</h1>
+        <h1 className="text-2xl font-bold mb-2 text-center">Sign In</h1>
+        <p className="text-sm text-slate-500 mb-6 text-center">
+          Welcome back. Sign in to continue.
+        </p>
 
-        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+        {error && (
+          <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 p-3">
+            <p className="text-red-700 text-sm">{error}</p>
+          </div>
+        )}
 
         <form onSubmit={handleLogin} className="flex flex-col gap-3">
-          <input
-            type="email"
-            placeholder="Email"
-            className="border p-2 rounded"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoComplete="email"
-            inputMode="email"
-            disabled={loading}
-          />
+          <div>
+            <label htmlFor={emailId} className="sr-only">
+              Email
+            </label>
+            <input
+              id={emailId}
+              type="email"
+              placeholder="Email"
+              className="border p-3 rounded-2xl w-full"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              autoComplete="email"
+              inputMode="email"
+              disabled={loading}
+            />
+          </div>
 
-          <input
-            type="password"
-            placeholder="Password"
-            className="border p-2 rounded"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete="current-password"
-            disabled={loading}
-          />
+          <div>
+            <label htmlFor={passwordId} className="sr-only">
+              Password
+            </label>
+            <input
+              id={passwordId}
+              type="password"
+              placeholder="Password"
+              className="border p-3 rounded-2xl w-full"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete="current-password"
+              disabled={loading}
+            />
+          </div>
 
           {!isBypassEmail && showCaptcha && (
-            <Turnstile
-              sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
-              theme="light"
-              onSuccess={handleCaptchaSuccess}
-              onExpire={() => setError("Captcha expired. Please try again.")}
-              onError={() => setError("Captcha error. Please try again.")}
-            />
+            <div className="mt-1">
+              <Turnstile
+                sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+                theme="light"
+                onSuccess={handleCaptchaSuccess}
+                onExpire={() => {
+                  setCaptchaToken(null);
+                  setError("Captcha expired. Please try again.");
+                }}
+                onError={() => {
+                  setCaptchaToken(null);
+                  setError("Captcha error. Please try again.");
+                }}
+              />
+              <p className="text-[11px] text-slate-500 mt-2">
+                Complete the captcha to continue.
+              </p>
+            </div>
           )}
 
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white p-2 rounded disabled:opacity-60"
+            className="bg-blue-600 text-white px-4 py-3 rounded-2xl font-semibold
+                       hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {loading ? "Logging in..." : "Login"}
+            {loading ? "Signing in..." : "Sign In"}
           </button>
         </form>
 
         <button
           type="button"
           onClick={handleResetPassword}
-          disabled={loading}
-          className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60"
+          disabled={loading || !normalizedEmail}
+          className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60 disabled:cursor-not-allowed"
         >
           Forgot your password?
         </button>
@@ -344,8 +390,8 @@ export default function LoginPage() {
           <button
             type="button"
             onClick={handleResend}
-            disabled={loading}
-            className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60"
+            disabled={loading || !normalizedEmail}
+            className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Resend confirmation email
           </button>
@@ -357,7 +403,7 @@ export default function LoginPage() {
           </p>
         )}
 
-        <p className="mt-4 text-center text-sm">
+        <p className="mt-6 text-center text-sm">
           Don’t have an account?{" "}
           <Link href="/sign-up" className="text-blue-600 underline">
             Sign Up

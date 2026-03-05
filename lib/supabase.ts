@@ -11,15 +11,23 @@ import { createClient } from "@supabase/supabase-js";
  * If you still have any pages using supabase.auth.getSession(), remove those calls.
  */
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const SUPABASE_ANON_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY; // backwards-compat fallback
 
 if (!SUPABASE_URL) {
   throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
 }
 if (!SUPABASE_ANON_KEY) {
-  throw new Error("Missing NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY");
+  throw new Error(
+    "Missing NEXT_PUBLIC_SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY)"
+  );
 }
 
+/**
+ * Singleton client to avoid re-creating clients on every import/hot-reload.
+ * (Safe on the client; this module is client-only.)
+ */
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     // ✅ Your app no longer uses Supabase Auth

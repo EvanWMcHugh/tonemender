@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { isProReviewer } from "../../lib/reviewers";
 import dynamic from "next/dynamic";
@@ -8,6 +8,7 @@ import dynamic from "next/dynamic";
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
 type UsageStats = { today: number; total: number };
+type MeUser = { id: string; email: string; isPro?: boolean; planType?: string | null };
 
 function getPacificDateString(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -22,8 +23,6 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-type MeUser = { id: string; email: string; isPro?: boolean; planType?: string | null };
-
 export default function AccountPage() {
   const router = useRouter();
 
@@ -32,25 +31,45 @@ export default function AccountPage() {
   const [stats, setStats] = useState<UsageStats>({ today: 0, total: 0 });
   const [loading, setLoading] = useState(true);
 
-  // Change email state
+  // Change email
   const [newEmail, setNewEmail] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
 
-  // Turnstile state for email change
+  // Turnstile for email change
   const [showEmailCaptcha, setShowEmailCaptcha] = useState(false);
   const [emailCaptchaToken, setEmailCaptchaToken] = useState<string | null>(null);
 
   const todayStr = useMemo(() => getPacificDateString(), []);
-  const normalizedCurrentEmail = useMemo(() => normalizeEmail(user?.email || ""), [user?.email]);
+  const normalizedCurrentEmail = useMemo(
+    () => normalizeEmail(user?.email || ""),
+    [user?.email]
+  );
+
+  // Used to auto-submit after captcha completes (max polish UX)
+  const pendingEmailSubmitRef = useRef(false);
+
+  function resetEmailCaptchaState() {
+    setEmailCaptchaToken(null);
+    setShowEmailCaptcha(false);
+    pendingEmailSubmitRef.current = false;
+  }
+
+  function validateEmailCandidate(candidate: string) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!emailRegex.test(candidate)) return "Please enter a valid email address.";
+    if (normalizedCurrentEmail && candidate === normalizedCurrentEmail)
+      return "That is already your current email.";
+    return "";
+  }
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function load() {
       try {
-        // ✅ Custom session-based auth
-        const meResp = await fetch("/api/me", { method: "GET" });
+        // Cookie-based auth
+        const meResp = await fetch("/api/me", { method: "GET", signal: controller.signal });
         const meJson = await meResp.json().catch(() => ({ user: null }));
         const meUser: MeUser | null = meJson?.user ?? null;
 
@@ -59,37 +78,36 @@ export default function AccountPage() {
           return;
         }
 
-        if (cancelled) return;
-
         setUser(meUser);
 
         const pro = Boolean(meUser.isPro) || isProReviewer(meUser.email ?? null);
         setIsPro(pro);
 
-        // ✅ Usage stats fetched via server route (cookie auth)
+        // Usage stats via server route (cookie auth)
         const statsResp = await fetch(`/api/usage/stats?day=${encodeURIComponent(todayStr)}`, {
           method: "GET",
+          signal: controller.signal,
         });
         const statsJson = await statsResp.json().catch(() => null);
 
-        if (!cancelled && statsResp.ok && statsJson?.stats) {
+        if (statsResp.ok && statsJson?.stats) {
           setStats(statsJson.stats);
-        } else if (!cancelled) {
+        } else {
           setStats({ today: 0, total: 0 });
         }
-      } catch (err) {
-        console.error("ACCOUNT LOAD ERROR:", err);
-        router.replace("/sign-in");
+      } catch (err: any) {
+        if (err?.name !== "AbortError") {
+          console.error("ACCOUNT LOAD ERROR:", err);
+          router.replace("/sign-in");
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     }
 
     load();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [router, todayStr]);
 
   async function handleLogout() {
@@ -141,43 +159,13 @@ export default function AccountPage() {
     alert("Could not open billing portal.");
   }
 
-  function resetEmailCaptchaState() {
-    setEmailCaptchaToken(null);
-    setShowEmailCaptcha(false);
-  }
-
-  async function handleChangeEmail(e: React.FormEvent) {
-    e.preventDefault();
-    setEmailError("");
-
-    const candidate = normalizeEmail(newEmail);
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-
-    if (!emailRegex.test(candidate)) {
-      setEmailError("Please enter a valid email address");
-      return;
-    }
-
-    if (user?.email && normalizeEmail(user.email) === candidate) {
-      setEmailError("That is already your current email.");
-      return;
-    }
-
-    if (!emailCaptchaToken) {
-      setShowEmailCaptcha(true);
-      return;
-    }
-
+  async function submitEmailChange(candidate: string, turnstileToken: string) {
     setEmailLoading(true);
-
     try {
       const resp = await fetch("/api/auth/request-email-change", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          newEmail: candidate,
-          turnstileToken: emailCaptchaToken,
-        }),
+        body: JSON.stringify({ newEmail: candidate, turnstileToken }),
       });
 
       const json = await resp.json().catch(() => ({}));
@@ -199,7 +187,56 @@ export default function AccountPage() {
     }
   }
 
+  async function handleChangeEmail(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailError("");
+
+    const candidate = normalizeEmail(newEmail);
+    const validation = validateEmailCandidate(candidate);
+    if (validation) {
+      setEmailError(validation);
+      return;
+    }
+
+    // If we don't have captcha yet, show it and mark submit as pending (auto-submit on success).
+    if (!emailCaptchaToken) {
+      setShowEmailCaptcha(true);
+      pendingEmailSubmitRef.current = true;
+      return;
+    }
+
+    await submitEmailChange(candidate, emailCaptchaToken);
+  }
+
+  // If captcha succeeds and we had a pending submit, auto-submit (max polish UX).
+  useEffect(() => {
+    if (!emailCaptchaToken) return;
+    if (!pendingEmailSubmitRef.current) return;
+    if (emailLoading) return;
+
+    const candidate = normalizeEmail(newEmail);
+    const validation = validateEmailCandidate(candidate);
+    if (validation) {
+      setEmailError(validation);
+      resetEmailCaptchaState();
+      return;
+    }
+
+    // Fire and forget; function handles its own loading state.
+    submitEmailChange(candidate, emailCaptchaToken);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emailCaptchaToken]);
+
   if (loading) return <p className="p-5">Loading...</p>;
+  if (!user?.id) return null;
+
+  const candidateNormalized = normalizeEmail(newEmail);
+  const emailValidation = newEmail ? validateEmailCandidate(candidateNormalized) : "";
+  const emailSubmitDisabled =
+    emailLoading ||
+    !newEmail.trim() ||
+    Boolean(emailValidation) ||
+    (showEmailCaptcha && !emailCaptchaToken);
 
   return (
     <main className="max-w-xl mx-auto p-6">
@@ -217,7 +254,7 @@ export default function AccountPage() {
         <h2 className="text-xl font-semibold mb-2">Profile</h2>
 
         <p className="text-sm">
-          <strong>Email:</strong> {user?.email ?? ""}
+          <strong>Email:</strong> {user.email}
         </p>
         <p className="text-sm mt-1">
           <strong>Status:</strong> {isPro ? "🚀 Pro Member" : "Free User"}
@@ -249,10 +286,13 @@ export default function AccountPage() {
         <h2 className="text-xl font-semibold mb-4">Security</h2>
 
         {/* Change Email */}
-        <form onSubmit={handleChangeEmail} className="mb-4">
+        <form onSubmit={handleChangeEmail} className="mb-4" aria-busy={emailLoading}>
           <p className="font-medium mb-2">Change Email</p>
 
           {emailError && <p className="text-red-500 text-sm mb-1">{emailError}</p>}
+          {!emailError && emailValidation && (
+            <p className="text-red-500 text-sm mb-1">{emailValidation}</p>
+          )}
 
           <div className="flex gap-2">
             <input
@@ -260,15 +300,22 @@ export default function AccountPage() {
               placeholder="New email address"
               className="border p-2 rounded-xl flex-1"
               value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
+              onChange={(e) => {
+                setNewEmail(e.target.value);
+                setEmailError("");
+                // Any edit should invalidate any previously solved captcha token
+                setEmailCaptchaToken(null);
+                pendingEmailSubmitRef.current = false;
+              }}
               required
               autoComplete="email"
               inputMode="email"
               disabled={emailLoading}
             />
+
             <button
               type="submit"
-              disabled={emailLoading}
+              disabled={emailSubmitDisabled}
               className="bg-green-600 text-white px-3 py-2 rounded-xl hover:bg-green-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {emailLoading ? "Sending…" : showEmailCaptcha ? "Verify…" : "Update"}
@@ -285,8 +332,16 @@ export default function AccountPage() {
                 onError={() => setEmailCaptchaToken(null)}
               />
               <p className="text-[11px] text-slate-500 mt-2">
-                Complete the captcha, then click Update again.
+                Complete the captcha to continue. We’ll submit automatically when it’s done.
               </p>
+              <button
+                type="button"
+                onClick={resetEmailCaptchaState}
+                className="mt-2 text-xs text-slate-600 hover:underline"
+                disabled={emailLoading}
+              >
+                Cancel
+              </button>
             </div>
           )}
 

@@ -4,23 +4,32 @@ import type { NextRequest } from "next/server";
 
 const SESSION_COOKIE = "tm_session";
 
-// Routes that require login
-const PROTECTED_PREFIXES = ["/", "/rewrite", "/drafts", "/account", "/upgrade"];
+/**
+ * Public routes: marketing + SEO + legal pages.
+ * Everything else matched by config.matcher is considered protected.
+ */
+function isPublicPath(pathname: string) {
+  // Exact public pages
+  if (
+    pathname === "/landing" ||
+    pathname === "/sign-in" ||
+    pathname === "/sign-up" ||
+    pathname === "/check-email" ||
+    pathname === "/reset-password" ||
+    pathname === "/confirm" ||
+    pathname === "/privacy" ||
+    pathname === "/terms" ||
+    pathname === "/relationship-message-rewriter"
+  ) {
+    return true;
+  }
 
-// Routes that should stay public
-const PUBLIC_PREFIXES = [
-  "/landing",
-  "/sign-in",
-  "/sign-up",
-  "/confirm-signup",
-  "/check-email",
-  "/reset-password",
-  "/privacy",
-  "/terms",
-  "/blog",
-];
+  // Public sections
+  if (pathname === "/blog" || pathname.startsWith("/blog/")) return true;
 
-// Always allow these (api, next internals, static, etc.)
+  return false;
+}
+
 function isAlwaysAllowed(pathname: string) {
   return (
     pathname.startsWith("/api") ||
@@ -33,38 +42,37 @@ function isAlwaysAllowed(pathname: string) {
   );
 }
 
-function isPublic(pathname: string) {
-  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
-}
-
-function isProtected(pathname: string) {
-  return PROTECTED_PREFIXES.some((p) =>
-    p === "/" ? pathname === "/" : pathname.startsWith(p)
-  );
-}
-
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Skip for Next internals, static assets, API, etc.
   if (isAlwaysAllowed(pathname)) return NextResponse.next();
-  if (isPublic(pathname)) return NextResponse.next();
 
-  // Only gate routes you explicitly protect
-  if (!isProtected(pathname)) return NextResponse.next();
+  // Allow public pages through
+  if (isPublicPath(pathname)) return NextResponse.next();
 
-  const raw = req.cookies.get(SESSION_COOKIE)?.value ?? null;
+  // Everything else is protected (app pages)
+  const session = req.cookies.get(SESSION_COOKIE)?.value ?? null;
 
-  // Edge-safe auth gate: cookie must exist
-  // (DB verification happens in your API routes, which are Node runtime.)
-  if (!raw) {
+  // Edge-safe auth gate: cookie must exist.
+  // DB/session validation happens in Node runtime (API routes).
+  if (!session) {
     const url = req.nextUrl.clone();
     url.pathname = "/landing";
+
+    // Optional UX: allow redirecting back after login
+    url.searchParams.set("next", pathname);
+
     return NextResponse.redirect(url);
   }
 
   return NextResponse.next();
 }
 
+/**
+ * Apply middleware to all pages except static assets.
+ * (API is handled by isAlwaysAllowed)
+ */
 export const config = {
   matcher: ["/((?!_next/static|_next/image).*)"],
 };

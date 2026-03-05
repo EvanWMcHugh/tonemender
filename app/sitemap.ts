@@ -1,16 +1,23 @@
-import { MetadataRoute } from "next";
+import type { MetadataRoute } from "next";
 
 const BASE_URL = "https://tonemender.com";
+
+const BLOG_POSTS = [
+  "fix-tone-in-text-messages",
+  // add future posts here
+  // "stop-text-message-fights",
+  // "how-to-sound-calm-in-text",
+];
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
 
-  return [
+  const staticPages: MetadataRoute.Sitemap = [
     {
       url: `${BASE_URL}/`,
       lastModified: now,
       changeFrequency: "daily",
-      priority: 1.0,
+      priority: 1,
     },
     {
       url: `${BASE_URL}/landing`,
@@ -31,12 +38,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.7,
     },
     {
-      url: `${BASE_URL}/blog/fix-tone-in-text-messages`,
-      lastModified: now,
-      changeFrequency: "monthly",
-      priority: 0.7,
-    },
-    {
       url: `${BASE_URL}/privacy`,
       lastModified: now,
       changeFrequency: "yearly",
@@ -49,4 +50,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.3,
     },
   ];
+
+  const blogPages: MetadataRoute.Sitemap = BLOG_POSTS.map((slug) => ({
+    url: `${BASE_URL}/blog/${slug}`,
+    lastModified: now,
+    changeFrequency: "monthly",
+    priority: 0.7,
+  }));
+
+  return [...staticPages, ...blogPages];
 }

@@ -13,9 +13,26 @@ function jsonNoStore(data: any, init?: ResponseInit) {
   return res;
 }
 
-function isExpired(expiresAt: string) {
-  const t = new Date(expiresAt).getTime();
-  return Number.isNaN(t) || t < Date.now();
+function getClientIp(req: Request) {
+  const cfIp = req.headers.get("cf-connecting-ip");
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+}
+
+function getUserAgent(req: Request) {
+  return req.headers.get("user-agent") ?? null;
+}
+
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
 }
 
 export async function POST(req: Request) {
@@ -28,7 +45,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
-    // ✅ Basic password rules (keep simple)
+    // Basic password rules (keep simple)
     if (!newPassword || typeof newPassword !== "string") {
       return jsonNoStore({ error: "Missing new password" }, { status: 400 });
     }
@@ -40,96 +57,82 @@ export async function POST(req: Request) {
     }
 
     const tokenHash = sha256Hex(token);
+    const nowIso = new Date().toISOString();
 
-    // ✅ Find token row (unused)
-    const { data: row, error: findErr } = await supabaseAdmin
-      .from("password_reset_tokens")
-      .select("id,user_id,email,expires_at,used_at")
+    // 1) Atomically consume reset token (single-use) with guards
+    const { data: tok, error: consumeErr } = await supabaseAdmin
+      .from("auth_tokens")
+      .update({ consumed_at: nowIso })
       .eq("token_hash", tokenHash)
+      .eq("purpose", "password_reset")
+      .is("consumed_at", null)
+      .gt("expires_at", nowIso)
+      .select("id,user_id,email")
       .maybeSingle();
 
-    if (findErr || !row) {
+    if (consumeErr) {
+      return jsonNoStore({ error: "Failed to validate token" }, { status: 500 });
+    }
+    if (!tok?.id || !tok.user_id) {
       return jsonNoStore({ error: "Invalid or expired token" }, { status: 400 });
     }
 
-    if (row.used_at) {
-      return jsonNoStore(
-        { error: "This reset link has already been used. Please request a new one." },
-        { status: 400 }
-      );
-    }
+    const userId = String(tok.user_id);
 
-    if (!row.expires_at || isExpired(row.expires_at)) {
-      return jsonNoStore(
-        { error: "Token expired. Please request a new reset link." },
-        { status: 400 }
-      );
-    }
-
-    const nowIso = new Date().toISOString();
-
-    // ✅ Mark token used first (race-safe)
-    const { data: used, error: usedErr } = await supabaseAdmin
-      .from("password_reset_tokens")
-      .update({ used_at: nowIso })
-      .eq("id", row.id)
-      .is("used_at", null)
-      .select("id")
+    // Optional: ensure user is not disabled/deleted (token is already consumed; but prevents changing a dead account)
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from("users")
+      .select("email,disabled_at,deleted_at")
+      .eq("id", userId)
       .maybeSingle();
 
-    if (usedErr) {
+    if (userErr || !user) {
       return jsonNoStore({ error: "Failed to update password" }, { status: 500 });
     }
-    if (!used?.id) {
-      return jsonNoStore(
-        { error: "This reset link has already been used. Please request a new one." },
-        { status: 400 }
-      );
+    if (user.disabled_at || user.deleted_at) {
+      return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
     }
 
-    // ✅ Update password in your custom users table
+    // 2) Update password
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
     const { error: updErr } = await supabaseAdmin
       .from("users")
       .update({ password_hash: passwordHash })
-      .eq("id", row.user_id);
+      .eq("id", userId);
 
     if (updErr) {
-      // Roll back token usage so user can retry if user update failed
-      try {
-        await supabaseAdmin.from("password_reset_tokens").update({ used_at: null }).eq("id", row.id);
-      } catch {}
-      return jsonNoStore({ error: "Failed to update password" }, { status: 500 });
+      // Token is already consumed; safest is to require a new reset request.
+      return jsonNoStore({ error: "Failed to update password. Please request a new reset link." }, { status: 500 });
     }
 
-    // ✅ Cleanup any other unused tokens for this user
+    // 3) Security: revoke all sessions
     try {
       await supabaseAdmin
-        .from("password_reset_tokens")
-        .delete()
-        .eq("user_id", row.user_id)
-        .is("used_at", null);
+        .from("sessions")
+        .update({ revoked_at: nowIso })
+        .eq("user_id", userId)
+        .is("revoked_at", null);
     } catch {}
 
-    // ✅ Security: invalidate all sessions
-    try {
-      await supabaseAdmin.from("sessions").delete().eq("user_id", row.user_id);
-    } catch {}
+    await audit("PASSWORD_RESET_COMPLETED", userId, req, {});
 
-    // ✅ Notify (best effort)
+    // 4) Notify (best effort) - use user.email (source of truth)
     try {
-      await sendEmail({
-        to: row.email,
-        subject: "Your ToneMender password was changed",
-        html: `
-          <div style="font-family:Arial,sans-serif;line-height:1.4">
-            <h2>Password updated</h2>
-            <p>Your ToneMender password was just changed.</p>
-            <p>If this wasn’t you, reset your password again immediately and contact support.</p>
-          </div>
-        `,
-      });
+      const to = String(user.email || tok.email || "");
+      if (to) {
+        await sendEmail({
+          to,
+          subject: "Your ToneMender password was changed",
+          html: `
+            <div style="font-family:Arial,sans-serif;line-height:1.4">
+              <h2>Password updated</h2>
+              <p>Your ToneMender password was just changed.</p>
+              <p>If this wasn’t you, request another password reset immediately and contact support.</p>
+            </div>
+          `,
+        });
+      }
     } catch {}
 
     return jsonNoStore({ ok: true });

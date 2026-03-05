@@ -10,13 +10,45 @@ body {
   @apply bg-white text-slate-900 antialiased;
 }
 
+html {
+  /* Avoid iOS text size auto-adjust surprises */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  /* Improve text rendering consistency */
+  text-rendering: optimizeLegibility;
+
+  /* Better font smoothing across platforms */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Prevent weird short-page layouts */
+  min-height: 100vh;
+}
+
 * {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Improve text rendering consistency */
-body {
-  text-rendering: optimizeLegibility;
+/* Better default focus visibility (keyboard users) */
+:focus-visible {
+  outline: 2px solid rgb(59 130 246); /* tailwind blue-500 */
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+/* Selection styling (small polish) */
+::selection {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+/* Smooth scrolling when user allows motion */
+@media (prefers-reduced-motion: no-preference) {
+  html:focus-within {
+    scroll-behavior: smooth;
+  }
 }
 
 /* --------------------------------------------------
@@ -53,6 +85,10 @@ body {
    Accessibility helpers
 -------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
   .fade-scale-in,
   .fade-scale-in-fast {
     animation: none;

@@ -1,63 +1,63 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import Link from "next/link";
 
+type LoadState = "checking" | "ready";
+
+async function fetchMe(signal?: AbortSignal) {
+  const resp = await fetch("/api/me", { method: "GET", cache: "no-store", signal });
+  const json = await resp.json().catch(() => ({ user: null }));
+  return json?.user ?? null;
+}
+
 export default function MarketingLandingPage() {
   const router = useRouter();
-  const [checking, setChecking] = useState(true);
+  const [state, setState] = useState<LoadState>("checking");
 
   // ✅ If user is logged in (cookie session) → redirect to "/"
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function checkSession() {
-  try {
-    const fetchMe = async () => {
-      const resp = await fetch("/api/me", { method: "GET", cache: "no-store" });
-      const json = await resp.json().catch(() => ({ user: null }));
-      return json?.user ?? null;
-    };
+      try {
+        let user = await fetchMe(controller.signal);
 
-    let user = await fetchMe();
+        // Retry once (helps immediately after login/logout)
+        if (!user?.id) {
+          await new Promise((r) => setTimeout(r, 200));
+          user = await fetchMe(controller.signal);
+        }
 
-    // retry once (helps immediately after login/logout)
-    if (!user?.id) {
-      await new Promise((r) => setTimeout(r, 200));
-      user = await fetchMe();
+        if (user?.id) {
+          router.replace("/");
+          return;
+        }
+
+        setState("ready");
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
+        console.error("LANDING SESSION CHECK ERROR:", err);
+        setState("ready");
+      }
     }
 
-    if (cancelled) return;
-
-    if (user?.id) {
-      router.replace("/");
-    } else {
-      setChecking(false);
-    }
-  } catch (err) {
-    console.error("LANDING SESSION CHECK ERROR:", err);
-    if (!cancelled) setChecking(false);
-  }
-}
     checkSession();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [router]);
 
-  if (checking) return null;
+  if (state === "checking") return null;
 
   return (
     <main className="min-h-screen bg-white text-slate-900">
-      {/* HERO SECTION */}
+      {/* HERO */}
       <section className="max-w-5xl mx-auto px-6 pt-16 pb-24 text-center">
         <motion.h1
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
+          transition={{ duration: 0.55 }}
           className="text-5xl sm:text-6xl font-extrabold tracking-tight"
         >
           An AI relationship message rewriter
@@ -65,21 +65,20 @@ export default function MarketingLandingPage() {
         </motion.h1>
 
         <motion.p
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15, duration: 0.6 }}
+          transition={{ delay: 0.12, duration: 0.55 }}
           className="mt-6 text-lg sm:text-xl text-slate-600 max-w-3xl mx-auto"
         >
-          ToneMender rewrites emotionally charged text messages into calm, clear,
+          ToneMender rewrites emotionally charged messages into calm, clear,
           relationship-safe communication — so conversations don’t turn into
           arguments.
         </motion.p>
 
-        {/* CTA BUTTONS */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.25 }}
+          transition={{ delay: 0.22, duration: 0.45 }}
           className="mt-10 flex flex-col sm:flex-row gap-4 justify-center"
         >
           <Link
@@ -102,10 +101,10 @@ export default function MarketingLandingPage() {
         </p>
       </section>
 
-      {/* FEATURES SECTION */}
+      {/* FEATURES */}
       <section className="bg-slate-50 py-20">
         <div className="max-w-5xl mx-auto px-6">
-          <h2 className="text-3xl font-bold mb-10 text-center">
+          <h2 className="text-3xl font-bold mb-4 text-center">
             What ToneMender helps you do
           </h2>
 
@@ -117,32 +116,22 @@ export default function MarketingLandingPage() {
             >
               relationship message rewriter
             </Link>{" "}
-            helps prevent misunderstandings.
+            prevents misunderstandings.
           </p>
 
           <div className="grid sm:grid-cols-3 gap-8">
-            <div className="p-6 bg-white rounded-2xl shadow-sm border">
-              <h3 className="text-lg font-semibold mb-2">🧘 Calm the tone</h3>
-              <p className="text-slate-600 text-sm">
-                Turn reactive, heated messages into steady, grounded
-                communication.
-              </p>
-            </div>
-
-            <div className="p-6 bg-white rounded-2xl shadow-sm border">
-              <h3 className="text-lg font-semibold mb-2">❤️ Reduce conflict</h3>
-              <p className="text-slate-600 text-sm">
-                Say what you mean without starting a fight or sounding harsh.
-              </p>
-            </div>
-
-            <div className="p-6 bg-white rounded-2xl shadow-sm border">
-              <h3 className="text-lg font-semibold mb-2">✨ Rewrite in seconds</h3>
-              <p className="text-slate-600 text-sm">
-                Instantly transform messages into soft, calm, or clear
-                variations.
-              </p>
-            </div>
+            <FeatureCard
+              title="🧘 Calm the tone"
+              body="Turn reactive, heated messages into steady, grounded communication."
+            />
+            <FeatureCard
+              title="❤️ Reduce conflict"
+              body="Say what you mean without starting a fight or sounding harsh."
+            />
+            <FeatureCard
+              title="✨ Rewrite in seconds"
+              body="Instantly transform messages into soft, calm, or clear variations."
+            />
           </div>
         </div>
       </section>
@@ -156,6 +145,9 @@ export default function MarketingLandingPage() {
           </p>
 
           <EmailForm />
+          <p className="mt-3 text-xs text-slate-500">
+            We’ll email you a confirmation link. No spam.
+          </p>
         </div>
       </section>
 
@@ -165,27 +157,18 @@ export default function MarketingLandingPage() {
           <h2 className="text-3xl font-bold text-center mb-10">What users say</h2>
 
           <div className="grid sm:grid-cols-3 gap-8">
-            <div className="bg-white p-6 rounded-2xl shadow border">
-              <p className="text-slate-700 text-sm">
-                “I avoided a fight with my boyfriend because of this app. Legit
-                insane.”
-              </p>
-              <p className="mt-4 text-xs text-slate-500">— Sarah</p>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl shadow border">
-              <p className="text-slate-700 text-sm">
-                “It made my text sound like a grown-up wrote it.”
-              </p>
-              <p className="mt-4 text-xs text-slate-500">— Brandon</p>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl shadow border">
-              <p className="text-slate-700 text-sm">
-                “Honestly should be built into iMessage.”
-              </p>
-              <p className="mt-4 text-xs text-slate-500">— Mia</p>
-            </div>
+            <TestimonialCard
+              quote="I avoided a fight with my boyfriend because of this app. Legit insane."
+              name="Sarah"
+            />
+            <TestimonialCard
+              quote="It made my text sound like a grown-up wrote it."
+              name="Brandon"
+            />
+            <TestimonialCard
+              quote="Honestly should be built into iMessage."
+              name="Mia"
+            />
           </div>
         </div>
       </section>
@@ -197,15 +180,35 @@ export default function MarketingLandingPage() {
           together.
         </p>
 
-        <Link href="/blog" className="underline block mb-2">
-          Read the Blog
-        </Link>
-
-        <Link href="/sign-in" className="mt-2 underline block">
-          Go to App
-        </Link>
+        <div className="mt-3 flex items-center justify-center gap-4">
+          <Link href="/blog" className="underline">
+            Read the Blog
+          </Link>
+          <span className="text-slate-300">•</span>
+          <Link href="/sign-in" className="underline">
+            Go to App
+          </Link>
+        </div>
       </footer>
     </main>
+  );
+}
+
+function FeatureCard({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="p-6 bg-white rounded-2xl shadow-sm border">
+      <h3 className="text-lg font-semibold mb-2">{title}</h3>
+      <p className="text-slate-600 text-sm">{body}</p>
+    </div>
+  );
+}
+
+function TestimonialCard({ quote, name }: { quote: string; name: string }) {
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow border">
+      <p className="text-slate-700 text-sm">“{quote}”</p>
+      <p className="mt-4 text-xs text-slate-500">— {name}</p>
+    </div>
   );
 }
 
@@ -214,20 +217,32 @@ export default function MarketingLandingPage() {
 ====================================================== */
 
 function EmailForm() {
+  const inputId = useId();
+
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string>("");
+
+  const validEmail = useMemo(() => {
+    const v = email.trim();
+    if (!v) return false;
+    // light validation; server is source of truth
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  }, [email]);
 
   async function joinWaitlist() {
-    if (!email || loading) return;
+    const trimmed = email.trim();
+    if (!trimmed || loading) return;
 
     setLoading(true);
+    setErr("");
 
     try {
       const res = await fetch("/api/newsletter", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: trimmed }),
       });
 
       // Always show confirmation UX (privacy-friendly; no email enumeration)
@@ -235,37 +250,63 @@ function EmailForm() {
 
       // Only clear on success so user can retry if they want
       if (res.ok) setEmail("");
-    } catch (err) {
-      console.warn("Newsletter request failed", err);
+    } catch (e) {
+      console.warn("Newsletter request failed", e);
       setSubmitted(true);
+      setErr("Something went wrong — try again in a moment.");
     } finally {
       setLoading(false);
     }
   }
 
-  return !submitted ? (
-    <div className="mt-6 flex flex-col sm:flex-row gap-3">
-      <input
-        type="email"
-        placeholder="Enter your email"
-        value={email}
-        className="border rounded-2xl px-4 py-3 text-sm w-full bg-slate-50 focus:bg-white focus:border-blue-500 transition"
-        onChange={(e) => setEmail(e.target.value)}
-        autoComplete="email"
-        inputMode="email"
-        aria-label="Email address"
-      />
-      <button
-        onClick={joinWaitlist}
-        disabled={loading}
-        className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-semibold hover:bg-blue-500 disabled:opacity-60"
-      >
-        {loading ? "Joining..." : "Join"}
-      </button>
-    </div>
-  ) : (
-    <p className="text-green-600 font-semibold mt-4">
-      ✔ Check your email to confirm — then you’re in!
-    </p>
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!validEmail || loading) return;
+    joinWaitlist();
+  }
+
+  if (submitted) {
+    return (
+      <div className="mt-6">
+        <p className="text-green-600 font-semibold">
+          ✔ Check your email to confirm — then you’re in!
+        </p>
+        {err && <p className="text-xs text-slate-500 mt-2">{err}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="mt-6">
+      <div className="flex flex-col sm:flex-row gap-3">
+        <label htmlFor={inputId} className="sr-only">
+          Email address
+        </label>
+        <input
+          id={inputId}
+          type="email"
+          placeholder="Enter your email"
+          value={email}
+          className="border rounded-2xl px-4 py-3 text-sm w-full bg-slate-50 focus:bg-white focus:border-blue-500 transition"
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          inputMode="email"
+          aria-invalid={email.length > 0 && !validEmail}
+        />
+        <button
+          type="submit"
+          disabled={loading || !validEmail}
+          className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-semibold hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {loading ? "Joining..." : "Join"}
+        </button>
+      </div>
+
+      {email.length > 0 && !validEmail && (
+        <p className="text-xs text-slate-500 mt-2">
+          Please enter a valid email address.
+        </p>
+      )}
+    </form>
   );
 }

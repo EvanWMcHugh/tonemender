@@ -1,4 +1,3 @@
-// app/api/sign-up/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
@@ -7,6 +6,8 @@ import { verifyTurnstile } from "@/lib/turnstile";
 import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";
+
+const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -18,7 +19,7 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-// Lightweight email sanity check (not RFC-perfect, but blocks obvious junk)
+// Lightweight email sanity check
 function isValidEmail(email: string) {
   if (email.length > 254) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -30,8 +31,58 @@ function getClientIp(req: Request) {
   return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
 }
 
-// Keep consistent with your app-wide bypass pattern
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+function getUserAgent(req: Request) {
+  return req.headers.get("user-agent") ?? null;
+}
+
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
+// Simple DB rate limiter (fail-open)
+async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+  const now = Date.now();
+  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
+
+  const { data: row } = await supabaseAdmin
+    .from("rate_limits")
+    .select("count")
+    .eq("key", key)
+    .eq("window_start", windowStartIso)
+    .eq("window_seconds", windowSeconds)
+    .maybeSingle();
+
+  if (!row) {
+    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+      key,
+      window_start: windowStartIso,
+      window_seconds: windowSeconds,
+      count: 1,
+    });
+    if (insErr) return true;
+    return true;
+  }
+
+  const next = (row.count ?? 0) + 1;
+  const { error: updErr } = await supabaseAdmin
+    .from("rate_limits")
+    .update({ count: next })
+    .eq("key", key)
+    .eq("window_start", windowStartIso)
+    .eq("window_seconds", windowSeconds);
+
+  if (updErr) return true;
+  return next <= limit;
+}
 
 export async function POST(req: Request) {
   try {
@@ -48,16 +99,22 @@ export async function POST(req: Request) {
     }
 
     const email = normalizeEmail(emailRaw);
+    const ip = getClientIp(req) || "unknown";
+
+    // Rate limit early (prevents brute force signup spam)
+    const ipAllowed = await rateLimitHit(`ip:${ip}:sign_up`, 60, 10);
+    const emailAllowed = await rateLimitHit(`email:${email}:sign_up`, 300, 5);
+    if (!ipAllowed || !emailAllowed) {
+      await audit("SIGN_UP_RATE_LIMITED", null, req, { email });
+      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+    }
 
     if (!isValidEmail(email)) {
       return jsonNoStore({ error: "Invalid email" }, { status: 400 });
     }
 
     if (password.length < 8) {
-      return jsonNoStore(
-        { error: "Password must be at least 8 characters" },
-        { status: 400 }
-      );
+      return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
     }
     if (password.length > 200) {
       return jsonNoStore({ error: "Password is too long" }, { status: 400 });
@@ -65,17 +122,14 @@ export async function POST(req: Request) {
 
     // CAPTCHA (bypass for internal emails only)
     const shouldBypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
-
     if (!shouldBypassCaptcha) {
       if (typeof captchaToken !== "string" || !captchaToken) {
-        return jsonNoStore(
-          { error: "Captcha verification required" },
-          { status: 400 }
-        );
+        return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
       }
 
       const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
       if (!okCaptcha) {
+        await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
         return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
       }
     }
@@ -92,80 +146,67 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Server error" }, { status: 500 });
     }
     if (existing) {
+      // Optional anti-enumeration choice:
+      // - If you want to avoid revealing existence, return {success:true} here.
       return jsonNoStore({ error: "Email already in use" }, { status: 409 });
     }
 
-    // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const { error: insertErr } = await supabaseAdmin.from("users").insert({
-      email,
-      password_hash: passwordHash,
-      email_verified_at: null,
-    });
+    // Insert user and return created row in one trip
+    const { data: user, error: insertErr } = await supabaseAdmin
+      .from("users")
+      .insert({
+        email,
+        password_hash: passwordHash,
+        email_verified_at: null,
+      })
+      .select("id,email")
+      .single();
 
-    if (insertErr) {
+    if (insertErr || !user?.id) {
       console.error("SIGN UP: user insert error:", insertErr);
       return jsonNoStore({ error: "Sign up failed" }, { status: 400 });
     }
 
-    // Fetch created user
-    const { data: user, error: fetchErr } = await supabaseAdmin
-      .from("users")
-      .select("id,email")
-      .eq("email", email)
-      .single();
+    const userId = String(user.id);
 
-    if (fetchErr || !user) {
-      console.error("SIGN UP: user fetch error:", fetchErr);
-      return jsonNoStore(
-        { error: "Sign up failed (user created but could not be fetched)" },
-        { status: 500 }
-      );
-    }
-
-    // Delete any previous unconsumed verification token(s) (best effort)
-    {
-      const { error: delTokErr } = await supabaseAdmin
-        .from("email_verification_tokens")
+    // Replace any previous unconsumed email_verify tokens (paranoia / idempotency)
+    try {
+      await supabaseAdmin
+        .from("auth_tokens")
         .delete()
-        .eq("user_id", user.id)
+        .eq("user_id", userId)
+        .eq("purpose", "email_verify")
         .is("consumed_at", null);
+    } catch {}
 
-      if (delTokErr) {
-        // Not fatal; just log
-        console.warn("SIGN UP: could not delete old verification tokens:", delTokErr);
-      }
-    }
-
-    // Create verification token (store hash only)
     const rawToken = generateToken(32);
     const tokenHash = sha256Hex(rawToken);
     const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
 
-    const { error: tokenErr } = await supabaseAdmin
-      .from("email_verification_tokens")
-      .insert({
-        user_id: user.id,
-        token_hash: tokenHash,
-        expires_at: expiresAtIso,
-        consumed_at: null,
-      });
+    const { error: tokenErr } = await supabaseAdmin.from("auth_tokens").insert({
+      user_id: userId,
+      email,
+      token_hash: tokenHash,
+      purpose: "email_verify",
+      expires_at: expiresAtIso,
+      created_ip: getClientIp(req),
+      created_ua: getUserAgent(req),
+      data: {},
+    });
 
     if (tokenErr) {
       console.error("SIGN UP: token insert error:", tokenErr);
 
-      // Best effort rollback (so you don't create a user who can't verify)
+      // Best-effort rollback (so you don't create a user who can't verify)
       try {
-        await supabaseAdmin.from("users").delete().eq("id", user.id);
+        await supabaseAdmin.from("users").delete().eq("id", userId);
       } catch (rollbackErr) {
         console.error("SIGN UP: rollback delete user failed:", rollbackErr);
       }
 
-      return jsonNoStore(
-        { error: "Could not create verification link" },
-        { status: 500 }
-      );
+      return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
     }
 
     const appUrl = process.env.APP_URL;
@@ -174,15 +215,14 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Server error" }, { status: 500 });
     }
 
-    const confirmUrl = `${appUrl}/confirm?type=signup&token=${encodeURIComponent(
-      rawToken
-    )}`;
+    // IMPORTANT: match your /confirm page’s routing
+    // Recommended: type=email-verify (less confusing than type=signup)
+    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
 
-    // Email send failure: user + token exist; user can resend confirmation.
     try {
       await sendEmail({
         to: email,
-        subject: "Confirm your ToneMender account",
+        subject: "Confirm your ToneMender email",
         html: `
           <div style="font-family:Arial,sans-serif;line-height:1.4">
             <h2>Confirm your email</h2>
@@ -199,6 +239,7 @@ export async function POST(req: Request) {
       });
     } catch (emailErr) {
       console.error("SIGN UP: sendEmail failed:", emailErr);
+      await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {});
       return jsonNoStore(
         {
           error:
@@ -208,6 +249,7 @@ export async function POST(req: Request) {
       );
     }
 
+    await audit("SIGN_UP_CREATED", userId, req, {});
     return jsonNoStore({ success: true });
   } catch (e: any) {
     console.error("SIGN UP ERROR:", e);

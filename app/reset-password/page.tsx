@@ -1,11 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
+
+const MIN_PASSWORD_LEN = 8;
+const MAX_PASSWORD_LEN = 200;
+
+function getPasswordIssue(pw: string) {
+  if (pw.length < MIN_PASSWORD_LEN)
+    return `Password must be at least ${MIN_PASSWORD_LEN} characters.`;
+  if (pw.length > MAX_PASSWORD_LEN) return "Password is too long.";
+  return "";
+}
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -17,25 +27,53 @@ export default function ResetPasswordPage() {
 
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
 
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string>("");
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const canSubmit = useMemo(() => {
-    return Boolean(token) && Boolean(turnstileToken) && !loading;
-  }, [token, turnstileToken, loading]);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const passwordIssue = useMemo(() => getPasswordIssue(password), [password]);
+  const passwordsMatch = useMemo(
+    () => password.length > 0 && password === confirm,
+    [password, confirm]
+  );
+
+  const canSubmit = useMemo(() => {
+    if (!token) return false;
+    if (!turnstileToken) return false;
+    if (loading) return false;
+    if (passwordIssue) return false;
+    if (!passwordsMatch) return false;
+    return true;
+  }, [token, turnstileToken, loading, passwordIssue, passwordsMatch]);
+
+  // When the link token changes, reset captcha & state for safety
   useEffect(() => {
-    // If user changes password fields, keep captcha token (fine).
-    // If link token changes, reset captcha token for safety.
     setTurnstileToken(null);
     setSuccess(false);
     setError("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Also clear any pending redirect
+    if (redirectTimerRef.current) {
+      clearTimeout(redirectTimerRef.current);
+      redirectTimerRef.current = null;
+    }
   }, [token]);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+        redirectTimerRef.current = null;
+      }
+    };
+  }, []);
 
   async function handleReset(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return;
+
     setError("");
     setSuccess(false);
 
@@ -44,13 +82,9 @@ export default function ResetPasswordPage() {
       return;
     }
 
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
-
-    if (password.length > 200) {
-      setError("Password is too long.");
+    const issue = getPasswordIssue(password);
+    if (issue) {
+      setError(issue);
       return;
     }
 
@@ -65,8 +99,6 @@ export default function ResetPasswordPage() {
     }
 
     setLoading(true);
-
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
       const res = await fetch("/api/auth/reset-password", {
@@ -90,71 +122,98 @@ export default function ResetPasswordPage() {
 
       setSuccess(true);
 
-      timeoutId = setTimeout(() => {
+      // short friendly redirect after success
+      redirectTimerRef.current = setTimeout(() => {
         router.replace("/sign-in");
-      }, 700);
-    } catch {
+      }, 900);
+    } catch (err) {
+      console.error("RESET PASSWORD ERROR:", err);
       setError("Network error. Please try again.");
       setTurnstileToken(null);
     } finally {
       setLoading(false);
-      if (timeoutId) {
-        // cleanup is handled by component unmount too, but safe here
-      }
     }
   }
 
-  // Clear any pending redirects if unmounted quickly
-  useEffect(() => {
-    let t: ReturnType<typeof setTimeout> | null = null;
-    return () => {
-      if (t) clearTimeout(t);
-    };
-  }, []);
+  const disableInputs = !token || loading || success;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
-        <h1 className="text-2xl font-bold mb-4 text-center">Reset Password</h1>
+        <h1 className="text-2xl font-bold mb-2 text-center">Reset Password</h1>
+        <p className="text-sm text-slate-500 mb-6 text-center">
+          Choose a new password for your account.
+        </p>
 
         {!token && (
-          <p className="text-red-500 text-sm mb-2">
-            This reset link is missing a token. Please request a new reset link.
-          </p>
+          <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 p-3">
+            <p className="text-red-700 text-sm">
+              This reset link is missing a token. Please request a new reset
+              link.
+            </p>
+          </div>
         )}
 
-        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+        {error && (
+          <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 p-3">
+            <p className="text-red-700 text-sm">{error}</p>
+          </div>
+        )}
 
         {success && (
-          <p className="text-green-600 text-sm mb-2 text-center">
-            ✅ Password updated — redirecting to sign in…
-          </p>
+          <div className="mb-3 rounded-2xl border border-green-200 bg-green-50 p-3">
+            <p className="text-green-700 text-sm text-center">
+              ✅ Password updated — redirecting to sign in…
+            </p>
+          </div>
         )}
 
         <form onSubmit={handleReset} className="flex flex-col gap-3">
-          <input
-            type="password"
-            placeholder="New password"
-            className="border p-2 rounded"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete="new-password"
-            minLength={8}
-            disabled={!token || loading}
-          />
+          <div>
+            <label className="sr-only" htmlFor="new-password">
+              New password
+            </label>
+            <input
+              id="new-password"
+              type="password"
+              placeholder="New password"
+              className="border p-3 rounded-2xl w-full"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete="new-password"
+              minLength={MIN_PASSWORD_LEN}
+              disabled={disableInputs}
+              aria-invalid={!!password && !!passwordIssue}
+            />
+            {password && passwordIssue && (
+              <p className="text-[11px] text-slate-500 mt-1">{passwordIssue}</p>
+            )}
+          </div>
 
-          <input
-            type="password"
-            placeholder="Confirm password"
-            className="border p-2 rounded"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            required
-            autoComplete="new-password"
-            minLength={8}
-            disabled={!token || loading}
-          />
+          <div>
+            <label className="sr-only" htmlFor="confirm-password">
+              Confirm password
+            </label>
+            <input
+              id="confirm-password"
+              type="password"
+              placeholder="Confirm password"
+              className="border p-3 rounded-2xl w-full"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              required
+              autoComplete="new-password"
+              minLength={MIN_PASSWORD_LEN}
+              disabled={disableInputs}
+              aria-invalid={!!confirm && password !== confirm}
+            />
+            {confirm && password !== confirm && (
+              <p className="text-[11px] text-slate-500 mt-1">
+                Passwords do not match.
+              </p>
+            )}
+          </div>
 
           <div className="mt-1">
             <Turnstile
@@ -172,13 +231,14 @@ export default function ResetPasswordPage() {
           <button
             type="submit"
             disabled={!canSubmit}
-            className="bg-blue-600 text-white p-2 rounded disabled:opacity-60"
+            className="bg-blue-600 text-white px-4 py-3 rounded-2xl font-semibold
+                       hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {loading ? "Updating..." : "Update Password"}
           </button>
         </form>
 
-        <div className="mt-4 text-center">
+        <div className="mt-5 text-center">
           <Link href="/sign-in" className="text-sm text-blue-600 underline">
             Back to sign in
           </Link>
