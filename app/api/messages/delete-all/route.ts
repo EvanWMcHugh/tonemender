@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getAuthUserFromRequest } from "@/lib/server-auth";
 
@@ -11,54 +10,27 @@ function jsonNoStore(data: unknown, init?: ResponseInit) {
   return res;
 }
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-async function audit(
-  event: string,
-  userId: string | null,
-  req: Request,
-  meta: Record<string, unknown> = {}
-) {
-  try {
-    await supabaseAdmin.from("audit_log").insert({
-      user_id: userId,
-      event,
-      ip: getClientIp(req),
-      user_agent: getUserAgent(req),
-      meta,
-    });
-  } catch {}
-}
-
 export async function POST(req: Request) {
   try {
-    const user = await getAuthUserFromRequest(req);
+    const authUser = await getAuthUserFromRequest(req);
 
-    if (!user?.id) {
-      return jsonNoStore({ error: "Not authenticated" }, { status: 401 });
+    if (!authUser?.id) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { error } = await supabaseAdmin
       .from("messages")
       .delete()
-      .eq("user_id", user.id);
+      .eq("user_id", authUser.id);
 
     if (error) {
-      await audit("DRAFTS_DELETE_ALL_FAILED", user.id, req);
+      console.error("DELETE ALL DRAFTS ERROR:", error);
       return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
     }
 
-    await audit("DRAFTS_DELETE_ALL_OK", user.id, req);
-    return jsonNoStore({ ok: true });
-  } catch {
+    return jsonNoStore({ success: true });
+  } catch (error) {
+    console.error("DELETE ALL DRAFTS ROUTE ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }
