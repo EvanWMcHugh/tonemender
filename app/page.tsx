@@ -22,6 +22,10 @@ function normalizeEmail(email: string | null | undefined) {
   return (email ?? "").trim().toLowerCase();
 }
 
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function AppHomePage() {
   const router = useRouter();
 
@@ -35,24 +39,29 @@ export default function AppHomePage() {
     mountedRef.current = true;
     const controller = new AbortController();
 
+    async function fetchMe() {
+      const response = await fetch("/api/me", {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+
+      const json = (await response.json().catch(() => ({ user: null }))) as MeResponse;
+      return json?.user ?? null;
+    }
+
     async function load() {
       try {
-        const fetchMe = async () => {
-          const response = await fetch("/api/me", {
-            method: "GET",
-            cache: "no-store",
-            signal: controller.signal,
-          });
+        let user: MeResponse["user"] = null;
 
-          const json = (await response.json().catch(() => ({ user: null }))) as MeResponse;
-          return json?.user ?? null;
-        };
-
-        let user = await fetchMe();
-
-        if (!user?.id) {
-          await new Promise((resolve) => setTimeout(resolve, 200));
+        for (let attempt = 0; attempt < 8; attempt++) {
           user = await fetchMe();
+
+          if (user?.id) {
+            break;
+          }
+
+          await sleep(250);
         }
 
         if (!user?.id) {

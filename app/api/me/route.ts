@@ -64,7 +64,11 @@ export async function GET(req: Request) {
       .eq("session_token_hash", sessionTokenHash)
       .maybeSingle();
 
-    if (sessionError || !session?.user_id) {
+    if (sessionError) {
+      return jsonNoStore({ user: null }, { status: 503 });
+    }
+
+    if (!session?.user_id) {
       const res = jsonNoStore({ user: null });
       clearSessionCookie(req, res);
       return res;
@@ -91,7 +95,11 @@ export async function GET(req: Request) {
       .eq("id", session.user_id)
       .maybeSingle();
 
-    if (userError || !user || user.disabled_at || user.deleted_at) {
+    if (userError) {
+      return jsonNoStore({ user: null }, { status: 503 });
+    }
+
+    if (!user || user.disabled_at || user.deleted_at) {
       const res = jsonNoStore({ user: null });
       clearSessionCookie(req, res);
       return res;
@@ -114,6 +122,6 @@ export async function GET(req: Request) {
       },
     });
   } catch {
-    return jsonNoStore({ user: null });
+    return jsonNoStore({ user: null }, { status: 500 });
   }
 }

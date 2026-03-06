@@ -15,6 +15,27 @@ function normalizeEmail(email: string) {
 
 type PendingAction = null | "login" | "reset" | "resendConfirm";
 
+async function waitForSession(maxAttempts = 12, delayMs = 250) {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const response = await fetch("/api/me", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const json = await response.json().catch(() => ({}));
+
+      if (json?.user?.id) {
+        return true;
+      }
+    } catch {}
+
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  return false;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const emailId = useId();
@@ -159,6 +180,13 @@ export default function LoginPage() {
       }
 
       cleanupCaptchaState();
+
+      const sessionReady = await waitForSession();
+
+      if (!sessionReady) {
+        throw new Error("Signed in, but session was not ready. Please try again.");
+      }
+
       window.location.href = "/";
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login failed");
