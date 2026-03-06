@@ -42,38 +42,48 @@ function clearSessionCookie(req: Request, res: NextResponse) {
 
 export async function GET(req: Request) {
   try {
+    const url = new URL(req.url);
+    const debug = url.searchParams.get("debug") === "1";
+
     const raw = readCookie(req, SESSION_COOKIE);
-
-    console.log("ME host:", req.headers.get("host"));
-    console.log("ME cookie header has tm_session:", (req.headers.get("cookie") || "").includes("tm_session="));
-    console.log("ME raw exists:", Boolean(raw));
-    console.log("ME raw first12:", raw ? raw.slice(0, 12) : null);
-
-    if (!raw) return jsonNoStore({ user: null });
+    if (!raw) {
+      return jsonNoStore(
+        debug
+          ? { user: null, reason: "no_cookie" }
+          : { user: null }
+      );
+    }
 
     const hash = sha256Hex(raw);
     const nowIso = new Date().toISOString();
 
-    console.log("ME hash:", hash);
-    console.log("ME nowIso:", nowIso);
-
     const { data: session, error: sessionErr } = await supabaseAdmin
       .from("sessions")
-      .select("user_id,expires_at,revoked_at")
+      .select("user_id,expires_at,revoked_at,session_token_hash")
       .eq("session_token_hash", hash)
       .maybeSingle();
 
-    console.log("ME sessionErr:", sessionErr);
-    console.log("ME session:", session);
-
     if (sessionErr || !session?.user_id) {
-      const res = jsonNoStore({ user: null });
+      const payload = debug
+        ? {
+            user: null,
+            reason: "session_not_found",
+            rawFirst12: raw.slice(0, 12),
+            hash,
+            sessionErr,
+            session,
+          }
+        : { user: null };
+
+      const res = jsonNoStore(payload);
       clearSessionCookie(req, res);
       return res;
     }
 
-    if (session.revoked_at || !session.expires_at || session.expires_at <= nowIso) {
-      // Best-effort cleanup
+    const expiresMs = session.expires_at ? new Date(session.expires_at).getTime() : 0;
+    const nowMs = Date.now();
+
+    if (session.revoked_at || !session.expires_at || expiresMs <= nowMs) {
       try {
         await supabaseAdmin
           .from("sessions")
@@ -81,7 +91,19 @@ export async function GET(req: Request) {
           .eq("session_token_hash", hash);
       } catch {}
 
-      const res = jsonNoStore({ user: null });
+      const payload = debug
+        ? {
+            user: null,
+            reason: "session_expired_or_revoked",
+            hash,
+            session,
+            nowIso,
+            expiresMs,
+            nowMs,
+          }
+        : { user: null };
+
+      const res = jsonNoStore(payload);
       clearSessionCookie(req, res);
       return res;
     }
@@ -92,13 +114,23 @@ export async function GET(req: Request) {
       .eq("id", session.user_id)
       .maybeSingle();
 
-    if (userErr || !user || user.disabled_at || user.deleted_at) {
-      const res = jsonNoStore({ user: null });
-      clearSessionCookie(req, res);
-      return res;
-    }
+   if (userErr || !user || user?.disabled_at || user?.deleted_at) {
+  const payload = debug
+    ? {
+        user: null,
+        reason: "user_lookup_failed",
+        hash,
+        session,
+        userErr,
+        userRecord: user,
+      }
+    : { user: null };
 
-    // Best-effort last_seen_at (don’t block response)
+  const res = jsonNoStore(payload);
+  clearSessionCookie(req, res);
+  return res;
+}
+
     try {
       await supabaseAdmin
         .from("sessions")
@@ -107,14 +139,29 @@ export async function GET(req: Request) {
         .is("revoked_at", null);
     } catch {}
 
-    return jsonNoStore({
-      user: {
-        id: user.id,
-        email: user.email,
-        isPro: user.is_pro,
-        planType: user.plan_type,
-      },
-    });
+    return jsonNoStore(
+      debug
+        ? {
+            ok: true,
+            reason: "success",
+            hash,
+            session,
+            user: {
+              id: user.id,
+              email: user.email,
+              isPro: user.is_pro,
+              planType: user.plan_type,
+            },
+          }
+        : {
+            user: {
+              id: user.id,
+              email: user.email,
+              isPro: user.is_pro,
+              planType: user.plan_type,
+            },
+          }
+    );
   } catch (err) {
     console.error("ME ROUTE ERROR:", err);
     return jsonNoStore({ user: null });
