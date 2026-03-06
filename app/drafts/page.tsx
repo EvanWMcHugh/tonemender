@@ -43,6 +43,7 @@ export default function DraftsPage() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   const sortedDrafts = useMemo(() => {
     return [...drafts].sort((a, b) => {
@@ -112,20 +113,20 @@ export default function DraftsPage() {
     return () => controller.abort();
   }, [router]);
 
-  async function handleDeleteDraft(id: string) {
-    if (deletingId) return;
+  async function handleDeleteDraft(draftId: string) {
+    if (deletingId || deletingAll) return;
 
     const confirmed = confirm("Delete this draft? This can’t be undone.");
     if (!confirmed) return;
 
-    setDeletingId(id);
+    setDeletingId(draftId);
 
     try {
       const resp = await fetch("/api/messages/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({ draftId }),
       });
 
       const json = await resp.json().catch(() => ({}));
@@ -135,11 +136,41 @@ export default function DraftsPage() {
         return;
       }
 
-      setDrafts((prev) => prev.filter((draft) => draft.id !== id));
+      setDrafts((prev) => prev.filter((draft) => draft.id !== draftId));
     } catch {
       alert("Failed to delete draft.");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleDeleteAllDrafts() {
+    if (deletingId || deletingAll || drafts.length === 0) return;
+
+    const confirmed = confirm("Delete all drafts? This can’t be undone.");
+    if (!confirmed) return;
+
+    setDeletingAll(true);
+
+    try {
+      const resp = await fetch("/api/messages/delete-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      });
+
+      const json = await resp.json().catch(() => ({}));
+
+      if (!resp.ok) {
+        alert(json?.error || "Failed to delete all drafts.");
+        return;
+      }
+
+      setDrafts([]);
+    } catch {
+      alert("Failed to delete all drafts.");
+    } finally {
+      setDeletingAll(false);
     }
   }
 
@@ -160,13 +191,30 @@ export default function DraftsPage() {
           </p>
         </div>
 
-        <button
-          onClick={() => router.refresh()}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-slate-50"
-          aria-label="Refresh drafts"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => router.refresh()}
+            className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-slate-50"
+            aria-label="Refresh drafts"
+            disabled={deletingAll || Boolean(deletingId)}
+          >
+            Refresh
+          </button>
+
+          <button
+            onClick={handleDeleteAllDrafts}
+            disabled={deletingAll || Boolean(deletingId) || sortedDrafts.length === 0}
+            className={[
+              "rounded-xl border px-3 py-2 text-sm shadow-sm",
+              deletingAll || Boolean(deletingId) || sortedDrafts.length === 0
+                ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                : "border-red-200 bg-white text-red-600 hover:bg-red-50",
+            ].join(" ")}
+            aria-label="Delete all drafts"
+          >
+            {deletingAll ? "Deleting all…" : "Delete all"}
+          </button>
+        </div>
       </div>
 
       {state === "loading" && (
@@ -219,7 +267,7 @@ export default function DraftsPage() {
 
                 <button
                   onClick={() => handleDeleteDraft(draft.id)}
-                  disabled={Boolean(deletingId)}
+                  disabled={Boolean(deletingId) || deletingAll}
                   className={[
                     "shrink-0 rounded-xl border px-3 py-2 text-xs",
                     deleting
