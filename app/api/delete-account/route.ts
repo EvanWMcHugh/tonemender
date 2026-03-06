@@ -54,107 +54,137 @@ async function audit(
   } catch {}
 }
 
+function clearSessionCookie(res: NextResponse, req: Request) {
+  const cookieDomain = getCookieDomain(req);
+
+  res.cookies.set(SESSION_COOKIE, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
+  });
+}
+
 export async function POST(req: Request) {
   try {
-    const user = await getAuthUserFromRequest(req);
+    const authUser = await getAuthUserFromRequest(req);
 
-    if (!user?.id) {
+    if (!authUser?.id) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const nowIso = new Date().toISOString();
-
     const { data: userRow, error: userError } = await supabaseAdmin
       .from("users")
-      .select("id,stripe_customer_id,stripe_subscription_id,plan_type,deleted_at,disabled_at")
-      .eq("id", user.id)
+      .select("id,email,stripe_customer_id,stripe_subscription_id,plan_type")
+      .eq("id", authUser.id)
       .maybeSingle();
 
     if (userError || !userRow) {
       return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
     }
 
-    if (userRow.deleted_at) {
-      const res = jsonNoStore({ ok: true, success: true });
-
-      const cookieDomain = getCookieDomain(req);
-
-      res.cookies.set(SESSION_COOKIE, "", {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/",
-        maxAge: 0,
-        ...(cookieDomain ? { domain: cookieDomain } : {}),
-      });
-
-      return res;
-    }
-
-    const { error: softDeleteError } = await supabaseAdmin
-      .from("users")
-      .update({
-        deleted_at: nowIso,
-        disabled_at: nowIso,
-        is_pro: false,
-        plan_type: null,
-      })
-      .eq("id", user.id);
-
-    if (softDeleteError) {
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
-    }
-
-    try {
-      await supabaseAdmin
-        .from("sessions")
-        .update({ revoked_at: nowIso })
-        .eq("user_id", user.id)
-        .is("revoked_at", null);
-    } catch {}
-
-    try {
-      await supabaseAdmin
-        .from("auth_tokens")
-        .update({ consumed_at: nowIso })
-        .eq("user_id", user.id)
-        .is("consumed_at", null);
-    } catch {}
-
-    try {
-      await supabaseAdmin.from("messages").delete().eq("user_id", user.id);
-    } catch {}
-
-    try {
-      await supabaseAdmin.from("rewrite_usage").delete().eq("user_id", user.id);
-    } catch {}
-
-    await audit("ACCOUNT_DELETED", user.id, req, {
-      stripe_customer_id: userRow.stripe_customer_id ?? null,
-      stripe_subscription_id: userRow.stripe_subscription_id ?? null,
-    });
-
-    const res = jsonNoStore({
-      ok: true,
-      success: true,
+    // Write audit event first while user_id still exists.
+    await audit("ACCOUNT_DELETE_STARTED", authUser.id, req, {
       stripe_customer_id: userRow.stripe_customer_id ?? null,
       stripe_subscription_id: userRow.stripe_subscription_id ?? null,
       plan_type: userRow.plan_type ?? null,
     });
 
-    const cookieDomain = getCookieDomain(req);
+    // Delete child / dependent rows first.
+    const { error: sessionsError } = await supabaseAdmin
+      .from("sessions")
+      .delete()
+      .eq("user_id", authUser.id);
 
-    res.cookies.set(SESSION_COOKIE, "", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 0,
-      ...(cookieDomain ? { domain: cookieDomain } : {}),
+    if (sessionsError) {
+      console.error("DELETE ACCOUNT: sessions delete failed:", sessionsError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    const { error: authTokensError } = await supabaseAdmin
+      .from("auth_tokens")
+      .delete()
+      .eq("user_id", authUser.id);
+
+    if (authTokensError) {
+      console.error("DELETE ACCOUNT: auth_tokens delete failed:", authTokensError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    const { error: messagesError } = await supabaseAdmin
+      .from("messages")
+      .delete()
+      .eq("user_id", authUser.id);
+
+    if (messagesError) {
+      console.error("DELETE ACCOUNT: messages delete failed:", messagesError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    const { error: rewriteUsageError } = await supabaseAdmin
+      .from("rewrite_usage")
+      .delete()
+      .eq("user_id", authUser.id);
+
+    if (rewriteUsageError) {
+      console.error("DELETE ACCOUNT: rewrite_usage delete failed:", rewriteUsageError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    // Delete profile if table/row exists.
+    const { error: profilesError } = await supabaseAdmin
+      .from("profiles")
+      .delete()
+      .eq("user_id", authUser.id);
+
+    if (profilesError) {
+      console.error("DELETE ACCOUNT: profiles delete failed:", profilesError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    // Keep audit logs, but detach them from the user row if needed.
+    // This avoids FK issues when deleting users.
+    const { error: auditNullError } = await supabaseAdmin
+      .from("audit_log")
+      .update({ user_id: null })
+      .eq("user_id", authUser.id);
+
+    if (auditNullError) {
+      console.error("DELETE ACCOUNT: audit_log null-out failed:", auditNullError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    // Delete the core user row last.
+    const { error: userDeleteError } = await supabaseAdmin
+      .from("users")
+      .delete()
+      .eq("id", authUser.id);
+
+    if (userDeleteError) {
+      console.error("DELETE ACCOUNT: users delete failed:", userDeleteError);
+      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+    }
+
+    // Final audit without user_id attached, since the user row is now gone.
+    await audit("ACCOUNT_DELETED", null, req, {
+      deleted_user_id: authUser.id,
+      deleted_email: userRow.email ?? null,
+      stripe_customer_id: userRow.stripe_customer_id ?? null,
+      stripe_subscription_id: userRow.stripe_subscription_id ?? null,
+      plan_type: userRow.plan_type ?? null,
     });
 
+    const res = jsonNoStore({
+      ok: true,
+      success: true,
+    });
+
+    clearSessionCookie(res, req);
     return res;
-  } catch {
+  } catch (error) {
+    console.error("DELETE ACCOUNT ROUTE ERROR:", error);
     return jsonNoStore(
       { error: "Server error while deleting account" },
       { status: 500 }
