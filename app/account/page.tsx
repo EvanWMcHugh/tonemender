@@ -143,24 +143,6 @@ export default function AccountPage() {
     router.replace("/sign-in");
   }
 
-  async function deleteAllMessages() {
-    const ok = confirm("Delete ALL saved drafts? This cannot be undone.");
-    if (!ok) return;
-
-    const resp = await fetch("/api/messages/delete-all", {
-      method: "POST",
-      cache: "no-store",
-    });
-
-    if (!resp.ok) {
-      alert("Failed to delete drafts.");
-      return;
-    }
-
-    alert("All drafts deleted.");
-    window.location.reload();
-  }
-
   async function deleteAccount() {
     const ok = confirm("Delete your ENTIRE account permanently?");
     if (!ok) return;
@@ -406,13 +388,6 @@ export default function AccountPage() {
         <h2 className="mb-3 text-xl font-semibold text-red-600">Danger Zone</h2>
 
         <div className="flex flex-wrap gap-3">
-          <button
-            onClick={deleteAllMessages}
-            className="rounded-xl border border-red-500 px-4 py-2 text-red-600 transition hover:bg-red-50"
-          >
-            Delete All Messages
-          </button>
-
           <button
             onClick={deleteAccount}
             className="rounded-xl bg-red-600 px-4 py-2 text-white transition hover:bg-red-500"
