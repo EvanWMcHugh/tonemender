@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getAuthUserFromRequest } from "@/lib/server-auth";
 
@@ -58,46 +59,118 @@ function laDayBoundsUtcIso(dayYYYYMMDD: string) {
 }
 
 export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const dayParam = url.searchParams.get("day");
-    const day = dayParam && isValidDay(dayParam) ? dayParam : formatLA_YYYY_MM_DD(new Date());
+  const url = new URL(req.url);
+  const dayParam = url.searchParams.get("day");
+  const day = dayParam && isValidDay(dayParam) ? dayParam : formatLA_YYYY_MM_DD(new Date());
 
+  try {
     const user = await getAuthUserFromRequest(req);
+
     if (!user?.id) {
       return jsonNoStore({ stats: { today: 0, total: 0 }, day });
     }
 
-    const { count: total, error: totalError } = await supabaseAdmin
-      .from("rewrite_usage")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id);
+    let total = 0;
+    let today = 0;
 
-    if (totalError) {
-      return jsonNoStore({ stats: { today: 0, total: 0 }, day });
+    try {
+      const totalResult = await supabaseAdmin
+        .from("rewrite_usage")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id);
+
+      if (totalResult.error) {
+        return jsonNoStore(
+          {
+            stats: { today: 0, total: 0 },
+            day,
+            error: "total_query_failed",
+            details: totalResult.error.message,
+          },
+          { status: 500 }
+        );
+      }
+
+      total = totalResult.count ?? 0;
+    } catch (err: unknown) {
+      return jsonNoStore(
+        {
+          stats: { today: 0, total: 0 },
+          day,
+          error: "total_query_threw",
+          details: err instanceof Error ? err.message : "Unknown error",
+        },
+        { status: 500 }
+      );
     }
 
-    const [startIso, endIso] = laDayBoundsUtcIso(day);
+    let startIso = "";
+    let endIso = "";
 
-    const { count: today, error: todayError } = await supabaseAdmin
-      .from("rewrite_usage")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", user.id)
-      .gte("created_at", startIso)
-      .lt("created_at", endIso);
+    try {
+      [startIso, endIso] = laDayBoundsUtcIso(day);
+    } catch (err: unknown) {
+      return jsonNoStore(
+        {
+          stats: { today: 0, total },
+          day,
+          error: "day_bounds_failed",
+          details: err instanceof Error ? err.message : "Unknown error",
+        },
+        { status: 500 }
+      );
+    }
 
-    if (todayError) {
-      return jsonNoStore({ stats: { today: 0, total: total ?? 0 }, day });
+    try {
+      const todayResult = await supabaseAdmin
+        .from("rewrite_usage")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .gte("created_at", startIso)
+        .lt("created_at", endIso);
+
+      if (todayResult.error) {
+        return jsonNoStore(
+          {
+            stats: { today: 0, total },
+            day,
+            error: "today_query_failed",
+            details: todayResult.error.message,
+            startIso,
+            endIso,
+          },
+          { status: 500 }
+        );
+      }
+
+      today = todayResult.count ?? 0;
+    } catch (err: unknown) {
+      return jsonNoStore(
+        {
+          stats: { today: 0, total },
+          day,
+          error: "today_query_threw",
+          details: err instanceof Error ? err.message : "Unknown error",
+          startIso,
+          endIso,
+        },
+        { status: 500 }
+      );
     }
 
     return jsonNoStore({
-      stats: {
-        today: today ?? 0,
-        total: total ?? 0,
-      },
+      stats: { today, total },
       day,
     });
-  } catch {
-    return jsonNoStore({ stats: { today: 0, total: 0 } });
+  } catch (err: unknown) {
+    return jsonNoStore(
+      {
+        stats: { today: 0, total: 0 },
+        day,
+        error: "outer_catch",
+        details: err instanceof Error ? err.message : "Unknown error",
+      },
+      { status: 500 }
+    );
   }
 }
