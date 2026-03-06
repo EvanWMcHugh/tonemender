@@ -3,11 +3,10 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
 import { generateToken, sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
+import { isReviewer } from "@/lib/reviewers";
 import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";
-
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -17,6 +16,10 @@ function jsonNoStore(data: any, init?: ResponseInit) {
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
+}
+
+function shouldBypassInternalChecks(email: string) {
+  return isReviewer(email);
 }
 
 // Lightweight email sanity check
@@ -94,12 +97,14 @@ export async function POST(req: Request) {
     if (typeof emailRaw !== "string" || !emailRaw) {
       return jsonNoStore({ error: "Missing email" }, { status: 400 });
     }
+
     if (typeof password !== "string" || !password) {
       return jsonNoStore({ error: "Missing password" }, { status: 400 });
     }
 
     const email = normalizeEmail(emailRaw);
     const ip = getClientIp(req) || "unknown";
+    const shouldBypassInternal = shouldBypassInternalChecks(email);
 
     // Rate limit early (prevents brute force signup spam)
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_up`, 60, 10);
@@ -116,13 +121,13 @@ export async function POST(req: Request) {
     if (password.length < 8) {
       return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
     }
+
     if (password.length > 200) {
       return jsonNoStore({ error: "Password is too long" }, { status: 400 });
     }
 
-    // CAPTCHA (bypass for internal emails only)
-    const shouldBypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
-    if (!shouldBypassCaptcha) {
+    // CAPTCHA (bypass for internal reviewer emails only)
+    if (!shouldBypassInternal) {
       if (typeof captchaToken !== "string" || !captchaToken) {
         return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
       }
@@ -145,21 +150,20 @@ export async function POST(req: Request) {
       console.error("SIGN UP: exist check error:", existErr);
       return jsonNoStore({ error: "Server error" }, { status: 500 });
     }
+
     if (existing) {
-      // Optional anti-enumeration choice:
-      // - If you want to avoid revealing existence, return {success:true} here.
       return jsonNoStore({ error: "Email already in use" }, { status: 409 });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Insert user and return created row in one trip
+    // Insert user
     const { data: user, error: insertErr } = await supabaseAdmin
       .from("users")
       .insert({
         email,
         password_hash: passwordHash,
-        email_verified_at: null,
+        email_verified_at: shouldBypassInternal ? new Date().toISOString() : null,
       })
       .select("id,email")
       .single();
@@ -171,85 +175,89 @@ export async function POST(req: Request) {
 
     const userId = String(user.id);
 
-    // Replace any previous unconsumed email_verify tokens (paranoia / idempotency)
-    try {
-      await supabaseAdmin
-        .from("auth_tokens")
-        .delete()
-        .eq("user_id", userId)
-        .eq("purpose", "email_verify")
-        .is("consumed_at", null);
-    } catch {}
-
-    const rawToken = generateToken(32);
-    const tokenHash = sha256Hex(rawToken);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
-
-    const { error: tokenErr } = await supabaseAdmin.from("auth_tokens").insert({
-      user_id: userId,
-      email,
-      token_hash: tokenHash,
-      purpose: "email_verify",
-      expires_at: expiresAtIso,
-      created_ip: getClientIp(req),
-      created_ua: getUserAgent(req),
-      data: {},
-    });
-
-    if (tokenErr) {
-      console.error("SIGN UP: token insert error:", tokenErr);
-
-      // Best-effort rollback (so you don't create a user who can't verify)
+    // Internal reviewer accounts skip email verification entirely
+    if (!shouldBypassInternal) {
       try {
-        await supabaseAdmin.from("users").delete().eq("id", userId);
-      } catch (rollbackErr) {
-        console.error("SIGN UP: rollback delete user failed:", rollbackErr);
+        await supabaseAdmin
+          .from("auth_tokens")
+          .delete()
+          .eq("user_id", userId)
+          .eq("purpose", "email_verify")
+          .is("consumed_at", null);
+      } catch {}
+
+      const rawToken = generateToken(32);
+      const tokenHash = sha256Hex(rawToken);
+      const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString();
+
+      const { error: tokenErr } = await supabaseAdmin.from("auth_tokens").insert({
+        user_id: userId,
+        email,
+        token_hash: tokenHash,
+        purpose: "email_verify",
+        expires_at: expiresAtIso,
+        created_ip: getClientIp(req),
+        created_ua: getUserAgent(req),
+        data: {},
+      });
+
+      if (tokenErr) {
+        console.error("SIGN UP: token insert error:", tokenErr);
+
+        try {
+          await supabaseAdmin.from("users").delete().eq("id", userId);
+        } catch (rollbackErr) {
+          console.error("SIGN UP: rollback delete user failed:", rollbackErr);
+        }
+
+        return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
       }
 
-      return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
+      const appUrl = process.env.APP_URL;
+      if (!appUrl) {
+        console.error("SIGN UP: Missing APP_URL");
+        return jsonNoStore({ error: "Server error" }, { status: 500 });
+      }
+
+      const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
+
+      try {
+        await sendEmail({
+          to: email,
+          subject: "Confirm your ToneMender email",
+          html: `
+            <div style="font-family:Arial,sans-serif;line-height:1.4">
+              <h2>Confirm your email</h2>
+              <p>Tap to confirm your email and activate your ToneMender account:</p>
+              <p>
+                <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
+                  Confirm email
+                </a>
+              </p>
+              <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
+              <p style="color:#666;font-size:12px">If you didn’t request this, you can ignore this email.</p>
+            </div>
+          `,
+        });
+      } catch (emailErr) {
+        console.error("SIGN UP: sendEmail failed:", emailErr);
+        await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {});
+
+        return jsonNoStore(
+          {
+            error:
+              "Account created, but we couldn't send the confirmation email. Please try again or use “Resend confirmation.”",
+          },
+          { status: 502 }
+        );
+      }
     }
 
-    const appUrl = process.env.APP_URL;
-    if (!appUrl) {
-      console.error("SIGN UP: Missing APP_URL");
-      return jsonNoStore({ error: "Server error" }, { status: 500 });
-    }
+    await audit("SIGN_UP_CREATED", userId, req, {
+      email,
+      bypassed_internal_checks: shouldBypassInternal,
+    });
 
-    // IMPORTANT: match your /confirm page’s routing
-    // Recommended: type=email-verify (less confusing than type=signup)
-    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
-
-    try {
-      await sendEmail({
-        to: email,
-        subject: "Confirm your ToneMender email",
-        html: `
-          <div style="font-family:Arial,sans-serif;line-height:1.4">
-            <h2>Confirm your email</h2>
-            <p>Tap to confirm your email and activate your ToneMender account:</p>
-            <p>
-              <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
-                Confirm email
-              </a>
-            </p>
-            <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
-            <p style="color:#666;font-size:12px">If you didn’t request this, you can ignore this email.</p>
-          </div>
-        `,
-      });
-    } catch (emailErr) {
-      console.error("SIGN UP: sendEmail failed:", emailErr);
-      await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {});
-      return jsonNoStore(
-        {
-          error:
-            "Account created, but we couldn't send the confirmation email. Please try again or use “Resend confirmation.”",
-        },
-        { status: 502 }
-      );
-    }
-
-    await audit("SIGN_UP_CREATED", userId, req, {});
     return jsonNoStore({ success: true });
   } catch (e: any) {
     console.error("SIGN UP ERROR:", e);
