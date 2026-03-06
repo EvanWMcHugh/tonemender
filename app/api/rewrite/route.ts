@@ -21,6 +21,10 @@ type RewriteRequestBody = {
   tone?: unknown;
 };
 
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
@@ -213,6 +217,34 @@ async function recordUsage(userId: string) {
   }
 }
 
+async function getLifetimeFreeUsedByEmail(email: string) {
+  const normalizedEmail = normalizeEmail(email);
+
+  const { data, error } = await supabaseAdmin
+    .from("free_limit_history")
+    .select("free_rewrite_count")
+    .eq("normalized_email", normalizedEmail)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error("Lifetime usage check failed");
+  }
+
+  return data?.free_rewrite_count ?? 0;
+}
+
+async function incrementLifetimeFreeUsageByEmail(email: string) {
+  const normalizedEmail = normalizeEmail(email);
+
+  const { error } = await supabaseAdmin.rpc("increment_free_limit_history", {
+    p_normalized_email: normalizedEmail,
+  });
+
+  if (error) {
+    throw new Error("Failed to record lifetime free usage");
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
@@ -252,16 +284,31 @@ export async function POST(req: Request) {
       );
     }
 
+    const normalizedEmail = normalizeEmail(authUser.email ?? "");
+
+    if (!normalizedEmail) {
+      return jsonNoStore({ error: "Missing user email" }, { status: 400 });
+    }
+
     if (!authUser.isPro) {
       const usedToday = await getUsedToday(authUser.id);
+      const lifetimeUsed = await getLifetimeFreeUsedByEmail(normalizedEmail);
 
-      if (usedToday >= DAILY_FREE_LIMIT) {
+      if (usedToday >= DAILY_FREE_LIMIT || lifetimeUsed >= DAILY_FREE_LIMIT) {
         await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
           usedToday,
+          lifetimeUsed,
           limit: DAILY_FREE_LIMIT,
+          normalized_email: normalizedEmail,
         });
 
-        return jsonNoStore({ error: "Daily limit reached" }, { status: 429 });
+        return jsonNoStore(
+          {
+            error: "Free rewrite limit reached. Upgrade to Pro for unlimited rewrites.",
+            code: "FREE_LIMIT_REACHED",
+          },
+          { status: 429 }
+        );
       }
     }
 
@@ -328,8 +375,13 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
 
     await recordUsage(authUser.id);
 
+    if (!authUser.isPro) {
+      await incrementLifetimeFreeUsageByEmail(normalizedEmail);
+    }
+
     await audit("REWRITE_OK", authUser.id, req, {
       is_pro: authUser.isPro,
+      normalized_email: normalizedEmail,
     });
 
     const usedTodayAfter = authUser.isPro ? null : await getUsedToday(authUser.id);
@@ -350,11 +402,12 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const message =
       err instanceof Error ? err.message : "Server error while rewriting message";
 
-    if (message === "Usage check failed") {
-      return jsonNoStore({ error: message }, { status: 500 });
-    }
-
-    if (message === "Failed to record rewrite usage") {
+    if (
+      message === "Usage check failed" ||
+      message === "Lifetime usage check failed" ||
+      message === "Failed to record rewrite usage" ||
+      message === "Failed to record lifetime free usage"
+    ) {
       return jsonNoStore({ error: message }, { status: 500 });
     }
 
