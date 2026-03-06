@@ -162,8 +162,21 @@ export async function GET(req: Request) {
             },
           }
     );
-  } catch (err) {
-    console.error("ME ROUTE ERROR:", err);
-    return jsonNoStore({ user: null });
-  }
+  } catch (err: any) {
+  console.error("ME ROUTE ERROR:", err);
+
+  const url = new URL(req.url);
+  const debug = url.searchParams.get("debug") === "1";
+
+  return jsonNoStore(
+    debug
+      ? {
+          user: null,
+          reason: "catch_block",
+          error: err?.message ?? String(err),
+          stack: err?.stack ?? null,
+        }
+      : { user: null }
+  );
+}
 }
