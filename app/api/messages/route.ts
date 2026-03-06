@@ -110,8 +110,6 @@ export async function POST(req: Request) {
       .insert({
         user_id: authUser.id,
         message: original,
-        original_message: original,
-        original_message_snapshot: original,
         tone,
         soft_rewrite: softRewrite,
         calm_rewrite: calmRewrite,
@@ -122,7 +120,16 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error("SAVE MESSAGE ERROR:", error);
-      return jsonNoStore({ error: "Failed to save draft" }, { status: 500 });
+      return jsonNoStore(
+        {
+          error: "Failed to save draft",
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+        },
+        { status: 500 }
+      );
     }
 
     return jsonNoStore({
