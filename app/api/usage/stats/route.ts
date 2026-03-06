@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
 
@@ -7,7 +8,7 @@ export const runtime = "nodejs";
 const SESSION_COOKIE = "tm_session";
 const TIMEZONE = "America/Los_Angeles";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -20,28 +21,27 @@ function readCookie(req: Request, name: string) {
 }
 
 async function getUserIdFromSession(req: Request) {
-  const raw = readCookie(req, SESSION_COOKIE);
-  if (!raw) return null;
+  const rawSessionToken = readCookie(req, SESSION_COOKIE);
+  if (!rawSessionToken) return null;
 
-  const hash = sha256Hex(raw);
+  const sessionTokenHash = sha256Hex(rawSessionToken);
   const nowIso = new Date().toISOString();
 
-  const { data: session, error } = await supabaseAdmin
+  const { data: session, error: sessionError } = await supabaseAdmin
     .from("sessions")
     .select("user_id,expires_at,revoked_at")
-    .eq("session_token_hash", hash)
+    .eq("session_token_hash", sessionTokenHash)
     .maybeSingle();
 
-  if (error || !session?.user_id) return null;
+  if (sessionError || !session?.user_id) return null;
   if (session.revoked_at) return null;
-  if (!session.expires_at || session.expires_at <= nowIso) return null;
+  if (!session.expires_at || new Date(session.expires_at).getTime() <= Date.now()) return null;
 
-  // Best-effort last_seen_at
   try {
     await supabaseAdmin
       .from("sessions")
       .update({ last_seen_at: nowIso })
-      .eq("session_token_hash", hash)
+      .eq("session_token_hash", sessionTokenHash)
       .is("revoked_at", null);
   } catch {}
 
@@ -58,34 +58,37 @@ function formatLA_YYYY_MM_DD(date = new Date()) {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(date); // YYYY-MM-DD
+  }).format(date);
 }
 
 function getTzOffsetMinutes(timeZone: string, date: Date) {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "shortOffset" }).formatToParts(date);
-  const tz = parts.find((p) => p.type === "timeZoneName")?.value || "GMT";
-  const m = tz.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
-  if (!m) return 0;
-  const sign = m[1] === "-" ? -1 : 1;
-  const hh = parseInt(m[2], 10);
-  const mm = m[3] ? parseInt(m[3], 10) : 0;
-  return sign * (hh * 60 + mm);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(date);
+
+  const tzName = parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
+  const match = tzName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+
+  if (!match) return 0;
+
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = parseInt(match[2], 10);
+  const minutes = match[3] ? parseInt(match[3], 10) : 0;
+
+  return sign * (hours * 60 + minutes);
 }
 
-/**
- * Given an LA day string YYYY-MM-DD, compute UTC bounds [start,end).
- * DST-safe by computing offset at start and end instants.
- */
 function laDayBoundsUtcIso(dayYYYYMMDD: string) {
-  const [y, m, d] = dayYYYYMMDD.split("-").map((x) => parseInt(x, 10));
+  const [year, month, day] = dayYYYYMMDD.split("-").map((value) => parseInt(value, 10));
 
-  const startLocalAsUtc = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
-  const startOffsetMin = getTzOffsetMinutes(TIMEZONE, startLocalAsUtc);
-  const startUtc = new Date(startLocalAsUtc.getTime() - startOffsetMin * 60_000);
+  const startLocalAsUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  const startOffsetMinutes = getTzOffsetMinutes(TIMEZONE, startLocalAsUtc);
+  const startUtc = new Date(startLocalAsUtc.getTime() - startOffsetMinutes * 60_000);
 
-  const endLocalAsUtc = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0));
-  const endOffsetMin = getTzOffsetMinutes(TIMEZONE, endLocalAsUtc);
-  const endUtc = new Date(endLocalAsUtc.getTime() - endOffsetMin * 60_000);
+  const endLocalAsUtc = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
+  const endOffsetMinutes = getTzOffsetMinutes(TIMEZONE, endLocalAsUtc);
+  const endUtc = new Date(endLocalAsUtc.getTime() - endOffsetMinutes * 60_000);
 
   return [startUtc.toISOString(), endUtc.toISOString()] as const;
 }
@@ -93,41 +96,50 @@ function laDayBoundsUtcIso(dayYYYYMMDD: string) {
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-
-    // If day not provided, use "today in LA" computed server-side (correct).
     const dayParam = url.searchParams.get("day");
     const day = dayParam && isValidDay(dayParam) ? dayParam : formatLA_YYYY_MM_DD(new Date());
 
-    // Keep UI simple: always return stats payload
     const userId = await getUserIdFromSession(req);
-    if (!userId) return jsonNoStore({ stats: { today: 0, total: 0 }, day }, { status: 200 });
+    if (!userId) {
+      return jsonNoStore({ stats: { today: 0, total: 0 }, day });
+    }
 
-    // Total rewrites
-    const { count: total, error: totalErr } = await supabaseAdmin
+    const { count: total, error: totalError } = await supabaseAdmin
       .from("rewrite_usage")
-      .select("id", { count: "exact", head: true })
+      .select("*", { count: "exact", head: true })
       .eq("user_id", userId);
 
-    if (totalErr) return jsonNoStore({ stats: { today: 0, total: 0 }, day }, { status: 200 });
+    if (totalError) {
+      return jsonNoStore({ stats: { today: 0, total: 0 }, day });
+    }
 
-    // Today (or requested day) in LA bounds
     const [startIso, endIso] = laDayBoundsUtcIso(day);
 
-    const { count: today, error: todayErr } = await supabaseAdmin
+    const { count: today, error: todayError } = await supabaseAdmin
       .from("rewrite_usage")
-      .select("id", { count: "exact", head: true })
+      .select("*", { count: "exact", head: true })
       .eq("user_id", userId)
       .gte("created_at", startIso)
       .lt("created_at", endIso);
 
-    if (todayErr) return jsonNoStore({ stats: { today: 0, total: total ?? 0 }, day }, { status: 200 });
+    if (todayError) {
+      return jsonNoStore({
+        stats: {
+          today: 0,
+          total: total ?? 0,
+        },
+        day,
+      });
+    }
 
     return jsonNoStore({
-      stats: { today: today ?? 0, total: total ?? 0 },
+      stats: {
+        today: today ?? 0,
+        total: total ?? 0,
+      },
       day,
     });
-  } catch (err) {
-    console.error("USAGE STATS ERROR:", err);
-    return jsonNoStore({ stats: { today: 0, total: 0 } }, { status: 200 });
+  } catch {
+    return jsonNoStore({ stats: { today: 0, total: 0 } });
   }
 }
