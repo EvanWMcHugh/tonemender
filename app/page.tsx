@@ -29,7 +29,6 @@ export default function AppHomePage() {
   const [isPro, setIsPro] = useState(false);
 
   const mountedRef = useRef(true);
-
   const brandInitial = useMemo(() => "T", []);
 
   useEffect(() => {
@@ -39,20 +38,20 @@ export default function AppHomePage() {
     async function load() {
       try {
         const fetchMe = async () => {
-          const resp = await fetch("/api/me", {
+          const response = await fetch("/api/me", {
             method: "GET",
             cache: "no-store",
             signal: controller.signal,
           });
-          const json = (await resp.json().catch(() => ({ user: null }))) as MeResponse;
+
+          const json = (await response.json().catch(() => ({ user: null }))) as MeResponse;
           return json?.user ?? null;
         };
 
         let user = await fetchMe();
 
-        // Retry once (helps right after login/logout navigation)
         if (!user?.id) {
-          await new Promise((r) => setTimeout(r, 200));
+          await new Promise((resolve) => setTimeout(resolve, 200));
           user = await fetchMe();
         }
 
@@ -64,14 +63,15 @@ export default function AppHomePage() {
         if (!mountedRef.current) return;
 
         const email = normalizeEmail(user.email);
-        // Reviewer emails always count as Pro
         const pro = Boolean(user.isPro) || isProReviewer(email);
 
         setIsPro(pro);
         setAuthReady(true);
-      } catch (err: any) {
-        if (err?.name === "AbortError") return;
-        console.error("HOME LOAD ERROR:", err);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
+
         router.replace("/landing");
       }
     }
@@ -84,57 +84,51 @@ export default function AppHomePage() {
     };
   }, [router]);
 
-  // Prevent rendering until auth check completes
   if (!authReady) return null;
 
   return (
     <main className="w-full max-w-xl">
-      <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
-        {/* HEADER */}
-        <div className="flex items-center justify-between mb-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-lg sm:p-8">
+        <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div
-              className="h-9 w-9 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-lg font-bold"
+              className="flex h-9 w-9 items-center justify-center rounded-2xl bg-blue-600 text-lg font-bold text-white"
               aria-hidden="true"
             >
               {brandInitial}
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">ToneMender</h1>
-              <p className="text-xs text-slate-500">
-                Say it better. Save it together.
-              </p>
+              <p className="text-xs text-slate-500">Say it better. Save it together.</p>
             </div>
           </div>
 
           <LogoutButton />
         </div>
 
-        {/* DESCRIPTION */}
-        <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
+        <p className="text-sm leading-relaxed text-slate-700 sm:text-base">
           Welcome back! Rewrite your messages into calm, clear, relationship-safe
           communication.
         </p>
 
-        {/* NAVIGATION */}
-        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Link
             href="/rewrite"
-            className="rounded-xl bg-blue-600 text-white px-4 py-3 text-sm font-medium text-center shadow-sm hover:bg-blue-500 transition"
+            className="rounded-xl bg-blue-600 px-4 py-3 text-center text-sm font-medium text-white shadow-sm transition hover:bg-blue-500"
           >
             Rewrite Message
           </Link>
 
           <Link
             href="/drafts"
-            className="rounded-xl bg-slate-800 text-white px-4 py-3 text-sm font-medium text-center hover:bg-slate-700 transition"
+            className="rounded-xl bg-slate-800 px-4 py-3 text-center text-sm font-medium text-white transition hover:bg-slate-700"
           >
             Drafts
           </Link>
 
           <Link
             href="/account"
-            className="rounded-xl bg-indigo-600 text-white px-4 py-3 text-sm font-medium text-center hover:bg-indigo-500 transition"
+            className="rounded-xl bg-indigo-600 px-4 py-3 text-center text-sm font-medium text-white transition hover:bg-indigo-500"
           >
             Account
           </Link>
@@ -144,11 +138,11 @@ export default function AppHomePage() {
           <div className="mt-6">
             <Link
               href="/upgrade"
-              className="inline-flex items-center justify-center w-full rounded-xl bg-emerald-500 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-emerald-400 transition"
+              className="inline-flex w-full items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-400"
             >
               Upgrade to Pro
             </Link>
-            <p className="mt-2 text-xs text-slate-500 text-center">
+            <p className="mt-2 text-center text-xs text-slate-500">
               Unlock unlimited rewrites, tone control, and more.
             </p>
           </div>

@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
+
+import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
-import crypto from "crypto";
 
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -34,16 +35,18 @@ function cryptoRandomHex(bytes: number) {
   return crypto.randomBytes(bytes).toString("hex");
 }
 
-// Share cookie across tonemender.com + www.tonemender.com
 function getCookieDomain(req: Request) {
   const host = req.headers.get("host") || "";
-  if (host === "tonemender.com" || host === "www.tonemender.com" || host.endsWith(".tonemender.com")) {
+  if (
+    host === "tonemender.com" ||
+    host === "www.tonemender.com" ||
+    host.endsWith(".tonemender.com")
+  ) {
     return ".tonemender.com";
   }
   return undefined;
 }
 
-// Simple DB rate limiter (fail-open)
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -58,29 +61,36 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
     .maybeSingle();
 
   if (!row) {
-    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
       key,
       window_start: windowStartIso,
       window_seconds: windowSeconds,
       count: 1,
     });
-    if (insErr) return true;
+
+    if (insertError) return true;
     return true;
   }
 
-  const next = (row.count ?? 0) + 1;
-  const { error: updErr } = await supabaseAdmin
+  const nextCount = (row.count ?? 0) + 1;
+
+  const { error: updateError } = await supabaseAdmin
     .from("rate_limits")
-    .update({ count: next })
+    .update({ count: nextCount })
     .eq("key", key)
     .eq("window_start", windowStartIso)
     .eq("window_seconds", windowSeconds);
 
-  if (updErr) return true;
-  return next <= limit;
+  if (updateError) return true;
+  return nextCount <= limit;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, unknown> = {}
+) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -98,11 +108,12 @@ export async function POST(req: Request) {
     const emailRaw = body?.email;
     const password = body?.password;
     const captchaToken = body?.captchaToken;
-    const deviceName = body?.deviceName; // optional
+    const deviceName = body?.deviceName;
 
     if (!emailRaw || typeof emailRaw !== "string") {
       return jsonNoStore({ error: "Missing email" }, { status: 400 });
     }
+
     if (!password || typeof password !== "string") {
       return jsonNoStore({ error: "Missing password" }, { status: 400 });
     }
@@ -110,22 +121,23 @@ export async function POST(req: Request) {
     const email = normalizeEmail(emailRaw);
     const ip = getClientIp(req) || "unknown";
 
-    // Rate limit BEFORE doing any expensive work (but don’t reveal existence)
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_in`, 60, 20);
     const emailAllowed = await rateLimitHit(`email:${email}:sign_in`, 300, 10);
+
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_IN_RATE_LIMITED", null, req, { email });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
-    // Turnstile (allow bypass emails if you want parity with other flows)
-    const bypass = CAPTCHA_BYPASS_EMAILS.has(email);
-    if (!bypass) {
+    const bypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
+
+    if (!bypassCaptcha) {
       if (!captchaToken || typeof captchaToken !== "string") {
         return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
       }
-      const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
-      if (!okCaptcha) {
+
+      const captchaOk = await verifyTurnstile(captchaToken, getClientIp(req));
+      if (!captchaOk) {
         await audit("SIGN_IN_CAPTCHA_FAILED", null, req, { email });
         return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
       }
@@ -137,39 +149,41 @@ export async function POST(req: Request) {
       .eq("email", email)
       .maybeSingle();
 
-    if (error) return jsonNoStore({ error: "Server error" }, { status: 500 });
+    if (error) {
+      return jsonNoStore({ error: "Server error" }, { status: 500 });
+    }
+
     if (!user) {
       await audit("SIGN_IN_BAD_CREDENTIALS", null, req, { email });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    // Block disabled/deleted accounts
     if (user.disabled_at || user.deleted_at) {
-      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, {});
+      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req);
       return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
     }
 
     if (!user.email_verified_at) {
-      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {});
+      await audit("SIGN_IN_UNVERIFIED", String(user.id), req);
       return jsonNoStore({ error: "Email not confirmed" }, { status: 403 });
     }
 
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {});
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
+    if (!passwordOk) {
+      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req);
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    const rawSession = cryptoRandomHex(32);
-    const sessionHash = sha256Hex(rawSession);
+    const rawSessionToken = cryptoRandomHex(32);
+    const sessionTokenHash = sha256Hex(rawSessionToken);
 
-    const maxAgeSeconds = 60 * 60 * 24 * 30; // 30 days
+    const maxAgeSeconds = 60 * 60 * 24 * 30;
     const nowIso = new Date().toISOString();
     const expiresAt = new Date(Date.now() + maxAgeSeconds * 1000).toISOString();
 
-    const { error: sErr } = await supabaseAdmin.from("sessions").insert({
+    const { error: sessionError } = await supabaseAdmin.from("sessions").insert({
       user_id: user.id,
-      session_token_hash: sessionHash,
+      session_token_hash: sessionTokenHash,
       expires_at: expiresAt,
       last_seen_at: nowIso,
       ip: getClientIp(req),
@@ -177,23 +191,29 @@ export async function POST(req: Request) {
       device_name: typeof deviceName === "string" ? deviceName.slice(0, 200) : null,
     });
 
-    if (sErr) return jsonNoStore({ error: "Failed to create session" }, { status: 500 });
+    if (sessionError) {
+      return jsonNoStore({ error: "Failed to create session" }, { status: 500 });
+    }
 
-    // Update last_login_at (best effort)
     try {
       await supabaseAdmin.from("users").update({ last_login_at: nowIso }).eq("id", user.id);
     } catch {}
 
-    await audit("SIGN_IN_OK", String(user.id), req, {});
+    await audit("SIGN_IN_OK", String(user.id), req);
 
     const res = jsonNoStore({
       ok: true,
-      user: { id: user.id, email: user.email, isPro: user.is_pro, planType: user.plan_type },
+      user: {
+        id: user.id,
+        email: user.email,
+        isPro: user.is_pro,
+        planType: user.plan_type,
+      },
     });
 
     const cookieDomain = getCookieDomain(req);
 
-    res.cookies.set(SESSION_COOKIE, rawSession, {
+    res.cookies.set(SESSION_COOKIE, rawSessionToken, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
@@ -203,8 +223,7 @@ export async function POST(req: Request) {
     });
 
     return res;
-  } catch (e: any) {
-    console.error("SIGN IN ERROR:", e);
+  } catch {
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

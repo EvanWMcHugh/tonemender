@@ -7,7 +7,6 @@ import dynamic from "next/dynamic";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
-// ✅ Only these are excluded from captcha
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 
 function normalizeEmail(email: string) {
@@ -34,14 +33,13 @@ export default function LoginPage() {
   const [resetSent, setResetSent] = useState(false);
   const [resendSent, setResendSent] = useState(false);
 
-  // store last captcha token; treat as single-use
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
-  const isBypassEmail = useMemo(
-    () => (normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false),
-    [normalizedEmail]
-  );
+
+  const isBypassEmail = useMemo(() => {
+    return normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false;
+  }, [normalizedEmail]);
 
   const canAttemptLogin = useMemo(() => {
     if (loading) return false;
@@ -50,33 +48,30 @@ export default function LoginPage() {
     return true;
   }, [loading, normalizedEmail, password]);
 
-  // If already logged in, go home
   useEffect(() => {
     const controller = new AbortController();
 
     async function checkSession() {
       try {
-        const resp = await fetch("/api/me", {
+        const response = await fetch("/api/me", {
           method: "GET",
           cache: "no-store",
           signal: controller.signal,
         });
-        const json = await resp.json().catch(() => ({}));
+
+        const json = await response.json().catch(() => ({}));
 
         if (json?.user?.id) {
-          // hard redirect avoids any SPA auth race
           window.location.href = "/";
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
 
     checkSession();
+
     return () => controller.abort();
   }, []);
 
-  // Reset captcha + messaging when email changes (prevents token reuse across accounts)
   useEffect(() => {
     setShowCaptcha(false);
     setPendingAction(null);
@@ -111,49 +106,62 @@ export default function LoginPage() {
       setError("Enter your email.");
       return;
     }
+
     if (!password) {
       setError("Enter your password.");
       return;
     }
+
     if (loading) return;
 
-    // Show captcha only after click
     if (!isBypassEmail && !token) {
       requireCaptcha("login");
       return;
     }
 
-    // snapshot token and clear immediately to prevent reuse/double-submit
     const tokenToUse = token;
-    if (!isBypassEmail) setCaptchaToken(null);
+    if (!isBypassEmail) {
+      setCaptchaToken(null);
+    }
 
     setLoading(true);
-    try {
-      const payload: any = { email: normalizedEmail, password };
-      if (!isBypassEmail) payload.captchaToken = tokenToUse;
 
-      const resp = await fetch("/api/auth/sign-in", {
+    try {
+      const payload: {
+        email: string;
+        password: string;
+        captchaToken?: string | null;
+      } = {
+        email: normalizedEmail,
+        password,
+      };
+
+      if (!isBypassEmail) {
+        payload.captchaToken = tokenToUse;
+      }
+
+      const response = await fetch("/api/auth/sign-in", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const json = await resp.json().catch(() => ({}));
+      const json = await response.json().catch(() => ({}));
 
-      if (!resp.ok) {
-        const msg = json?.error || "Login failed";
-        if (String(msg).toLowerCase().includes("not confirmed")) {
+      if (!response.ok) {
+        const message = json?.error || "Login failed";
+
+        if (String(message).toLowerCase().includes("not confirmed")) {
           setNeedsEmailConfirm(true);
         }
-        throw new Error(msg);
+
+        throw new Error(message);
       }
 
       cleanupCaptchaState();
-
-      // 🔥 Hard redirect ensures tm_session cookie is present before /api/me runs on home
       window.location.href = "/";
-    } catch (err: any) {
-      setError(err?.message || "Login failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Login failed");
       cleanupCaptchaState();
     } finally {
       setLoading(false);
@@ -170,6 +178,7 @@ export default function LoginPage() {
       setError("Enter your email first.");
       return;
     }
+
     if (loading) return;
 
     if (!isBypassEmail && !token) {
@@ -178,28 +187,41 @@ export default function LoginPage() {
     }
 
     const tokenToUse = token;
-    if (!isBypassEmail) setCaptchaToken(null);
+    if (!isBypassEmail) {
+      setCaptchaToken(null);
+    }
 
     setLoading(true);
-    try {
-      const payload: any = { email: normalizedEmail };
-      if (!isBypassEmail) payload.turnstileToken = tokenToUse;
 
-      const resp = await fetch("/api/auth/request-password-reset", {
+    try {
+      const payload: {
+        email: string;
+        turnstileToken?: string | null;
+      } = {
+        email: normalizedEmail,
+      };
+
+      if (!isBypassEmail) {
+        payload.turnstileToken = tokenToUse;
+      }
+
+      const response = await fetch("/api/auth/request-password-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const json = await resp.json().catch(() => ({}));
+      const json = await response.json().catch(() => ({}));
 
-      if (!resp.ok) throw new Error(json?.error || "Password reset failed");
+      if (!response.ok) {
+        throw new Error(json?.error || "Password reset failed");
+      }
 
       setResetSent(true);
       cleanupCaptchaState();
       router.push("/check-email?type=password-reset");
-    } catch (err: any) {
-      setError(err?.message || "Password reset failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Password reset failed");
       cleanupCaptchaState();
     } finally {
       setLoading(false);
@@ -215,6 +237,7 @@ export default function LoginPage() {
       setError("Enter your email first.");
       return;
     }
+
     if (loading) return;
 
     if (!isBypassEmail && !token) {
@@ -223,30 +246,41 @@ export default function LoginPage() {
     }
 
     const tokenToUse = token;
-    if (!isBypassEmail) setCaptchaToken(null);
+    if (!isBypassEmail) {
+      setCaptchaToken(null);
+    }
 
     setLoading(true);
-    try {
-      const payload: any = { email: normalizedEmail };
-      if (!isBypassEmail) payload.turnstileToken = tokenToUse;
 
-      const resp = await fetch("/api/auth/resend-signup-confirmation", {
+    try {
+      const payload: {
+        email: string;
+        turnstileToken?: string | null;
+      } = {
+        email: normalizedEmail,
+      };
+
+      if (!isBypassEmail) {
+        payload.turnstileToken = tokenToUse;
+      }
+
+      const response = await fetch("/api/auth/resend-signup-confirmation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const json = await resp.json().catch(() => ({}));
+      const json = await response.json().catch(() => ({}));
 
-      if (!resp.ok) {
+      if (!response.ok) {
         throw new Error(json?.error || "Could not resend confirmation email");
       }
 
       setResendSent(true);
       cleanupCaptchaState();
       router.push("/check-email?type=signup");
-    } catch (err: any) {
-      setError(err?.message || "Could not resend confirmation email");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not resend confirmation email");
       cleanupCaptchaState();
     } finally {
       setLoading(false);
@@ -255,10 +289,12 @@ export default function LoginPage() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
+
     if (!canAttemptLogin) {
       setError(!normalizedEmail ? "Enter your email." : "Enter your password.");
       return;
     }
+
     await doLogin(isBypassEmail ? null : captchaToken);
   }
 
@@ -271,15 +307,23 @@ export default function LoginPage() {
   }
 
   async function handleCaptchaSuccess(token: string) {
-    if (!pendingAction) return;
-    if (loading) return;
+    if (!pendingAction || loading) return;
 
-    // store token and immediately execute the pending action (single-use)
     setCaptchaToken(token);
 
-    if (pendingAction === "login") await doLogin(token);
-    else if (pendingAction === "reset") await doReset(token);
-    else if (pendingAction === "resendConfirm") await doResendConfirmation(token);
+    if (pendingAction === "login") {
+      await doLogin(token);
+      return;
+    }
+
+    if (pendingAction === "reset") {
+      await doReset(token);
+      return;
+    }
+
+    if (pendingAction === "resendConfirm") {
+      await doResendConfirmation(token);
+    }
   }
 
   return (
@@ -287,20 +331,20 @@ export default function LoginPage() {
       <div className="w-[360px]">
         <Link
           href="/landing"
-          className="inline-flex items-center gap-1 mb-4 text-sm text-slate-600 hover:underline"
+          className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:underline"
         >
           <span aria-hidden>←</span>
           <span>Back to home</span>
         </Link>
 
-        <h1 className="text-2xl font-bold mb-2 text-center">Sign In</h1>
-        <p className="text-sm text-slate-500 mb-6 text-center">
+        <h1 className="mb-2 text-center text-2xl font-bold">Sign In</h1>
+        <p className="mb-6 text-center text-sm text-slate-500">
           Welcome back. Sign in to continue.
         </p>
 
         {error && (
           <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 p-3">
-            <p className="text-red-700 text-sm">{error}</p>
+            <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
 
@@ -313,7 +357,7 @@ export default function LoginPage() {
               id={emailId}
               type="email"
               placeholder="Email"
-              className="border p-3 rounded-2xl w-full"
+              className="w-full rounded-2xl border p-3"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -331,7 +375,7 @@ export default function LoginPage() {
               id={passwordId}
               type="password"
               placeholder="Password"
-              className="border p-3 rounded-2xl w-full"
+              className="w-full rounded-2xl border p-3"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -355,7 +399,7 @@ export default function LoginPage() {
                   setError("Captcha error. Please try again.");
                 }}
               />
-              <p className="text-[11px] text-slate-500 mt-2">
+              <p className="mt-2 text-[11px] text-slate-500">
                 Complete the captcha to continue.
               </p>
             </div>
@@ -364,8 +408,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white px-4 py-3 rounded-2xl font-semibold
-                       hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            className="rounded-2xl bg-blue-600 px-4 py-3 font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? "Signing in..." : "Sign In"}
           </button>
@@ -375,13 +418,13 @@ export default function LoginPage() {
           type="button"
           onClick={handleResetPassword}
           disabled={loading || !normalizedEmail}
-          className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60 disabled:cursor-not-allowed"
+          className="mt-3 w-full text-center text-sm text-blue-600 underline disabled:cursor-not-allowed disabled:opacity-60"
         >
           Forgot your password?
         </button>
 
         {resetSent && (
-          <p className="mt-2 text-sm text-green-600 text-center">
+          <p className="mt-2 text-center text-sm text-green-600">
             ✅ Password reset email sent
           </p>
         )}
@@ -391,14 +434,14 @@ export default function LoginPage() {
             type="button"
             onClick={handleResend}
             disabled={loading || !normalizedEmail}
-            className="mt-3 text-sm text-blue-600 underline text-center w-full disabled:opacity-60 disabled:cursor-not-allowed"
+            className="mt-3 w-full text-center text-sm text-blue-600 underline disabled:cursor-not-allowed disabled:opacity-60"
           >
             Resend confirmation email
           </button>
         )}
 
         {resendSent && (
-          <p className="mt-2 text-sm text-green-600 text-center">
+          <p className="mt-2 text-center text-sm text-green-600">
             ✅ Confirmation email sent
           </p>
         )}

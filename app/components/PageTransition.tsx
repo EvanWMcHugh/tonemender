@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 const EDGE_START_PX = 30;
 const SWIPE_TRIGGER_PX = 90;
-const MAX_VERTICAL_DRIFT_PX = 60; // prevent back gesture during scroll
+const MAX_VERTICAL_DRIFT_PX = 60;
 
 export default function PageTransition({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -41,37 +41,35 @@ export default function PageTransition({ children }: { children: ReactNode }) {
   }
 
   function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
-    const t = e.touches?.[0];
-    if (!t) return;
+    const touch = e.touches?.[0];
+    if (!touch) return;
 
     triggered.current = false;
 
-    // Only begin swipe-back tracking from left edge
-    if (t.clientX <= EDGE_START_PX) {
-      startX.current = t.clientX;
-      startY.current = t.clientY;
+    if (touch.clientX <= EDGE_START_PX) {
+      startX.current = touch.clientX;
+      startY.current = touch.clientY;
       tracking.current = true;
-    } else {
-      tracking.current = false;
+      return;
     }
+
+    tracking.current = false;
   }
 
   function handleTouchMove(e: React.TouchEvent<HTMLDivElement>) {
     if (!tracking.current || triggered.current) return;
 
-    const t = e.touches?.[0];
-    if (!t) return;
+    const touch = e.touches?.[0];
+    if (!touch) return;
 
-    const dx = t.clientX - startX.current;
-    const dy = t.clientY - startY.current;
+    const dx = touch.clientX - startX.current;
+    const dy = touch.clientY - startY.current;
 
-    // If the user is mainly scrolling vertically, cancel swipe-back tracking
     if (Math.abs(dy) > MAX_VERTICAL_DRIFT_PX && Math.abs(dy) > Math.abs(dx)) {
       tracking.current = false;
       return;
     }
 
-    // Trigger only for a strong right swipe
     if (dx >= SWIPE_TRIGGER_PX && Math.abs(dx) > Math.abs(dy)) {
       triggered.current = true;
       tracking.current = false;
@@ -80,7 +78,9 @@ export default function PageTransition({ children }: { children: ReactNode }) {
       try {
         router.back();
       } catch {
-        if (typeof window !== "undefined") window.history.back();
+        if (typeof window !== "undefined") {
+          window.history.back();
+        }
       }
     }
   }
@@ -101,7 +101,7 @@ export default function PageTransition({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className="min-h-screen px-4 py-6 bg-slate-100 overflow-hidden"
+      className="min-h-screen overflow-hidden bg-slate-100 px-4 py-6"
       style={{ touchAction: "pan-y" }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
@@ -113,7 +113,7 @@ export default function PageTransition({ children }: { children: ReactNode }) {
         initial={initialAnimation}
         animate={animateState}
         transition={transition}
-        className="max-w-xl mx-auto"
+        className="mx-auto max-w-xl"
       >
         {children}
       </motion.div>
