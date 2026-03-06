@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useMemo, useRef } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -13,10 +13,16 @@ export default function PageTransition({ children }: { children: ReactNode }) {
   const router = useRouter();
   const reduceMotion = useReducedMotion();
 
+  const [hasHydrated, setHasHydrated] = useState(false);
+
   const startX = useRef(0);
   const startY = useRef(0);
   const tracking = useRef(false);
   const triggered = useRef(false);
+
+  useEffect(() => {
+    setHasHydrated(true);
+  }, []);
 
   const transition = useMemo(
     () => ({
@@ -71,7 +77,6 @@ export default function PageTransition({ children }: { children: ReactNode }) {
       tracking.current = false;
       vibrate(15);
 
-      // Prefer Next router, fallback to history
       try {
         router.back();
       } catch {
@@ -85,10 +90,19 @@ export default function PageTransition({ children }: { children: ReactNode }) {
     triggered.current = false;
   }
 
+  const initialAnimation =
+    hasHydrated && !reduceMotion
+      ? { opacity: 0, y: 20, scale: 0.98, filter: "blur(5px)" }
+      : false;
+
+  const animateState = reduceMotion
+    ? { opacity: 1 }
+    : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" };
+
   return (
     <div
       className="min-h-screen px-4 py-6 bg-slate-100 overflow-hidden"
-      style={{ touchAction: "pan-y" }} // keep scroll smooth; we handle horizontal gesture
+      style={{ touchAction: "pan-y" }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
@@ -96,8 +110,8 @@ export default function PageTransition({ children }: { children: ReactNode }) {
     >
       <motion.div
         key={pathname}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 20, scale: 0.98, filter: "blur(5px)" }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        initial={initialAnimation}
+        animate={animateState}
         transition={transition}
         className="max-w-xl mx-auto"
       >
