@@ -59,3 +59,86 @@ export async function GET(req: Request) {
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }
+
+export async function POST(req: Request) {
+  try {
+    const authUser = await getAuthUserFromRequest(req);
+
+    if (!authUser?.id) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json().catch(() => ({} as any));
+
+    const original =
+      typeof body?.original === "string"
+        ? body.original.trim()
+        : typeof body?.message === "string"
+        ? body.message.trim()
+        : "";
+
+    const tone =
+      typeof body?.tone === "string" ? body.tone.trim() : null;
+
+    const softRewrite =
+      typeof body?.soft_rewrite === "string"
+        ? body.soft_rewrite
+        : typeof body?.softRewrite === "string"
+        ? body.softRewrite
+        : null;
+
+    const calmRewrite =
+      typeof body?.calm_rewrite === "string"
+        ? body.calm_rewrite
+        : typeof body?.calmRewrite === "string"
+        ? body.calmRewrite
+        : null;
+
+    const clearRewrite =
+      typeof body?.clear_rewrite === "string"
+        ? body.clear_rewrite
+        : typeof body?.clearRewrite === "string"
+        ? body.clearRewrite
+        : null;
+
+    if (!original) {
+      return jsonNoStore({ error: "Missing original message" }, { status: 400 });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("messages")
+      .insert({
+        user_id: authUser.id,
+        message: original,
+        original_message: original,
+        original_message_snapshot: original,
+        tone,
+        soft_rewrite: softRewrite,
+        calm_rewrite: calmRewrite,
+        clear_rewrite: clearRewrite,
+      })
+      .select("id, created_at")
+      .single();
+
+    if (error) {
+      console.error("SAVE MESSAGE ERROR:", error);
+      return jsonNoStore({ error: "Failed to save draft" }, { status: 500 });
+    }
+
+    return jsonNoStore({
+      success: true,
+      draft: {
+        id: String(data.id),
+        created_at: data.created_at ?? "",
+        original,
+        tone,
+        soft_rewrite: softRewrite,
+        calm_rewrite: calmRewrite,
+        clear_rewrite: clearRewrite,
+      },
+    });
+  } catch (error) {
+    console.error("SAVE MESSAGE ROUTE ERROR:", error);
+    return jsonNoStore({ error: "Server error" }, { status: 500 });
+  }
+}
