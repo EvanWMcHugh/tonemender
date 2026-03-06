@@ -23,13 +23,11 @@ export async function GET(req: Request) {
       .select(`
         id,
         created_at,
+        original,
         tone,
         soft_rewrite,
         calm_rewrite,
-        clear_rewrite,
-        message,
-        original_message,
-        original_message_snapshot
+        clear_rewrite
       `)
       .eq("user_id", authUser.id)
       .order("created_at", { ascending: false });
@@ -42,11 +40,7 @@ export async function GET(req: Request) {
     const drafts = (data ?? []).map((row: any) => ({
       id: String(row.id),
       created_at: row.created_at ?? "",
-      original:
-        row.original_message_snapshot ??
-        row.original_message ??
-        row.message ??
-        null,
+      original: row.original ?? null,
       tone: row.tone ?? null,
       soft_rewrite: row.soft_rewrite ?? null,
       calm_rewrite: row.calm_rewrite ?? null,
@@ -109,7 +103,7 @@ export async function POST(req: Request) {
       .from("messages")
       .insert({
         user_id: authUser.id,
-        message: original,
+        original,
         tone,
         soft_rewrite: softRewrite,
         calm_rewrite: calmRewrite,
