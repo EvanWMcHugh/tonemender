@@ -43,16 +43,28 @@ function clearSessionCookie(req: Request, res: NextResponse) {
 export async function GET(req: Request) {
   try {
     const raw = readCookie(req, SESSION_COOKIE);
+
+    console.log("ME host:", req.headers.get("host"));
+    console.log("ME cookie header has tm_session:", (req.headers.get("cookie") || "").includes("tm_session="));
+    console.log("ME raw exists:", Boolean(raw));
+    console.log("ME raw first12:", raw ? raw.slice(0, 12) : null);
+
     if (!raw) return jsonNoStore({ user: null });
 
     const hash = sha256Hex(raw);
     const nowIso = new Date().toISOString();
+
+    console.log("ME hash:", hash);
+    console.log("ME nowIso:", nowIso);
 
     const { data: session, error: sessionErr } = await supabaseAdmin
       .from("sessions")
       .select("user_id,expires_at,revoked_at")
       .eq("session_token_hash", hash)
       .maybeSingle();
+
+    console.log("ME sessionErr:", sessionErr);
+    console.log("ME session:", session);
 
     if (sessionErr || !session?.user_id) {
       const res = jsonNoStore({ user: null });
