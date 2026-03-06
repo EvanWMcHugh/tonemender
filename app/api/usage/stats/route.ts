@@ -1,51 +1,15 @@
 import { NextResponse } from "next/server";
-
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256Hex } from "@/lib/security";
+import { getAuthUserFromRequest } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
 const TIMEZONE = "America/Los_Angeles";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
-}
-
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-async function getUserIdFromSession(req: Request) {
-  const rawSessionToken = readCookie(req, SESSION_COOKIE);
-  if (!rawSessionToken) return null;
-
-  const sessionTokenHash = sha256Hex(rawSessionToken);
-  const nowIso = new Date().toISOString();
-
-  const { data: session, error: sessionError } = await supabaseAdmin
-    .from("sessions")
-    .select("user_id,expires_at,revoked_at")
-    .eq("session_token_hash", sessionTokenHash)
-    .maybeSingle();
-
-  if (sessionError || !session?.user_id) return null;
-  if (session.revoked_at) return null;
-  if (!session.expires_at || new Date(session.expires_at).getTime() <= Date.now()) return null;
-
-  try {
-    await supabaseAdmin
-      .from("sessions")
-      .update({ last_seen_at: nowIso })
-      .eq("session_token_hash", sessionTokenHash)
-      .is("revoked_at", null);
-  } catch {}
-
-  return String(session.user_id);
 }
 
 function isValidDay(day: string) {
@@ -99,15 +63,15 @@ export async function GET(req: Request) {
     const dayParam = url.searchParams.get("day");
     const day = dayParam && isValidDay(dayParam) ? dayParam : formatLA_YYYY_MM_DD(new Date());
 
-    const userId = await getUserIdFromSession(req);
-    if (!userId) {
+    const user = await getAuthUserFromRequest(req);
+    if (!user?.id) {
       return jsonNoStore({ stats: { today: 0, total: 0 }, day });
     }
 
     const { count: total, error: totalError } = await supabaseAdmin
       .from("rewrite_usage")
       .select("*", { count: "exact", head: true })
-      .eq("user_id", userId);
+      .eq("user_id", user.id);
 
     if (totalError) {
       return jsonNoStore({ stats: { today: 0, total: 0 }, day });
@@ -118,18 +82,12 @@ export async function GET(req: Request) {
     const { count: today, error: todayError } = await supabaseAdmin
       .from("rewrite_usage")
       .select("*", { count: "exact", head: true })
-      .eq("user_id", userId)
+      .eq("user_id", user.id)
       .gte("created_at", startIso)
       .lt("created_at", endIso);
 
     if (todayError) {
-      return jsonNoStore({
-        stats: {
-          today: 0,
-          total: total ?? 0,
-        },
-        day,
-      });
+      return jsonNoStore({ stats: { today: 0, total: total ?? 0 }, day });
     }
 
     return jsonNoStore({

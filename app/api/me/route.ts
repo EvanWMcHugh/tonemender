@@ -23,6 +23,7 @@ function readCookie(req: Request, name: string) {
 
 function getCookieDomain(req: Request) {
   const host = req.headers.get("host") || "";
+
   if (
     host === "tonemender.com" ||
     host === "www.tonemender.com" ||
@@ -30,6 +31,7 @@ function getCookieDomain(req: Request) {
   ) {
     return ".tonemender.com";
   }
+
   return undefined;
 }
 
@@ -115,10 +117,10 @@ export async function GET(req: Request) {
 
     return jsonNoStore({
       user: {
-        id: user.id,
-        email: user.email,
-        isPro: user.is_pro,
-        planType: user.plan_type,
+        id: String(user.id),
+        email: String(user.email),
+        isPro: Boolean(user.is_pro),
+        planType: user.plan_type ?? null,
       },
     });
   } catch {

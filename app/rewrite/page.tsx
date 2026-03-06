@@ -39,30 +39,16 @@ function vibrate(ms = 20) {
 export default function RewritePage() {
   const router = useRouter();
 
-  // ---------------------------------------------------------
-  // AUTH / PLAN
-  // ---------------------------------------------------------
   const [ready, setReady] = useState(false);
   const [me, setMe] = useState<MeUser | null>(null);
   const [isPro, setIsPro] = useState(false);
 
-  // ---------------------------------------------------------
-  // INPUTS
-  // ---------------------------------------------------------
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
   const [tone, setTone] = useState<ToneKey | "">("");
 
-  // ---------------------------------------------------------
-  // ORIGINAL SNAPSHOT + "USE THIS" TRACKING
-  // ---------------------------------------------------------
   const [originalMessageSnapshot, setOriginalMessageSnapshot] = useState("");
-  const [usedRewriteText, setUsedRewriteText] = useState("");
-  const [usedRewrite, setUsedRewrite] = useState(false);
 
-  // ---------------------------------------------------------
-  // RESULTS / METADATA
-  // ---------------------------------------------------------
   const [results, setResults] = useState<Record<ToneKey, string>>({
     soft: "",
     calm: "",
@@ -72,28 +58,18 @@ export default function RewritePage() {
   const [toneScore, setToneScore] = useState<number | null>(null);
   const [emotion, setEmotion] = useState("");
 
-  // ---------------------------------------------------------
-  // UI STATE
-  // ---------------------------------------------------------
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
   const [toast, setToast] = useState("");
 
-  // ---------------------------------------------------------
-  // SHARE CARD (Before/After image)
-  // ---------------------------------------------------------
   const [originalForCard, setOriginalForCard] = useState("");
   const [rewrittenForCard, setRewrittenForCard] = useState("");
   const shareCardRef = useRef<HTMLDivElement | null>(null);
 
-  // Avoid updating state after unmount & prevent overlapping requests
   const mountedRef = useRef(true);
   const rewriteAbortRef = useRef<AbortController | null>(null);
 
-  // ---------------------------------------------------------
-  // AUTH CHECK + FETCH PRO STATUS
-  // ---------------------------------------------------------
   useEffect(() => {
     mountedRef.current = true;
 
@@ -108,25 +84,27 @@ export default function RewritePage() {
         });
 
         const meJson = await meResp.json().catch(() => ({ user: null }));
-        const u: MeUser | null = meJson?.user ?? null;
+        const user: MeUser | null = meJson?.user ?? null;
 
-        if (!u?.id) {
+        if (!user?.id) {
           router.replace("/sign-in");
           return;
         }
 
         if (!mountedRef.current) return;
 
-        setMe(u);
+        setMe(user);
 
-        const email = normalizeEmail(u.email);
-        const pro = Boolean(u.isPro) || isProReviewer(email);
+        const email = normalizeEmail(user.email);
+        const pro = Boolean(user.isPro) || isProReviewer(email);
         setIsPro(pro);
 
         setReady(true);
-      } catch (err: any) {
-        if (err?.name === "AbortError") return;
-        console.error("REWRITE AUTH LOAD ERROR:", err);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
+
         router.replace("/sign-in");
       }
     }
@@ -140,9 +118,6 @@ export default function RewritePage() {
     };
   }, [router]);
 
-  // ---------------------------------------------------------
-  // HELPERS
-  // ---------------------------------------------------------
   const resetUiForNewRewrite = useCallback(() => {
     setError("");
     setLimitReached(false);
@@ -154,13 +129,15 @@ export default function RewritePage() {
 
   const ensureOriginalSnapshot = useCallback(
     (original: string) => {
-      if (!originalMessageSnapshot) setOriginalMessageSnapshot(original);
+      if (!originalMessageSnapshot) {
+        setOriginalMessageSnapshot(original);
+      }
     },
     [originalMessageSnapshot]
   );
 
   const displayKey: ToneKey = useMemo(() => {
-    return (isPro ? (tone || "soft") : "soft") as ToneKey;
+    return (isPro ? tone || "soft" : "soft") as ToneKey;
   }, [isPro, tone]);
 
   const displayText = useMemo(() => {
@@ -175,16 +152,12 @@ export default function RewritePage() {
   }, [loading, message, isPro, recipient, tone]);
 
   const showRevertButton = useMemo(() => {
-    return !!originalMessageSnapshot && message !== originalMessageSnapshot;
+    return Boolean(originalMessageSnapshot) && message !== originalMessageSnapshot;
   }, [originalMessageSnapshot, message]);
 
-  // ---------------------------------------------------------
-  // HANDLE REWRITE
-  // ---------------------------------------------------------
   const handleRewrite = useCallback(async () => {
     if (rewriteButtonDisabled) return;
 
-    // Cancel any in-flight rewrite before starting a new one
     rewriteAbortRef.current?.abort();
     const controller = new AbortController();
     rewriteAbortRef.current = controller;
@@ -209,14 +182,13 @@ export default function RewritePage() {
       ensureOriginalSnapshot(trimmedMessage);
 
       const finalRecipient = isPro ? recipient : "default";
-      const finalTone = isPro ? (tone || "default") : "default";
+      const finalTone = isPro ? tone || "default" : "default";
 
       const res = await fetch("/api/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
         signal: controller.signal,
-        // ✅ cookie-auth; no Authorization header
         body: JSON.stringify({
           message: trimmedMessage,
           recipient: finalRecipient,
@@ -253,7 +225,6 @@ export default function RewritePage() {
       setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
       setEmotion(String(json.emotion_prediction ?? "").trim());
 
-      // Pick the "chosen" text for the share-card:
       const chosenToneKey: ToneKey = isPro
         ? ((finalTone === "default" ? "soft" : finalTone) as ToneKey)
         : "soft";
@@ -269,12 +240,18 @@ export default function RewritePage() {
       setRewrittenForCard(chosenText);
 
       vibrate(15);
-    } catch (err: any) {
-      if (err?.name === "AbortError") return;
-      console.error("REWRITE REQUEST ERROR:", err);
-      if (mountedRef.current) setError("Network error. Try again.");
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+
+      if (mountedRef.current) {
+        setError("Network error. Try again.");
+      }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [
     rewriteButtonDisabled,
@@ -288,14 +265,12 @@ export default function RewritePage() {
     tone,
   ]);
 
-  // ---------------------------------------------------------
-  // COPY, USE, REVERT
-  // ---------------------------------------------------------
   const copyToClipboard = useCallback(async (text: string) => {
     if (!text) {
       setToast("Nothing to copy yet.");
       return;
     }
+
     try {
       await navigator.clipboard.writeText(text);
       setToast("Copied!");
@@ -313,10 +288,7 @@ export default function RewritePage() {
         setOriginalMessageSnapshot(message.trim());
       }
 
-      setUsedRewriteText(text);
       setMessage(text);
-      setUsedRewrite(true);
-
       window.scrollTo({ top: 0, behavior: "smooth" });
       vibrate(10);
     },
@@ -327,13 +299,9 @@ export default function RewritePage() {
     if (!originalMessageSnapshot) return;
 
     setMessage(originalMessageSnapshot);
-    setUsedRewrite(false);
     vibrate(15);
   }, [originalMessageSnapshot]);
 
-  // ---------------------------------------------------------
-  // SAVE (cookie-auth API route)
-  // ---------------------------------------------------------
   const saveMessage = useCallback(
     async (text: string, toneKey: ToneKey) => {
       if (!text) {
@@ -345,6 +313,7 @@ export default function RewritePage() {
         const resp = await fetch("/api/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify({
             original: originalMessageSnapshot || message,
             tone: toneKey,
@@ -363,17 +332,13 @@ export default function RewritePage() {
 
         setToast("Saved!");
         vibrate(15);
-      } catch (err) {
-        console.error("SAVE ERROR:", err);
+      } catch {
         setToast("Failed to save.");
       }
     },
     [originalMessageSnapshot, message]
   );
 
-  // ---------------------------------------------------------
-  // SHARE
-  // ---------------------------------------------------------
   const shareApp = useCallback(async () => {
     const url = "https://tonemender.com";
 
@@ -390,13 +355,11 @@ export default function RewritePage() {
         setToast("App link copied!");
         vibrate(10);
       }
-    } catch {
-      // ignore (user cancelled)
-    }
+    } catch {}
   }, []);
 
   const shareRewrite = useCallback(async () => {
-    const key: ToneKey = (isPro ? (tone || "soft") : "soft") as ToneKey;
+    const key: ToneKey = (isPro ? tone || "soft" : "soft") as ToneKey;
     const current = results[key] || results.soft;
 
     if (!current) {
@@ -419,9 +382,7 @@ export default function RewritePage() {
         setToast("Rewrite copied to clipboard!");
         vibrate(10);
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [isPro, tone, results, originalMessageSnapshot, message]);
 
   const shareBeforeAfterImage = useCallback(async () => {
@@ -437,8 +398,8 @@ export default function RewritePage() {
       });
 
       const dataUrl = canvas.toDataURL("image/png");
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
+      const response = await fetch(dataUrl);
+      const blob = await response.blob();
       const file = new File([blob], "tonemender-before-after.png", {
         type: "image/png",
       });
@@ -460,15 +421,11 @@ export default function RewritePage() {
         setToast("Before/After image downloaded!");
         vibrate(10);
       }
-    } catch (err) {
-      console.error("SHARE IMAGE ERROR:", err);
+    } catch {
       setToast("Could not create share image. Try again.");
     }
   }, [originalForCard, rewrittenForCard]);
 
-  // ---------------------------------------------------------
-  // INITIAL AUTH SCREEN
-  // ---------------------------------------------------------
   if (!ready) {
     return <main className="p-8 text-center">Checking authentication…</main>;
   }
@@ -476,11 +433,11 @@ export default function RewritePage() {
   return (
     <main className="w-full max-w-2xl">
       <PullToRefresh onRefresh={() => window.location.reload()}>
-        <div className="bg-white rounded-3xl shadow-lg border border-slate-200 p-6 sm:p-8">
-          <div className="flex items-center justify-between mb-4">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-lg sm:p-8">
+          <div className="mb-4 flex items-center justify-between">
             <button
               onClick={() => router.push("/")}
-              className="text-sm text-slate-500 hover:text-slate-700 flex items-center gap-1"
+              className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
               type="button"
             >
               <span aria-hidden>←</span>
@@ -490,24 +447,24 @@ export default function RewritePage() {
             <button
               onClick={shareApp}
               type="button"
-              className="text-xs sm:text-sm border border-slate-300 rounded-full px-3 py-1.5 text-slate-700 hover:bg-slate-50"
+              className="rounded-full border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 sm:text-sm"
             >
               Share ToneMender
             </button>
           </div>
 
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2">
+          <h1 className="mb-2 text-2xl font-bold tracking-tight sm:text-3xl">
             Rewrite your message
           </h1>
-          <p className="text-sm text-slate-600 mb-4">
+          <p className="mb-4 text-sm text-slate-600">
             Paste the message you&apos;re worried about sending. ToneMender keeps
             your meaning but removes the heat so you don&apos;t start a fight by
             accident.
           </p>
 
           {limitReached && (
-            <div className="mb-4 p-4 rounded-2xl bg-yellow-50 border border-yellow-200">
-              <p className="font-semibold mb-1 text-slate-800">
+            <div className="mb-4 rounded-2xl border border-yellow-200 bg-yellow-50 p-4">
+              <p className="mb-1 font-semibold text-slate-800">
                 You’ve used all 3 free rewrites for today.
               </p>
               <p className="mb-2 text-xs text-slate-600">
@@ -516,22 +473,22 @@ export default function RewritePage() {
               </p>
               <a
                 href="/upgrade"
-                className="inline-flex items-center justify-center bg-purple-600 text-white px-3 py-1.5 rounded-full text-xs font-medium hover:bg-purple-500"
+                className="inline-flex items-center justify-center rounded-full bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-500"
               >
                 Upgrade to Pro
               </a>
             </div>
           )}
 
-          {error && <p className="text-red-500 mb-3 text-sm">{error}</p>}
+          {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
 
           <div className="mb-4">
-            <label className="block mb-2 text-sm font-medium text-slate-700">
+            <label className="mb-2 block text-sm font-medium text-slate-700">
               Your message
             </label>
 
             <textarea
-              className="border border-slate-300 bg-slate-50 focus:bg-white focus:border-blue-500 transition-colors p-3 w-full rounded-2xl min-h-[130px] text-sm"
+              className="min-h-[130px] w-full rounded-2xl border border-slate-300 bg-slate-50 p-3 text-sm transition-colors focus:border-blue-500 focus:bg-white"
               placeholder='Example: "I’m so tired of you ignoring my texts."'
               value={message}
               onChange={(e) => setMessage(e.target.value)}
@@ -560,13 +517,13 @@ export default function RewritePage() {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="block mb-1 text-sm font-medium text-slate-700">
+              <label className="mb-1 block text-sm font-medium text-slate-700">
                 Who is this for?
               </label>
               <select
-                className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
+                className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-sm disabled:bg-slate-100"
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
                 disabled={!isPro || loading}
@@ -582,11 +539,11 @@ export default function RewritePage() {
             </div>
 
             <div>
-              <label className="block mb-1 text-sm font-medium text-slate-700">
+              <label className="mb-1 block text-sm font-medium text-slate-700">
                 How do you want to sound?
               </label>
               <select
-                className="border border-slate-300 rounded-xl p-2.5 w-full text-sm bg-white disabled:bg-slate-100"
+                className="w-full rounded-xl border border-slate-300 bg-white p-2.5 text-sm disabled:bg-slate-100"
                 value={tone}
                 onChange={(e) => setTone(e.target.value as ToneKey)}
                 disabled={!isPro || loading}
@@ -604,7 +561,7 @@ export default function RewritePage() {
           <button
             onClick={handleRewrite}
             disabled={rewriteButtonDisabled}
-            className="w-full rounded-2xl bg-blue-600 text-white py-3 text-sm font-semibold mt-1 disabled:bg-slate-400 disabled:cursor-not-allowed shadow-sm hover:bg-blue-500 transition"
+            className="mt-1 w-full rounded-2xl bg-blue-600 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-400"
             type="button"
           >
             {loading ? "Rewriting…" : "Rewrite my message"}
@@ -617,7 +574,7 @@ export default function RewritePage() {
                   {toneScore !== null && (
                     <div className="flex flex-col items-center">
                       <div
-                        className="w-24 h-24 rounded-full flex items-center justify-center text-2xl font-bold shadow-sm"
+                        className="flex h-24 w-24 items-center justify-center rounded-full text-2xl font-bold shadow-sm"
                         style={{
                           background: "#e0f2fe",
                           border: "4px solid #38bdf8",
@@ -627,14 +584,13 @@ export default function RewritePage() {
                         {toneScore}
                       </div>
                       <p className="mt-2 text-xs text-slate-500">
-                        Tone Score — higher means calmer, clearer, safer to
-                        send.
+                        Tone Score — higher means calmer, clearer, safer to send.
                       </p>
                     </div>
                   )}
 
                   {emotion && (
-                    <div className="text-center text-sm bg-blue-50 border border-blue-100 text-blue-900 px-4 py-3 rounded-2xl">
+                    <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-center text-sm text-blue-900">
                       {emotion}
                     </div>
                   )}
@@ -644,36 +600,39 @@ export default function RewritePage() {
               {originalForCard && rewrittenForCard && (
                 <div
                   ref={shareCardRef}
-                  className="border border-slate-200 p-4 rounded-2xl bg-slate-50 max-w-xl mx-auto fade-scale-in"
+                  className="fade-scale-in mx-auto max-w-xl rounded-2xl border border-slate-200 bg-slate-50 p-4"
                   style={{ maxWidth: 600 }}
                 >
-                  <h3 className="text-lg font-semibold mb-3 text-gray-800">
+                  <h3 className="mb-3 text-lg font-semibold text-gray-800">
                     ToneMender — Before & After
                   </h3>
+
                   <div className="mb-3">
                     <p className="text-xs font-semibold uppercase text-gray-500">
                       Before
                     </p>
-                    <p className="whitespace-pre-wrap text-sm bg-white border rounded-lg p-2 mt-1">
+                    <p className="mt-1 whitespace-pre-wrap rounded-lg border bg-white p-2 text-sm">
                       {originalForCard}
                     </p>
                   </div>
+
                   <div>
                     <p className="text-xs font-semibold uppercase text-gray-500">
                       After
                     </p>
-                    <p className="whitespace-pre-wrap text-sm bg-white border rounded-lg p-2 mt-1">
+                    <p className="mt-1 whitespace-pre-wrap rounded-lg border bg-white p-2 text-sm">
                       {rewrittenForCard}
                     </p>
                   </div>
-                  <p className="text-[10px] text-gray-400 mt-3">
+
+                  <p className="mt-3 text-[10px] text-gray-400">
                     Generated with tonemender.com
                   </p>
                 </div>
               )}
 
-              <div className="border border-slate-200 p-4 rounded-2xl bg-slate-50 fade-scale-in">
-                <h2 className="text-base font-semibold text-blue-800 mb-2">
+              <div className="fade-scale-in rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <h2 className="mb-2 text-base font-semibold text-blue-800">
                   {displayKey.toUpperCase()} rewrite
                 </h2>
 
@@ -681,11 +640,11 @@ export default function RewritePage() {
                   {displayText}
                 </p>
 
-                <div className="flex flex-wrap gap-3 mt-4">
+                <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     type="button"
                     onClick={() => copyToClipboard(displayText)}
-                    className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                    className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 hover:bg-slate-50"
                   >
                     Copy
                   </button>
@@ -693,7 +652,7 @@ export default function RewritePage() {
                   <button
                     type="button"
                     onClick={() => useThis(displayText)}
-                    className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                    className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 hover:bg-slate-50"
                   >
                     Use This
                   </button>
@@ -701,7 +660,7 @@ export default function RewritePage() {
                   <button
                     type="button"
                     onClick={() => saveMessage(displayText, displayKey)}
-                    className="border border-emerald-500 px-3 py-1.5 rounded-full text-xs text-white bg-emerald-500 hover:bg-emerald-400"
+                    className="rounded-full border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs text-white hover:bg-emerald-400"
                   >
                     Save
                   </button>
@@ -709,7 +668,7 @@ export default function RewritePage() {
                   <button
                     type="button"
                     onClick={shareRewrite}
-                    className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                    className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 hover:bg-slate-50"
                   >
                     Share Text
                   </button>
@@ -717,7 +676,7 @@ export default function RewritePage() {
                   <button
                     type="button"
                     onClick={shareBeforeAfterImage}
-                    className="border border-slate-300 px-3 py-1.5 rounded-full text-xs text-slate-800 bg-white hover:bg-slate-50"
+                    className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 hover:bg-slate-50"
                   >
                     Share Before/After Card
                   </button>

@@ -1,32 +1,30 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256Hex } from "@/lib/security";
+import { getAuthUserFromRequest } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-const SESSION_COOKIE = "tm_session";
-
 const TIMEZONE = "America/Los_Angeles";
 const DAILY_FREE_LIMIT = 3;
 const MAX_MESSAGE_CHARS = 2000;
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+type RewriteTone = "soft" | "calm" | "clear" | null;
+type RewriteRecipient = "partner" | "friend" | "family" | "coworker" | null;
+
+type RewriteRequestBody = {
+  message?: unknown;
+  recipient?: unknown;
+  tone?: unknown;
+};
+
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
-}
-
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
 }
 
 function getClientIp(req: Request) {
@@ -39,7 +37,105 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+function formatLA_YYYY_MM_DD(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function getTzOffsetMinutes(timeZone: string, date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(date);
+
+  const tzName = parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
+  const match = tzName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+
+  if (!match) return 0;
+
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = parseInt(match[2], 10);
+  const minutes = match[3] ? parseInt(match[3], 10) : 0;
+
+  return sign * (hours * 60 + minutes);
+}
+
+function laDayBoundsUtcIso(date = new Date()) {
+  const ymd = formatLA_YYYY_MM_DD(date);
+  const [year, month, day] = ymd.split("-").map((value) => parseInt(value, 10));
+
+  const startLocalAsUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+  const startOffsetMinutes = getTzOffsetMinutes(TIMEZONE, startLocalAsUtc);
+  const startUtc = new Date(startLocalAsUtc.getTime() - startOffsetMinutes * 60_000);
+
+  const endLocalAsUtc = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
+  const endOffsetMinutes = getTzOffsetMinutes(TIMEZONE, endLocalAsUtc);
+  const endUtc = new Date(endLocalAsUtc.getTime() - endOffsetMinutes * 60_000);
+
+  return [startUtc.toISOString(), endUtc.toISOString()] as const;
+}
+
+function extractBlock(raw: string, label: string): string {
+  const regex = new RegExp(
+    `(^|\\n)${label}:\\s*([\\s\\S]*?)(?=\\n[A-Z][A-Z_]+\\s*:|$)`,
+    "i"
+  );
+  const match = raw.match(regex);
+  return match ? match[2].trim() : "";
+}
+
+function parseRecipient(value: unknown): RewriteRecipient {
+  if (value === "partner" || value === "friend" || value === "family" || value === "coworker") {
+    return value;
+  }
+  return null;
+}
+
+function parseTone(value: unknown): RewriteTone {
+  if (value === "soft" || value === "calm" || value === "clear") {
+    return value;
+  }
+  return null;
+}
+
+function recipientDescription(recipient: RewriteRecipient) {
+  switch (recipient) {
+    case "partner":
+      return "a romantic partner you care about and want to keep a healthy, vulnerable connection with";
+    case "friend":
+      return "a friend you want to stay close with while being honest";
+    case "family":
+      return "a family member where you want less drama and more understanding";
+    case "coworker":
+      return "a coworker or manager where you need to stay professional but honest";
+    default:
+      return "someone you care about and want to communicate with in a healthy, respectful way";
+  }
+}
+
+function toneHint(tone: RewriteTone) {
+  if (tone === "soft") {
+    return "The user's preferred tone is SOFT — extra gentle and emotionally safe.";
+  }
+  if (tone === "calm") {
+    return "The user's preferred tone is CALM — neutral and grounded.";
+  }
+  if (tone === "clear") {
+    return "The user's preferred tone is CLEAR — direct but respectful.";
+  }
+  return "";
+}
+
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, unknown> = {}
+) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -51,10 +147,6 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
   } catch {}
 }
 
-/**
- * Rate limiter using your rate_limits table.
- * fail-open: if DB errors, we allow.
- */
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   try {
     const now = Date.now();
@@ -70,201 +162,115 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
       .maybeSingle();
 
     if (!row) {
-      const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+      const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
         key,
         window_start: windowStartIso,
         window_seconds: windowSeconds,
         count: 1,
       });
-      return !insErr;
+
+      return !insertError;
     }
 
-    const next = (row.count ?? 0) + 1;
-    const { error: updErr } = await supabaseAdmin
+    const nextCount = (row.count ?? 0) + 1;
+
+    const { error: updateError } = await supabaseAdmin
       .from("rate_limits")
-      .update({ count: next })
+      .update({ count: nextCount })
       .eq("key", key)
       .eq("window_start", windowStartIso)
       .eq("window_seconds", windowSeconds);
 
-    if (updErr) return true; // fail-open
-    return next <= limit;
+    if (updateError) return true;
+    return nextCount <= limit;
   } catch {
-    return true; // fail-open
+    return true;
   }
 }
 
-/**
- * Get timezone offset minutes for a given date in a given IANA timezone.
- * Uses timeZoneName: "shortOffset" → e.g., "GMT-8"
- */
-function getTzOffsetMinutes(timeZone: string, date: Date) {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "shortOffset" }).formatToParts(date);
-  const tz = parts.find((p) => p.type === "timeZoneName")?.value || "GMT";
-  // tz looks like "GMT-8" or "GMT+1"
-  const m = tz.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
-  if (!m) return 0;
-  const sign = m[1] === "-" ? -1 : 1;
-  const hh = parseInt(m[2], 10);
-  const mm = m[3] ? parseInt(m[3], 10) : 0;
-  return sign * (hh * 60 + mm);
+async function getUsedToday(userId: string) {
+  const [startIso, endIso] = laDayBoundsUtcIso(new Date());
+
+  const { count, error } = await supabaseAdmin
+    .from("rewrite_usage")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .gte("created_at", startIso)
+    .lt("created_at", endIso);
+
+  if (error) {
+    throw new Error("Usage check failed");
+  }
+
+  return count ?? 0;
 }
 
-function formatLA_YYYY_MM_DD(date = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date); // YYYY-MM-DD
-}
+async function recordUsage(userId: string) {
+  const { error } = await supabaseAdmin.from("rewrite_usage").insert({ user_id: userId });
 
-/**
- * Compute [startUtcIso, endUtcIso) for "today in LA".
- * Handles DST by computing offsets at start and end instants separately.
- */
-function laDayBoundsUtcIso(date = new Date()) {
-  const ymd = formatLA_YYYY_MM_DD(date); // YYYY-MM-DD
-  const [y, m, d] = ymd.split("-").map((x) => parseInt(x, 10));
-
-  // Start of day "LA local", represented as if it were UTC then corrected by offset.
-  const startLocalAsUtc = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
-  const startOffsetMin = getTzOffsetMinutes(TIMEZONE, startLocalAsUtc);
-  const startUtc = new Date(startLocalAsUtc.getTime() - startOffsetMin * 60_000);
-
-  // Next day
-  const endLocalAsUtc = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0));
-  const endOffsetMin = getTzOffsetMinutes(TIMEZONE, endLocalAsUtc);
-  const endUtc = new Date(endLocalAsUtc.getTime() - endOffsetMin * 60_000);
-
-  return [startUtc.toISOString(), endUtc.toISOString()] as const;
-}
-
-async function getUserIdFromSession(req: Request) {
-  const raw = readCookie(req, SESSION_COOKIE);
-  if (!raw) return null;
-
-  const hash = sha256Hex(raw);
-  const nowIso = new Date().toISOString();
-
-  const { data: session, error } = await supabaseAdmin
-    .from("sessions")
-    .select("user_id,expires_at,revoked_at")
-    .eq("session_token_hash", hash)
-    .maybeSingle();
-
-  if (error || !session?.user_id) return null;
-  if (session.revoked_at) return null;
-  if (!session.expires_at || session.expires_at <= nowIso) return null;
-
-  // Best-effort last_seen_at
-  try {
-    await supabaseAdmin
-      .from("sessions")
-      .update({ last_seen_at: nowIso })
-      .eq("session_token_hash", hash)
-      .is("revoked_at", null);
-  } catch {}
-
-  return String(session.user_id);
-}
-
-function extractBlock(raw: string, label: string): string {
-  const regex = new RegExp(
-    `(^|\\n)${label}:\\s*([\\s\\S]*?)(?=\\n[A-Z][A-Z_]+\\s*:|$)`,
-    "i"
-  );
-  const match = raw.match(regex);
-  return match ? match[2].trim() : "";
+  if (error) {
+    throw new Error("Failed to record rewrite usage");
+  }
 }
 
 export async function POST(req: Request) {
   try {
-    // ---- auth (cookie session) ----
-    const userId = await getUserIdFromSession(req);
-    if (!userId) return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getAuthUserFromRequest(req);
 
-    // ---- optional rate limit (per-user + per-IP) ----
-    const ip = getClientIp(req) || "unknown";
-    const okUser = await rateLimitHit(`user:${userId}:rewrite`, 60, 30); // 30/min
-    const okIp = await rateLimitHit(`ip:${ip}:rewrite`, 60, 60); // 60/min
-    if (!okUser || !okIp) return jsonNoStore({ error: "Too many requests" }, { status: 429 });
-
-    // ---- load user (pro + lifecycle checks) ----
-    const { data: user, error: userErr } = await supabaseAdmin
-      .from("users")
-      .select("id,email,is_pro,plan_type,disabled_at,deleted_at")
-      .eq("id", userId)
-      .maybeSingle();
-
-    if (userErr || !user) return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
-    if (user.disabled_at || user.deleted_at) return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
-
-    // ---- parse body ----
-    const body = await req.json().catch(() => ({}));
-    const messageRaw = body?.message;
-    const recipient = body?.recipient;
-    const tone = body?.tone;
-
-    if (typeof messageRaw !== "string") return jsonNoStore({ error: "Message is required" }, { status: 400 });
-
-    const trimmedMessage = messageRaw.trim();
-    if (!trimmedMessage) return jsonNoStore({ error: "Message is required" }, { status: 400 });
-    if (trimmedMessage.length > MAX_MESSAGE_CHARS) {
-      return jsonNoStore({ error: `Message is too long (max ${MAX_MESSAGE_CHARS} characters)` }, { status: 413 });
+    if (!authUser?.id) {
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ---- enforce free daily limit (LA day) ----
-    if (!user.is_pro) {
-      const [startIso, endIso] = laDayBoundsUtcIso(new Date());
+    const ip = getClientIp(req) || "unknown";
+    const okUserRate = await rateLimitHit(`user:${authUser.id}:rewrite`, 60, 30);
+    const okIpRate = await rateLimitHit(`ip:${ip}:rewrite`, 60, 60);
 
-      const { count, error: countErr } = await supabaseAdmin
-        .from("rewrite_usage")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", userId)
-        .gte("created_at", startIso)
-        .lt("created_at", endIso);
+    if (!okUserRate || !okIpRate) {
+      return jsonNoStore({ error: "Too many requests" }, { status: 429 });
+    }
 
-      if (countErr) return jsonNoStore({ error: "Usage check failed" }, { status: 500 });
+    const body = (await req.json().catch(() => ({}))) as RewriteRequestBody;
 
-      const usedToday = count ?? 0;
+    const messageRaw = body.message;
+    const recipient = parseRecipient(body.recipient);
+    const tone = parseTone(body.tone);
+
+    if (typeof messageRaw !== "string") {
+      return jsonNoStore({ error: "Message is required" }, { status: 400 });
+    }
+
+    const trimmedMessage = messageRaw.trim();
+
+    if (!trimmedMessage) {
+      return jsonNoStore({ error: "Message is required" }, { status: 400 });
+    }
+
+    if (trimmedMessage.length > MAX_MESSAGE_CHARS) {
+      return jsonNoStore(
+        { error: `Message is too long (max ${MAX_MESSAGE_CHARS} characters)` },
+        { status: 413 }
+      );
+    }
+
+    if (!authUser.isPro) {
+      const usedToday = await getUsedToday(authUser.id);
+
       if (usedToday >= DAILY_FREE_LIMIT) {
-        await audit("REWRITE_LIMIT_BLOCKED", userId, req, { usedToday, limit: DAILY_FREE_LIMIT });
+        await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
+          usedToday,
+          limit: DAILY_FREE_LIMIT,
+        });
+
         return jsonNoStore({ error: "Daily limit reached" }, { status: 429 });
       }
     }
-
-    // ---- recipient/tone mapping ----
-    const recipientDescription = (() => {
-      switch (recipient) {
-        case "partner":
-          return "a romantic partner you care about and want to keep a healthy, vulnerable connection with";
-        case "friend":
-          return "a friend you want to stay close with while being honest";
-        case "family":
-          return "a family member where you want less drama and more understanding";
-        case "coworker":
-          return "a coworker or manager where you need to stay professional but honest";
-        default:
-          return "someone you care about and want to communicate with in a healthy, respectful way";
-      }
-    })();
-
-    const primaryToneHint =
-      tone === "soft"
-        ? "The user's preferred tone is SOFT — extra gentle and emotionally safe."
-        : tone === "calm"
-        ? "The user's preferred tone is CALM — neutral and grounded."
-        : tone === "clear"
-        ? "The user's preferred tone is CLEAR — direct but respectful."
-        : "";
 
     const prompt = `
 You are an expert communication and relationship coach. Rewrite the user's message into healthier versions and analyze emotional tone.
 
 User context:
-- Recipient: ${recipientDescription}
-${primaryToneHint}
+- Recipient: ${recipientDescription(recipient)}
+${toneHint(tone)}
 
 Your tasks:
 
@@ -274,14 +280,14 @@ CALM — neutral, steady, grounded
 CLEAR — direct but respectful
 
 2️⃣ SCORE THE ORIGINAL MESSAGE
-Give a "Tone Score" from **0–100**, where:
+Give a "Tone Score" from 0–100, where:
 0 = extremely harsh / risky
 100 = very healthy and clear
 The score MUST be just a number.
 
 3️⃣ EMOTIONAL IMPACT PREDICTION
-Predict in **1–2 natural sentences** how the *rewritten* message is likely to make the recipient feel.
-Use emojis to enhance the emotional meaning (😊😟😬❤️ etc.).
+Predict in 1–2 natural sentences how the rewritten message is likely to make the recipient feel.
+Use emojis to enhance the emotional meaning.
 
 Original message:
 "${trimmedMessage}"
@@ -293,7 +299,7 @@ CALM: <calm message>
 CLEAR: <clear message>
 TONE_SCORE: <0-100 only>
 EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
-`.trim();
+    `.trim();
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -302,7 +308,13 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     });
 
     const raw = (completion.choices?.[0]?.message?.content ?? "").trim();
-    if (!raw) return jsonNoStore({ error: "AI response was empty. Please try again." }, { status: 502 });
+
+    if (!raw) {
+      return jsonNoStore(
+        { error: "AI response was empty. Please try again." },
+        { status: 502 }
+      );
+    }
 
     const soft = extractBlock(raw, "SOFT");
     const calm = extractBlock(raw, "CALM");
@@ -310,34 +322,45 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const toneScoreRaw = extractBlock(raw, "TONE_SCORE");
     const emotionImpact = extractBlock(raw, "EMOTION_IMPACT");
 
-    let tone_score = Number.parseInt(String(toneScoreRaw).trim(), 10);
-    if (!Number.isFinite(tone_score)) tone_score = 0;
-    tone_score = Math.max(0, Math.min(100, tone_score));
+    let toneScore = Number.parseInt(String(toneScoreRaw).trim(), 10);
+    if (!Number.isFinite(toneScore)) toneScore = 0;
+    toneScore = Math.max(0, Math.min(100, toneScore));
 
-    // ---- log usage (best-effort, but important) ----
-    try {
-      await supabaseAdmin.from("rewrite_usage").insert({ user_id: userId });
-    } catch (e) {
-      // If insert fails, we still return the rewrite (fail-open).
-      // You can flip this to fail-closed if you want strict metering.
-      console.warn("rewrite_usage insert failed:", e);
-    }
+    await recordUsage(authUser.id);
 
-    await audit("REWRITE_OK", userId, req, { is_pro: Boolean(user.is_pro) });
+    await audit("REWRITE_OK", authUser.id, req, {
+      is_pro: authUser.isPro,
+    });
+
+    const usedTodayAfter = authUser.isPro ? null : await getUsedToday(authUser.id);
 
     return jsonNoStore({
       soft,
       calm,
       clear,
-      tone_score,
+      tone_score: toneScore,
       emotion_prediction: emotionImpact,
-      // helpful for UI
-      is_pro: Boolean(user.is_pro),
+      is_pro: authUser.isPro,
+      plan_type: authUser.planType,
       day: formatLA_YYYY_MM_DD(new Date()),
       free_limit: DAILY_FREE_LIMIT,
+      rewrites_today: usedTodayAfter,
     });
-  } catch (err) {
-    console.error("REWRITE ERROR:", err);
-    return jsonNoStore({ error: "Server error while rewriting message" }, { status: 500 });
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Server error while rewriting message";
+
+    if (message === "Usage check failed") {
+      return jsonNoStore({ error: message }, { status: 500 });
+    }
+
+    if (message === "Failed to record rewrite usage") {
+      return jsonNoStore({ error: message }, { status: 500 });
+    }
+
+    return jsonNoStore(
+      { error: "Server error while rewriting message" },
+      { status: 500 }
+    );
   }
 }
