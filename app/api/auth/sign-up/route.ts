@@ -102,7 +102,7 @@ export async function POST(req: Request) {
     const password = body?.password;
     const captchaToken = body?.captchaToken;
     const integrityToken = body?.integrityToken;
-    const integrityNonce = body?.integrityNonce;
+    const integrityRequestHash = body?.integrityRequestHash;
 
     if (typeof emailRaw !== "string" || !emailRaw) {
       return jsonNoStore({ error: "Missing email" }, { status: 400 });
@@ -143,14 +143,14 @@ export async function POST(req: Request) {
           return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
         }
 
-        if (typeof integrityNonce !== "string" || !integrityNonce) {
+        if (typeof integrityRequestHash !== "string" || !integrityRequestHash) {
           return jsonNoStore({ error: "Integrity nonce required" }, { status: 400 });
         }
 
         const integrity = await verifyAndroidPlayIntegrity({
           integrityToken,
           expectedPackageName: ANDROID_PACKAGE_NAME,
-          expectedNonce: integrityNonce,
+          expectedRequestHash: integrityRequestHash,
         });
 
         if (!integrity.ok) {
