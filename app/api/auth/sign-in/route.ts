@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/play-integrity";
+import { verifyAndroidPlayIntegrity } from "../../../../lib/play-integrity";
 
 export const runtime = "nodejs";
 
@@ -147,31 +147,31 @@ export async function POST(req: Request) {
       }
 
       if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-        return jsonNoStore({ error: "Integrity nonce required" }, { status: 400 });
+        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
         integrityToken,
         expectedPackageName: ANDROID_PACKAGE_NAME,
-        expectedNonce: integrityRequestHash,
+        expectedRequestHash: integrityRequestHash,
       });
 
       if (!integrity.ok) {
-  await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
-    email,
-    reason: integrity.reason,
-    payload: integrity.payload ?? null,
-  });
+        await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
 
-  return jsonNoStore(
-    {
-      error: integrity.publicMessage,
-      reason: integrity.reason,
-      payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
-    },
-    { status: 403 }
-  );
-}
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
     } else if (!bypassCaptcha) {
       if (!captchaToken || typeof captchaToken !== "string") {
         return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });

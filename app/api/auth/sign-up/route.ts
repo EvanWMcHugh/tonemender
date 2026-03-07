@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
 import { generateToken, sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/play-integrity";
+import { verifyAndroidPlayIntegrity } from "../../../../lib/play-integrity";
 import { isReviewer } from "@/lib/reviewers";
 import bcrypt from "bcryptjs";
 
@@ -30,7 +30,6 @@ function isAndroidClient(req: Request) {
   return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
 }
 
-// Lightweight email sanity check
 function isValidEmail(email: string) {
   if (email.length > 254) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -58,7 +57,6 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
   } catch {}
 }
 
-// Simple DB rate limiter (fail-open)
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -117,9 +115,9 @@ export async function POST(req: Request) {
     const shouldBypassInternal = shouldBypassInternalChecks(email);
     const androidClient = isAndroidClient(req);
 
-    // Rate limit early
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_up`, 60, 10);
     const emailAllowed = await rateLimitHit(`email:${email}:sign_up`, 300, 5);
+
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_UP_RATE_LIMITED", null, req, { email, androidClient });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
@@ -144,7 +142,7 @@ export async function POST(req: Request) {
         }
 
         if (typeof integrityRequestHash !== "string" || !integrityRequestHash) {
-          return jsonNoStore({ error: "Integrity nonce required" }, { status: 400 });
+          return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
         }
 
         const integrity = await verifyAndroidPlayIntegrity({
@@ -154,21 +152,21 @@ export async function POST(req: Request) {
         });
 
         if (!integrity.ok) {
-  await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
-    email,
-    reason: integrity.reason,
-    payload: integrity.payload ?? null,
-  });
+          await audit("SIGN_UP_INTEGRITY_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+            payload: integrity.payload ?? null,
+          });
 
-  return jsonNoStore(
-    {
-      error: integrity.publicMessage,
-      reason: integrity.reason,
-      payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
-    },
-    { status: 403 }
-  );
-}
+          return jsonNoStore(
+            {
+              error: integrity.publicMessage,
+              reason: integrity.reason,
+              payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            },
+            { status: 403 }
+          );
+        }
       } else {
         if (typeof captchaToken !== "string" || !captchaToken) {
           return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
