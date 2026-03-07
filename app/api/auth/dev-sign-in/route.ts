@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
-// TEMPORARY: lock this down hard.
 const DEV_BYPASS_ENABLED = process.env.ENABLE_ANDROID_DEV_SIGN_IN === "true";
 const ALLOWED_EMAILS = new Set(
   (process.env.ANDROID_DEV_SIGN_IN_EMAILS ?? "")
@@ -53,7 +52,15 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
 
   if (userError) {
-    return jsonNoStore({ error: "Failed to load user." }, { status: 500 });
+    return jsonNoStore(
+      {
+        error: "Failed to load user.",
+        details: userError.message,
+        code: userError.code,
+        hint: userError.hint ?? null,
+      },
+      { status: 500 }
+    );
   }
 
   if (!user) {
@@ -63,17 +70,37 @@ export async function POST(req: NextRequest) {
   const rawSessionToken = crypto.randomBytes(32).toString("hex");
   const tokenHash = sha256Hex(rawSessionToken);
 
-  const expiresAt = new Date();
+  const now = new Date();
+  const expiresAt = new Date(now);
   expiresAt.setDate(expiresAt.getDate() + SESSION_TTL_DAYS);
+
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const ip = forwardedFor?.split(",")[0]?.trim() || null;
+  const userAgent = req.headers.get("user-agent");
+  const deviceName = "Android Dev Bypass";
 
   const { error: sessionError } = await supabaseAdmin.from("sessions").insert({
     user_id: user.id,
-    token_hash: tokenHash, // if your column has a different name, change this
+    session_token_hash: tokenHash,
+    created_at: now.toISOString(),
     expires_at: expiresAt.toISOString(),
+    last_seen_at: now.toISOString(),
+    revoked_at: null,
+    ip,
+    user_agent: userAgent,
+    device_name: deviceName,
   });
 
   if (sessionError) {
-    return jsonNoStore({ error: "Failed to create session." }, { status: 500 });
+    return jsonNoStore(
+      {
+        error: "Failed to create session.",
+        details: sessionError.message,
+        code: sessionError.code,
+        hint: sessionError.hint ?? null,
+      },
+      { status: 500 }
+    );
   }
 
   const res = jsonNoStore({
