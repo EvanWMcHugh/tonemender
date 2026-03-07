@@ -5,11 +5,14 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
+import { verifyAndroidPlayIntegrity } from "@/lib/play-integrity";
 
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+const ANDROID_CLIENT_HEADER = "android";
+const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -45,6 +48,10 @@ function getCookieDomain(req: Request) {
     return ".tonemender.com";
   }
   return undefined;
+}
+
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
 }
 
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
@@ -108,6 +115,8 @@ export async function POST(req: Request) {
     const emailRaw = body?.email;
     const password = body?.password;
     const captchaToken = body?.captchaToken;
+    const integrityToken = body?.integrityToken;
+    const integrityNonce = body?.integrityNonce;
     const deviceName = body?.deviceName;
 
     if (!emailRaw || typeof emailRaw !== "string") {
@@ -120,18 +129,41 @@ export async function POST(req: Request) {
 
     const email = normalizeEmail(emailRaw);
     const ip = getClientIp(req) || "unknown";
+    const androidClient = isAndroidClient(req);
 
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_in`, 60, 20);
     const emailAllowed = await rateLimitHit(`email:${email}:sign_in`, 300, 10);
 
     if (!ipAllowed || !emailAllowed) {
-      await audit("SIGN_IN_RATE_LIMITED", null, req, { email });
+      await audit("SIGN_IN_RATE_LIMITED", null, req, { email, androidClient });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
     const bypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
 
-    if (!bypassCaptcha) {
+    if (androidClient) {
+      if (!integrityToken || typeof integrityToken !== "string") {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
+
+      if (!integrityNonce || typeof integrityNonce !== "string") {
+        return jsonNoStore({ error: "Integrity nonce required" }, { status: 400 });
+      }
+
+      const integrity = await verifyAndroidPlayIntegrity({
+        integrityToken,
+        expectedPackageName: ANDROID_PACKAGE_NAME,
+        expectedNonce: integrityNonce,
+      });
+
+      if (!integrity.ok) {
+        await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+        });
+        return jsonNoStore({ error: integrity.publicMessage }, { status: 403 });
+      }
+    } else if (!bypassCaptcha) {
       if (!captchaToken || typeof captchaToken !== "string") {
         return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
       }
@@ -154,23 +186,23 @@ export async function POST(req: Request) {
     }
 
     if (!user) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", null, req, { email });
+      await audit("SIGN_IN_BAD_CREDENTIALS", null, req, { email, androidClient });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
     if (user.disabled_at || user.deleted_at) {
-      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req);
+      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, { androidClient });
       return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
     }
 
     if (!user.email_verified_at) {
-      await audit("SIGN_IN_UNVERIFIED", String(user.id), req);
+      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, { androidClient });
       return jsonNoStore({ error: "Email not confirmed" }, { status: 403 });
     }
 
     const passwordOk = await bcrypt.compare(password, user.password_hash);
     if (!passwordOk) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req);
+      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, { androidClient });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
@@ -199,7 +231,7 @@ export async function POST(req: Request) {
       await supabaseAdmin.from("users").update({ last_login_at: nowIso }).eq("id", user.id);
     } catch {}
 
-    await audit("SIGN_IN_OK", String(user.id), req);
+    await audit("SIGN_IN_OK", String(user.id), req, { androidClient });
 
     const res = jsonNoStore({
       ok: true,

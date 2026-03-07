@@ -3,10 +3,14 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { sendEmail } from "@/lib/email";
 import { generateToken, sha256Hex } from "@/lib/security";
 import { verifyTurnstile } from "@/lib/turnstile";
+import { verifyAndroidPlayIntegrity } from "@/lib/play-integrity";
 import { isReviewer } from "@/lib/reviewers";
 import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";
+
+const ANDROID_CLIENT_HEADER = "android";
+const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -20,6 +24,10 @@ function normalizeEmail(email: string) {
 
 function shouldBypassInternalChecks(email: string) {
   return isReviewer(email);
+}
+
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
 }
 
 // Lightweight email sanity check
@@ -93,6 +101,8 @@ export async function POST(req: Request) {
     const emailRaw = body?.email;
     const password = body?.password;
     const captchaToken = body?.captchaToken;
+    const integrityToken = body?.integrityToken;
+    const integrityNonce = body?.integrityNonce;
 
     if (typeof emailRaw !== "string" || !emailRaw) {
       return jsonNoStore({ error: "Missing email" }, { status: 400 });
@@ -105,12 +115,13 @@ export async function POST(req: Request) {
     const email = normalizeEmail(emailRaw);
     const ip = getClientIp(req) || "unknown";
     const shouldBypassInternal = shouldBypassInternalChecks(email);
+    const androidClient = isAndroidClient(req);
 
-    // Rate limit early (prevents brute force signup spam)
+    // Rate limit early
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_up`, 60, 10);
     const emailAllowed = await rateLimitHit(`email:${email}:sign_up`, 300, 5);
     if (!ipAllowed || !emailAllowed) {
-      await audit("SIGN_UP_RATE_LIMITED", null, req, { email });
+      await audit("SIGN_UP_RATE_LIMITED", null, req, { email, androidClient });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
@@ -126,20 +137,42 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Password is too long" }, { status: 400 });
     }
 
-    // CAPTCHA (bypass for internal reviewer emails only)
     if (!shouldBypassInternal) {
-      if (typeof captchaToken !== "string" || !captchaToken) {
-        return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
-      }
+      if (androidClient) {
+        if (typeof integrityToken !== "string" || !integrityToken) {
+          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        }
 
-      const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
-      if (!okCaptcha) {
-        await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
-        return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+        if (typeof integrityNonce !== "string" || !integrityNonce) {
+          return jsonNoStore({ error: "Integrity nonce required" }, { status: 400 });
+        }
+
+        const integrity = await verifyAndroidPlayIntegrity({
+          integrityToken,
+          expectedPackageName: ANDROID_PACKAGE_NAME,
+          expectedNonce: integrityNonce,
+        });
+
+        if (!integrity.ok) {
+          await audit("SIGN_UP_INTEGRITY_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+          });
+          return jsonNoStore({ error: integrity.publicMessage }, { status: 403 });
+        }
+      } else {
+        if (typeof captchaToken !== "string" || !captchaToken) {
+          return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+        }
+
+        const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
+        if (!okCaptcha) {
+          await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
+          return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+        }
       }
     }
 
-    // Check if user exists
     const { data: existing, error: existErr } = await supabaseAdmin
       .from("users")
       .select("id")
@@ -157,7 +190,6 @@ export async function POST(req: Request) {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Insert user
     const { data: user, error: insertErr } = await supabaseAdmin
       .from("users")
       .insert({
@@ -175,7 +207,6 @@ export async function POST(req: Request) {
 
     const userId = String(user.id);
 
-    // Internal reviewer accounts skip email verification entirely
     if (!shouldBypassInternal) {
       try {
         await supabaseAdmin
@@ -256,6 +287,7 @@ export async function POST(req: Request) {
     await audit("SIGN_UP_CREATED", userId, req, {
       email,
       bypassed_internal_checks: shouldBypassInternal,
+      androidClient,
     });
 
     return jsonNoStore({ success: true });
