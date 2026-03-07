@@ -154,12 +154,21 @@ export async function POST(req: Request) {
         });
 
         if (!integrity.ok) {
-          await audit("SIGN_UP_INTEGRITY_FAILED", null, req, {
-            email,
-            reason: integrity.reason,
-          });
-          return jsonNoStore({ error: integrity.publicMessage }, { status: 403 });
-        }
+  await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
+    email,
+    reason: integrity.reason,
+    payload: integrity.payload ?? null,
+  });
+
+  return jsonNoStore(
+    {
+      error: integrity.publicMessage,
+      reason: integrity.reason,
+      payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+    },
+    { status: 403 }
+  );
+}
       } else {
         if (typeof captchaToken !== "string" || !captchaToken) {
           return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
