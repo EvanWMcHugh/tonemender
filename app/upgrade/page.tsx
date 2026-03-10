@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { isProReviewer } from "../../lib/reviewers";
+import { isProReviewer } from "../../lib/auth/reviewers";
 
 type MeUser = {
   id: string;

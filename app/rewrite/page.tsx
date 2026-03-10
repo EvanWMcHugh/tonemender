@@ -6,7 +6,7 @@ import html2canvas from "html2canvas";
 
 import Toast from "../components/Toast";
 import PullToRefresh from "../components/PullToRefresh";
-import { isProReviewer } from "../../lib/reviewers";
+import { isProReviewer } from "../../lib/auth/reviewers";
 
 type ToneKey = "soft" | "calm" | "clear";
 

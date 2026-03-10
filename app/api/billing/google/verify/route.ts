@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getAuthUserFromRequest } from "@/lib/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import {
   getGooglePlayPackageName,
   getGooglePlaySubscription,
-} from "@/lib/google-play";
+} from "@/lib/billing/google-play";
 
 export const runtime = "nodejs";
 

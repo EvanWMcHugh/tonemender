@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import BackButton from "./BackButton";
+import BackButton from "../../components/BackButton";
 
 export const metadata: Metadata = {
   title: "Privacy Policy | ToneMender",

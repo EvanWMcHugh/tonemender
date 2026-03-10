@@ -1,8 +1,8 @@
 // app/api/auth/reset-password/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256Hex } from "@/lib/security";
-import { sendEmail } from "@/lib/email";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { sha256Hex } from "@/lib/security/crypto";
+import { sendEmail } from "@/lib/email/sendEmail";
 import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import LogoutButton from "./components/LogoutButton";
-import { isProReviewer } from "../lib/reviewers";
+import { isProReviewer } from "../lib/auth/reviewers";
 
 type MeResponse =
   | { user: null }

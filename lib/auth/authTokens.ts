@@ -7,4 +7,4 @@
  * code can import from a clear auth-specific module.
  */
 
-export { generateToken, sha256Hex } from "@/lib/security";
+export { generateToken, sha256Hex } from "@/lib/security/crypto";

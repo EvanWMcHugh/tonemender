@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
-import { isProReviewer } from "../../lib/reviewers";
+import { isProReviewer } from "../../lib/auth/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 

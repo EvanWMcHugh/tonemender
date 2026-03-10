@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getAuthUserFromRequest } from "@/lib/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 
 export const runtime = "nodejs";
 

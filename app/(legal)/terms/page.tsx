@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import BackButton from "./BackButton";
+import BackButton from "../../components/BackButton";
 
 export const metadata: Metadata = {
   title: "Terms of Service | ToneMender",

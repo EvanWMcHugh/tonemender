@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
 
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 const DEV_BYPASS_ENABLED = process.env.ENABLE_ANDROID_DEV_SIGN_IN === "true";
 const ALLOWED_EMAILS = new Set(

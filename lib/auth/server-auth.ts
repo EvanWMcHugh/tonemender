@@ -1,5 +1,5 @@
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sha256Hex } from "@/lib/security";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { sha256Hex } from "@/lib/security/crypto";
 
 const SESSION_COOKIE = "tm_session";
 

@@ -10,7 +10,7 @@ type BackButtonProps = {
 };
 
 export default function BackButton({
-  fallbackHref = "/",
+  fallbackHref = "/landing",
   label = "Back",
   className = "",
 }: BackButtonProps) {

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { sendEmail } from "@/lib/email";
-import { generateToken, sha256Hex } from "@/lib/security";
-import { verifyTurnstile } from "@/lib/turnstile";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { sendEmail } from "@/lib/email/sendEmail";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 

@@ -1,9 +1,9 @@
 // app/api/auth/request-email-change/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { generateToken, sha256Hex } from "@/lib/security";
-import { sendEmail } from "@/lib/email";
-import { verifyTurnstile } from "@/lib/turnstile";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { sendEmail } from "@/lib/email/sendEmail";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
