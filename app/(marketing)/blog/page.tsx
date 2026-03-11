@@ -36,7 +36,7 @@ export default function BlogIndexPage() {
   return (
     <main className="max-w-4xl mx-auto px-6 py-16 text-slate-900">
       <Link
-        href="/landing"
+        href="/(marketing)/landing"
         className="inline-flex items-center gap-1 mb-8 text-sm text-slate-600 hover:text-slate-800 hover:underline transition"
       >
         <span aria-hidden>←</span>

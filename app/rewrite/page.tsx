@@ -77,7 +77,7 @@ export default function RewritePage() {
 
     async function load() {
       try {
-        const meResp = await fetch("/api/me", {
+        const meResp = await fetch("/api/user/me", {
           method: "GET",
           cache: "no-store",
           signal: controller.signal,
@@ -87,7 +87,7 @@ export default function RewritePage() {
         const user: MeUser | null = meJson?.user ?? null;
 
         if (!user?.id) {
-          router.replace("/sign-in");
+          router.replace("/(auth)/sign-in");
           return;
         }
 
@@ -105,7 +105,7 @@ export default function RewritePage() {
           return;
         }
 
-        router.replace("/sign-in");
+        router.replace("/(auth)/sign-in");
       }
     }
 
@@ -170,7 +170,7 @@ export default function RewritePage() {
     try {
       if (!me?.id) {
         setError("You must be logged in to use ToneMender.");
-        router.replace("/sign-in");
+        router.replace("/(auth)/sign-in");
         return;
       }
 

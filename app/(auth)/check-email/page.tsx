@@ -64,7 +64,7 @@ export default function CheckEmailPage() {
           </Link>
 
           <Link
-            href="/landing"
+            href="/(marketing)/landing"
             className="text-sm text-slate-600 hover:text-slate-800 hover:underline transition"
           >
             Back to home

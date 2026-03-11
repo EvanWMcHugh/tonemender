@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "../../../../lib/security/play-integrity";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 import { isReviewer } from "@/lib/auth/reviewers";
 import bcrypt from "bcryptjs";
 
@@ -257,7 +257,7 @@ export async function POST(req: Request) {
         return jsonNoStore({ error: "Server error" }, { status: 500 });
       }
 
-      const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
+      const confirmUrl = `${appUrl}/(auth)/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
 
       try {
         await sendEmail({

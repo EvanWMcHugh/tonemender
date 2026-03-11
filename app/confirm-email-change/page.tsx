@@ -17,9 +17,9 @@ export default function ConfirmEmailChangePage() {
     const encoded = token ? encodeURIComponent(token) : null;
 
     if (encoded) {
-      router.replace(`/confirm?type=email-change&token=${encoded}`);
+      router.replace(`/(auth)/confirm?type=email-change&token=${encoded}`);
     } else {
-      router.replace("/confirm?type=email-change");
+      router.replace("/(auth)/confirm?type=email-change");
     }
   }, [token, router]);
 

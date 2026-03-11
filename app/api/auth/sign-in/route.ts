@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sha256Hex } from "@/lib/security/crypto";
 import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "../../../../lib/security/play-integrity";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 
 export const runtime = "nodejs";
 

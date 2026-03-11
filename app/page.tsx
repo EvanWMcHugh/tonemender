@@ -40,7 +40,7 @@ export default function AppHomePage() {
     const controller = new AbortController();
 
     async function fetchMe() {
-      const response = await fetch("/api/me", {
+      const response = await fetch("/api/user/me", {
         method: "GET",
         cache: "no-store",
         signal: controller.signal,
@@ -65,7 +65,7 @@ export default function AppHomePage() {
         }
 
         if (!user?.id) {
-          router.replace("/landing");
+          router.replace("/(marketing)/landing");
           return;
         }
 
@@ -81,7 +81,7 @@ export default function AppHomePage() {
           return;
         }
 
-        router.replace("/landing");
+        router.replace("/(marketing)/landing");
       }
     }
 

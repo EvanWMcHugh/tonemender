@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
-import { isProReviewer } from "../../lib/auth/reviewers";
+import { isProReviewer } from "@/lib/auth/reviewers";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
@@ -48,6 +48,11 @@ export default function AccountPage() {
   const [showEmailCaptcha, setShowEmailCaptcha] = useState(false);
   const [emailCaptchaToken, setEmailCaptchaToken] = useState<string | null>(null);
 
+  const [deleteError, setDeleteError] = useState("");
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [showDeleteCaptcha, setShowDeleteCaptcha] = useState(false);
+  const [deleteCaptchaToken, setDeleteCaptchaToken] = useState<string | null>(null);
+
   const todayStr = useMemo(() => getPacificDateString(), []);
   const normalizedCurrentEmail = useMemo(
     () => normalizeEmail(user?.email || ""),
@@ -55,11 +60,18 @@ export default function AccountPage() {
   );
 
   const pendingEmailSubmitRef = useRef(false);
+  const pendingDeleteSubmitRef = useRef(false);
 
   function resetEmailCaptchaState() {
     setEmailCaptchaToken(null);
     setShowEmailCaptcha(false);
     pendingEmailSubmitRef.current = false;
+  }
+
+  function resetDeleteCaptchaState() {
+    setDeleteCaptchaToken(null);
+    setShowDeleteCaptcha(false);
+    pendingDeleteSubmitRef.current = false;
   }
 
   function validateEmailCandidate(candidate: string) {
@@ -81,7 +93,7 @@ export default function AccountPage() {
 
     async function load() {
       try {
-        const meResp = await fetch("/api/me", {
+        const meResp = await fetch("/api/user/me", {
           method: "GET",
           signal: controller.signal,
           cache: "no-store",
@@ -91,7 +103,7 @@ export default function AccountPage() {
         const meUser: MeUser | null = meJson?.user ?? null;
 
         if (!meUser?.id) {
-          router.replace("/sign-in");
+          router.replace("/(auth)/sign-in");
           return;
         }
 
@@ -121,7 +133,7 @@ export default function AccountPage() {
           return;
         }
 
-        router.replace("/sign-in");
+        router.replace("/(auth)/sign-in");
       } finally {
         setLoading(false);
       }
@@ -140,31 +152,59 @@ export default function AccountPage() {
       });
     } catch {}
 
-    router.replace("/sign-in");
+    router.replace("/(auth)/sign-in");
   }
 
-  async function deleteAccount() {
+  async function submitDeleteAccount(turnstileToken: string) {
+    setDeleteLoading(true);
+    setDeleteError("");
+
+    try {
+      const res = await fetch("/api/user/delete-account", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          turnstileToken,
+        }),
+      });
+
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setDeleteError(json?.error || "Failed to delete account.");
+        resetDeleteCaptchaState();
+        return;
+      }
+
+      resetDeleteCaptchaState();
+      alert("Account deleted.");
+      router.replace("/(marketing)/landing");
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete account.");
+      resetDeleteCaptchaState();
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  async function handleDeleteAccount() {
+    setDeleteError("");
+
     const ok = confirm("Delete your ENTIRE account permanently?");
     if (!ok) return;
 
-    const res = await fetch("/api/delete-account", {
-      method: "POST",
-      cache: "no-store",
-    });
-
-    const json = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      alert(json?.error || "Failed to delete account.");
+    if (!deleteCaptchaToken) {
+      setShowDeleteCaptcha(true);
+      pendingDeleteSubmitRef.current = true;
       return;
     }
 
-    alert("Account deleted.");
-    router.replace("/landing");
+    await submitDeleteAccount(deleteCaptchaToken);
   }
 
   async function openBillingPortal() {
-    const res = await fetch("/api/portal", {
+    const res = await fetch("/api/billing/portal", {
       method: "POST",
       cache: "no-store",
     });
@@ -203,7 +243,7 @@ export default function AccountPage() {
 
       setNewEmail("");
       resetEmailCaptchaState();
-      router.push("/check-email?type=email-change");
+      router.push("/(auth)/check-email?type=email-change");
     } catch (err: unknown) {
       setEmailError(err instanceof Error ? err.message : "Failed to send confirmation email.");
       resetEmailCaptchaState();
@@ -250,6 +290,14 @@ export default function AccountPage() {
     submitEmailChange(candidate, emailCaptchaToken);
   }, [emailCaptchaToken, emailLoading, newEmail, normalizedCurrentEmail]);
 
+  useEffect(() => {
+    if (!deleteCaptchaToken) return;
+    if (!pendingDeleteSubmitRef.current) return;
+    if (deleteLoading) return;
+
+    submitDeleteAccount(deleteCaptchaToken);
+  }, [deleteCaptchaToken, deleteLoading]);
+
   if (loading) {
     return <p className="p-5">Loading...</p>;
   }
@@ -266,6 +314,9 @@ export default function AccountPage() {
     !newEmail.trim() ||
     Boolean(emailValidation) ||
     (showEmailCaptcha && !emailCaptchaToken);
+
+  const deleteSubmitDisabled =
+    deleteLoading || (showDeleteCaptcha && !deleteCaptchaToken);
 
   return (
     <main className="mx-auto max-w-xl p-6">
@@ -387,14 +438,42 @@ export default function AccountPage() {
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
         <h2 className="mb-3 text-xl font-semibold text-red-600">Danger Zone</h2>
 
+        {deleteError && <p className="mb-3 text-sm text-red-500">{deleteError}</p>}
+
         <div className="flex flex-wrap gap-3">
           <button
-            onClick={deleteAccount}
-            className="rounded-xl bg-red-600 px-4 py-2 text-white transition hover:bg-red-500"
+            onClick={handleDeleteAccount}
+            disabled={deleteSubmitDisabled}
+            className="rounded-xl bg-red-600 px-4 py-2 text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Delete Account
+            {deleteLoading ? "Deleting…" : showDeleteCaptcha ? "Verify Deletion…" : "Delete Account"}
           </button>
         </div>
+
+        {showDeleteCaptcha && (
+          <div className="mt-4">
+            <Turnstile
+              sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
+              theme="light"
+              onSuccess={(token) => setDeleteCaptchaToken(token)}
+              onExpire={() => setDeleteCaptchaToken(null)}
+              onError={() => setDeleteCaptchaToken(null)}
+            />
+
+            <p className="mt-2 text-[11px] text-slate-500">
+              Complete the captcha to continue account deletion. We’ll submit automatically when it’s done.
+            </p>
+
+            <button
+              type="button"
+              onClick={resetDeleteCaptchaState}
+              className="mt-2 text-xs text-slate-600 hover:underline"
+              disabled={deleteLoading}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
     </main>
   );

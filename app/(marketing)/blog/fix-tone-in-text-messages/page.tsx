@@ -29,7 +29,7 @@ export default function FixTonePost() {
   return (
     <main className="max-w-3xl mx-auto px-6 py-16 text-slate-900">
       <Link
-        href="/blog"
+        href="/(marketing)/blog"
         className="inline-flex items-center gap-1 mb-8 text-sm text-slate-600 hover:text-slate-800 hover:underline transition"
       >
         <span aria-hidden>←</span>
@@ -96,7 +96,7 @@ export default function FixTonePost() {
 
       <div className="mt-14 text-center">
         <Link
-          href="/sign-up"
+          href="/(auth)/sign-up"
           className="inline-block px-8 py-4 bg-blue-600 text-white rounded-2xl text-lg font-semibold hover:bg-blue-500 transition"
         >
           Try ToneMender Free

@@ -66,7 +66,7 @@ export default function DraftsPage() {
       setError("");
 
       try {
-        const meResp = await fetch("/api/me", {
+        const meResp = await fetch("/api/user/me", {
           method: "GET",
           signal: controller.signal,
           cache: "no-store",
@@ -75,7 +75,7 @@ export default function DraftsPage() {
         const meJson = await meResp.json().catch(() => ({ user: null }));
 
         if (!meJson?.user?.id) {
-          router.replace("/sign-in?error=not-authenticated");
+          router.replace("/(auth)/sign-in?error=not-authenticated");
           return;
         }
 

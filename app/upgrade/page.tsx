@@ -37,7 +37,7 @@ export default function UpgradePage() {
 
     async function check() {
       try {
-        const resp = await fetch("/api/me", {
+        const resp = await fetch("/api/user/me", {
           method: "GET",
           cache: "no-store",
           signal: controller.signal,
@@ -47,7 +47,7 @@ export default function UpgradePage() {
 
         // Not logged in → go to sign-in
         if (!user?.id) {
-          router.replace("/sign-in");
+          router.replace("/(auth)/sign-in");
           return;
         }
 
@@ -91,7 +91,7 @@ export default function UpgradePage() {
 
     // extra guards
     if (!me?.id) {
-      router.replace("/sign-in");
+      router.replace("/(auth)/sign-in");
       return;
     }
     if (reviewerIsPro) {
@@ -103,7 +103,7 @@ export default function UpgradePage() {
     setCheckoutLoading(type);
 
     try {
-      const res = await fetch("/api/checkout", {
+      const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // ✅ cookie-auth now; no Authorization header

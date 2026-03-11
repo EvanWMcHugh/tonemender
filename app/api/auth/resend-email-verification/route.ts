@@ -3,10 +3,13 @@ import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyTurnstile } from "@/lib/security/turnstile";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 
 export const runtime = "nodejs";
 
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+const ANDROID_CLIENT_HEADER = "android";
+const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -28,6 +31,10 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+}
+
 async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
   try {
     await supabaseAdmin.from("audit_log").insert({
@@ -40,7 +47,6 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
   } catch {}
 }
 
-// Rate limit helper (fail-open)
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -82,50 +88,77 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
+    const integrityToken = body?.integrityToken;
+    const integrityRequestHash = body?.integrityRequestHash;
 
-    // Always return ok to avoid leaks
     if (!emailRaw || typeof emailRaw !== "string") return jsonNoStore({ ok: true });
 
     const email = normalizeEmail(emailRaw);
     if (!email) return jsonNoStore({ ok: true });
 
-    // Rate limit by IP + email (don’t leak rate-limit either)
     const ip = getClientIp(req) || "unknown";
+    const androidClient = isAndroidClient(req);
+
     const ipAllowed = await rateLimitHit(`ip:${ip}:resend_verify`, 60, 10);
     const emailAllowed = await rateLimitHit(`email:${email}:resend_verify`, 300, 5);
     if (!ipAllowed || !emailAllowed) return jsonNoStore({ ok: true });
 
-    // Enforce captcha unless bypass email
     if (!CAPTCHA_BYPASS_EMAILS.has(email)) {
-      if (!turnstileToken || typeof turnstileToken !== "string") {
-        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
-      }
+      if (androidClient) {
+        if (!integrityToken || typeof integrityToken !== "string") {
+          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        }
 
-      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-      if (!okCaptcha) {
-        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+        if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
+          return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+        }
+
+        const integrity = await verifyAndroidPlayIntegrity({
+          integrityToken,
+          expectedPackageName: ANDROID_PACKAGE_NAME,
+          expectedRequestHash: integrityRequestHash,
+        });
+
+        if (!integrity.ok) {
+          await audit("EMAIL_VERIFY_RESEND_INTEGRITY_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+            payload: integrity.payload ?? null,
+          });
+
+          return jsonNoStore(
+            {
+              error: integrity.publicMessage,
+              reason: integrity.reason,
+              payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            },
+            { status: 403 }
+          );
+        }
+      } else {
+        if (!turnstileToken || typeof turnstileToken !== "string") {
+          return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+        }
+
+        const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+        if (!okCaptcha) {
+          return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+        }
       }
     }
 
-    // Lookup user in your custom users table
     const { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .select("id,email_verified_at,disabled_at,deleted_at")
       .eq("email", email)
       .maybeSingle();
 
-    // Don’t leak
     if (userErr || !user?.id) return jsonNoStore({ ok: true });
-
-    // Don’t resend for disabled/deleted users (still don’t leak)
     if (user.disabled_at || user.deleted_at) return jsonNoStore({ ok: true });
-
-    // Already verified -> nothing to do
     if (user.email_verified_at) return jsonNoStore({ ok: true });
 
     const userId = String(user.id);
 
-    // Keep only one valid email verification token at a time
     try {
       await supabaseAdmin
         .from("auth_tokens")
@@ -137,7 +170,7 @@ export async function POST(req: Request) {
 
     const token = generateToken(32);
     const tokenHash = sha256Hex(token);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString();
 
     const { error: insErr } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
@@ -150,16 +183,12 @@ export async function POST(req: Request) {
       data: {},
     });
 
-    // Don’t leak
     if (insErr) return jsonNoStore({ ok: true });
 
     const appUrl = process.env.APP_URL;
     if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
-    // IMPORTANT: make this match your /confirm page logic.
-    // If your confirm page expects type=signup, you can keep type=signup.
-    // But max polish is to rename it to type=email-verify to reduce confusion.
-    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(token)}`;
+    const confirmUrl = `${appUrl}/(auth)/confirm?type=email-verify&token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: email,
@@ -178,12 +207,11 @@ export async function POST(req: Request) {
       `,
     });
 
-    await audit("EMAIL_VERIFICATION_RESENT", userId, req, {});
+    await audit("EMAIL_VERIFICATION_RESENT", userId, req, { androidClient });
     return jsonNoStore({ ok: true });
   } catch (e: any) {
     console.error("RESEND EMAIL VERIFICATION ERROR:", e);
 
-    // Avoid leaks, but surface true server misconfig
     const msg = String(e?.message ?? "");
     if (msg.includes("Missing APP_URL") || msg.includes("TURNSTILE_SECRET_KEY")) {
       return jsonNoStore({ error: msg || "Server error" }, { status: 500 });

@@ -18,9 +18,9 @@ export default function ConfirmSignupPage() {
 
     // Backward compat: "signup" maps to your unified confirm system
     if (encoded) {
-      router.replace(`/confirm?type=signup&token=${encoded}`);
+      router.replace(`/(auth)/confirm?type=signup&token=${encoded}`);
     } else {
-      router.replace("/confirm?type=signup");
+      router.replace("/(auth)/confirm?type=signup");
     }
   }, [token, router]);
 

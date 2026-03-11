@@ -1,14 +1,15 @@
-// app/api/auth/request-password-reset/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { verifyTurnstile } from "@/lib/security/turnstile";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 
 export const runtime = "nodejs";
 
-// Only these are excluded from captcha (match your sign-in page)
 const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+const ANDROID_CLIENT_HEADER = "android";
+const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -30,7 +31,10 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-// DB-backed rate limit helper (simple, fail-open)
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+}
+
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -79,57 +83,88 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
   } catch {}
 }
 
-// We never want to reveal whether an email exists.
-// Always return { ok: true } unless captcha is missing/invalid.
+// Never reveal whether an email exists.
+// Return { ok: true } unless the request itself is malformed or protection fails.
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
+    const integrityToken = body?.integrityToken;
+    const integrityRequestHash = body?.integrityRequestHash;
 
-    // Always OK (don’t leak)
-    if (!emailRaw || typeof emailRaw !== "string") return jsonNoStore({ ok: true });
+    if (!emailRaw || typeof emailRaw !== "string") {
+      return jsonNoStore({ ok: true });
+    }
 
     const email = normalizeEmail(emailRaw);
     const ip = getClientIp(req) || "unknown";
+    const androidClient = isAndroidClient(req);
 
-    // Rate limit by IP and by email (don’t leak on rate limit either)
-    // If rate-limited, we still return ok:true to avoid side channels.
     const ipAllowed = await rateLimitHit(`ip:${ip}:pw_reset_request`, 60, 10);
     const emailAllowed = await rateLimitHit(`email:${email}:pw_reset_request`, 300, 5);
-    if (!ipAllowed || !emailAllowed) return jsonNoStore({ ok: true });
+    if (!ipAllowed || !emailAllowed) {
+      return jsonNoStore({ ok: true });
+    }
 
     const isBypassEmail = CAPTCHA_BYPASS_EMAILS.has(email);
 
-    // Enforce captcha unless bypass email
     if (!isBypassEmail) {
-      if (!turnstileToken || typeof turnstileToken !== "string") {
-        // This one can be a hard error because it’s not an existence leak
-        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
-      }
+      if (androidClient) {
+        if (!integrityToken || typeof integrityToken !== "string") {
+          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        }
 
-      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-      if (!okCaptcha) {
-        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+        if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
+          return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+        }
+
+        const integrity = await verifyAndroidPlayIntegrity({
+          integrityToken,
+          expectedPackageName: ANDROID_PACKAGE_NAME,
+          expectedRequestHash: integrityRequestHash,
+        });
+
+        if (!integrity.ok) {
+          await audit("PASSWORD_RESET_INTEGRITY_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+            payload: integrity.payload ?? null,
+          });
+
+          return jsonNoStore(
+            {
+              error: integrity.publicMessage,
+              reason: integrity.reason,
+              payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            },
+            { status: 403 }
+          );
+        }
+      } else {
+        if (!turnstileToken || typeof turnstileToken !== "string") {
+          return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+        }
+
+        const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+        if (!okCaptcha) {
+          await audit("PASSWORD_RESET_CAPTCHA_FAILED", null, req, { email });
+          return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+        }
       }
     }
 
-    // Look up user in your users table
     const { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .select("id,email,disabled_at,deleted_at")
       .eq("email", email)
       .maybeSingle();
 
-    // Still don't leak
     if (userErr || !user?.id) return jsonNoStore({ ok: true });
-
-    // Don’t issue reset links for disabled/deleted users (still don’t leak)
     if (user.disabled_at || user.deleted_at) return jsonNoStore({ ok: true });
 
     const userId = String(user.id);
 
-    // Replace any previous unconsumed reset token (required due to unique partial index)
     try {
       await supabaseAdmin
         .from("auth_tokens")
@@ -139,10 +174,9 @@ export async function POST(req: Request) {
         .is("consumed_at", null);
     } catch {}
 
-    // Create token (store hash only)
     const raw = generateToken(32);
     const tokenHash = sha256Hex(raw);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString(); // 30 minutes
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString();
 
     const { error: insErr } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
@@ -155,11 +189,10 @@ export async function POST(req: Request) {
       data: {},
     });
 
-    // Still don't leak
     if (insErr) return jsonNoStore({ ok: true });
 
     const appUrl = process.env.APP_URL || "https://tonemender.com";
-    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(raw)}`;
+    const resetUrl = `${appUrl}/(auth)/reset-password?token=${encodeURIComponent(raw)}`;
 
     await sendEmail({
       to: email,
@@ -183,11 +216,10 @@ export async function POST(req: Request) {
       `,
     });
 
-    await audit("PASSWORD_RESET_REQUESTED", userId, req, {});
+    await audit("PASSWORD_RESET_REQUESTED", userId, req, { androidClient });
     return jsonNoStore({ ok: true });
   } catch (err) {
     console.error("REQUEST PASSWORD RESET ERROR:", err);
-    // Still don't leak
     return jsonNoStore({ ok: true });
   }
 }

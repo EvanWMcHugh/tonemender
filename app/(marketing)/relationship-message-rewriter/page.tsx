@@ -52,7 +52,7 @@ export default function RelationshipMessageRewriterPage() {
       />
 
       <Link
-        href="/landing"
+        href="/(marketing)/landing"
         className="inline-flex items-center gap-1 mb-8 text-sm text-slate-600 hover:underline"
       >
         <span aria-hidden>←</span>
@@ -71,13 +71,13 @@ export default function RelationshipMessageRewriterPage() {
 
         <div className="mt-6 flex flex-col sm:flex-row gap-3">
           <Link
-            href="/sign-up"
+            href="/(auth)/sign-up"
             className="inline-flex items-center justify-center px-7 py-3 bg-blue-600 text-white rounded-2xl text-base font-semibold hover:bg-blue-500 transition"
           >
             Try ToneMender Free
           </Link>
           <Link
-            href="/sign-in"
+            href="/(auth)/sign-in"
             className="inline-flex items-center justify-center px-7 py-3 bg-slate-200 text-slate-900 rounded-2xl text-base font-semibold hover:bg-slate-300 transition"
           >
             Sign In
@@ -176,7 +176,7 @@ export default function RelationshipMessageRewriterPage() {
 
       <div className="mt-16 text-center">
         <Link
-          href="/sign-up"
+          href="/(auth)/sign-up"
           className="inline-flex items-center justify-center px-8 py-4 bg-blue-600 text-white rounded-2xl text-lg font-semibold hover:bg-blue-500 transition"
         >
           Try ToneMender Free

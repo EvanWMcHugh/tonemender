@@ -149,7 +149,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Failed to create confirmation link" }, { status: 500 });
     }
 
-    const confirmUrl = `${appUrl}/confirm?type=newsletter&token=${encodeURIComponent(rawToken)}`;
+    const confirmUrl = `${appUrl}/(auth)/confirm?type=newsletter&token=${encodeURIComponent(rawToken)}`;
 
     await sendEmail({
       to: email,

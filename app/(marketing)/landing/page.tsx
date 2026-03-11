@@ -8,7 +8,7 @@ import Link from "next/link";
 type LoadState = "checking" | "ready";
 
 async function fetchMe(signal?: AbortSignal) {
-  const resp = await fetch("/api/me", { method: "GET", cache: "no-store", signal });
+  const resp = await fetch("/api/user/me", { method: "GET", cache: "no-store", signal });
   const json = await resp.json().catch(() => ({ user: null }));
   return json?.user ?? null;
 }
@@ -82,14 +82,14 @@ export default function MarketingLandingPage() {
           className="mt-10 flex flex-col sm:flex-row gap-4 justify-center"
         >
           <Link
-            href="/sign-up"
+            href="/(auth)/sign-up"
             className="px-8 py-4 bg-blue-600 text-white rounded-2xl text-lg font-semibold hover:bg-blue-500 transition shadow-md"
           >
             Start Free
           </Link>
 
           <Link
-            href="/sign-in"
+            href="/(auth)/sign-in"
             className="px-8 py-4 bg-slate-200 text-slate-900 rounded-2xl text-lg font-semibold hover:bg-slate-300 transition"
           >
             Sign In
@@ -111,7 +111,7 @@ export default function MarketingLandingPage() {
           <p className="text-slate-600 text-center mb-12">
             Learn more about how a{" "}
             <Link
-              href="/relationship-message-rewriter"
+              href="/(marketing)/relationship-message-rewriter"
               className="text-blue-600 underline font-medium"
             >
               relationship message rewriter
@@ -181,11 +181,11 @@ export default function MarketingLandingPage() {
         </p>
 
         <div className="mt-3 flex items-center justify-center gap-4">
-          <Link href="/blog" className="underline">
+          <Link href="/(makreting)/blog" className="underline">
             Read the Blog
           </Link>
           <span className="text-slate-300">•</span>
-          <Link href="/sign-in" className="underline">
+          <Link href="/(auth)/sign-in" className="underline">
             Go to App
           </Link>
         </div>

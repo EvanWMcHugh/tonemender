@@ -11,21 +11,21 @@ const SESSION_COOKIE = "tm_session";
 function isPublicPath(pathname: string) {
   // Exact public pages
   if (
-    pathname === "/landing" ||
-    pathname === "/sign-in" ||
-    pathname === "/sign-up" ||
-    pathname === "/check-email" ||
-    pathname === "/reset-password" ||
-    pathname === "/confirm" ||
-    pathname === "/privacy" ||
-    pathname === "/terms" ||
-    pathname === "/relationship-message-rewriter"
+    pathname === "/(marketing)/landing" ||
+    pathname === "/(auth)/sign-in" ||
+    pathname === "/(auth)/sign-up" ||
+    pathname === "/(auth)/check-email" ||
+    pathname === "/(auth)/reset-password" ||
+    pathname === "/(auth)/confirm" ||
+    pathname === "/(legal)/privacy" ||
+    pathname === "/(legal)/terms" ||
+    pathname === "/(marketing)/relationship-message-rewriter"
   ) {
     return true;
   }
 
   // Public sections
-  if (pathname === "/blog" || pathname.startsWith("/blog/")) return true;
+  if (pathname === "/(marketing)/blog" || pathname.startsWith("/(marketing)/blog/")) return true;
 
   return false;
 }
