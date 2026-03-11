@@ -88,10 +88,10 @@ export default function RootLayout({
             <span>© {new Date().getFullYear()} ToneMender</span>
 
             <nav className="flex gap-4" aria-label="Footer navigation">
-              <Link href="/(legal)/privacy" className="hover:text-gray-700">
+              <Link href="/privacy" className="hover:text-gray-700">
                 Privacy Policy
               </Link>
-              <Link href="/(legal)/terms" className="hover:text-gray-700">
+              <Link href="/terms" className="hover:text-gray-700">
                 Terms of Service
               </Link>
             </nav>

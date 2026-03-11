@@ -251,7 +251,7 @@ export default function DebugPage() {
         {(status === "no-cookie" || status === "missing-session" || status === "revoked" || status === "expired") && (
           <div className="mt-4 flex flex-wrap gap-2">
             <button
-              onClick={() => router.push("/(auth)/sign-in")}
+              onClick={() => router.push("/sign-in")}
               className="text-xs px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500"
             >
               Go to Sign In

@@ -192,7 +192,7 @@ export async function POST(req: Request) {
     if (insErr) return jsonNoStore({ ok: true });
 
     const appUrl = process.env.APP_URL || "https://tonemender.com";
-    const resetUrl = `${appUrl}/(auth)/reset-password?token=${encodeURIComponent(raw)}`;
+    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(raw)}`;
 
     await sendEmail({
       to: email,

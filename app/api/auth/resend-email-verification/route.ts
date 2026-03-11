@@ -188,7 +188,7 @@ export async function POST(req: Request) {
     const appUrl = process.env.APP_URL;
     if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
-    const confirmUrl = `${appUrl}/(auth)/confirm?type=email-verify&token=${encodeURIComponent(token)}`;
+    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(token)}`;
 
     await sendEmail({
       to: email,

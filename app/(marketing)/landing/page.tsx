@@ -82,14 +82,14 @@ export default function MarketingLandingPage() {
           className="mt-10 flex flex-col sm:flex-row gap-4 justify-center"
         >
           <Link
-            href="/(auth)/sign-up"
+            href="/sign-up"
             className="px-8 py-4 bg-blue-600 text-white rounded-2xl text-lg font-semibold hover:bg-blue-500 transition shadow-md"
           >
             Start Free
           </Link>
 
           <Link
-            href="/(auth)/sign-in"
+            href="/sign-in"
             className="px-8 py-4 bg-slate-200 text-slate-900 rounded-2xl text-lg font-semibold hover:bg-slate-300 transition"
           >
             Sign In
@@ -111,7 +111,7 @@ export default function MarketingLandingPage() {
           <p className="text-slate-600 text-center mb-12">
             Learn more about how a{" "}
             <Link
-              href="/(marketing)/relationship-message-rewriter"
+              href="/relationship-message-rewriter"
               className="text-blue-600 underline font-medium"
             >
               relationship message rewriter
@@ -185,7 +185,7 @@ export default function MarketingLandingPage() {
             Read the Blog
           </Link>
           <span className="text-slate-300">•</span>
-          <Link href="/(auth)/sign-in" className="underline">
+          <Link href="/sign-in" className="underline">
             Go to App
           </Link>
         </div>

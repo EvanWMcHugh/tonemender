@@ -255,7 +255,7 @@ export async function POST(req: Request) {
     }
 
     const appUrl = process.env.APP_URL || "https://tonemender.com";
-    const confirmUrl = `${appUrl}/(auth)/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
+    const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
 
     await sendEmail({
       to: nextEmail,

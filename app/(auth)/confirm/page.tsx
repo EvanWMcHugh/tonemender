@@ -110,14 +110,14 @@ export default function ConfirmPage() {
           <div className="mt-6 flex flex-col gap-3 items-center">
             {(type === "signup" || type === "email-change") && (
               <Link
-                href="/(auth)/sign-in"
+                href="/sign-in"
                 className="inline-flex items-center justify-center rounded-xl bg-blue-600 text-white px-4 py-2 text-sm font-semibold hover:bg-blue-500 transition"
               >
                 Sign in
               </Link>
             )}
 
-            <Link href="/(marketing)/landing" className="text-sm text-slate-600 hover:underline">
+            <Link href="/landing" className="text-sm text-slate-600 hover:underline">
               Back to home
             </Link>
           </div>
@@ -139,12 +139,12 @@ export default function ConfirmPage() {
 
         <div className="mt-6 flex flex-col gap-3 items-center">
           {type === "signup" && (
-            <Link href="/(auth)/sign-up" className="text-sm text-blue-600 hover:underline">
+            <Link href="/sign-up" className="text-sm text-blue-600 hover:underline">
               Create a new account
             </Link>
           )}
 
-          <Link href="/(marketing)/landing" className="text-sm text-slate-600 hover:underline">
+          <Link href="/landing" className="text-sm text-slate-600 hover:underline">
             Back to home
           </Link>
         </div>

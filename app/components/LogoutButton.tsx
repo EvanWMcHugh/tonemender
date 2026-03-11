@@ -43,7 +43,7 @@ export default function LogoutButton() {
     }
 
     // Redirect after logout
-    router.replace("/(auth)/sign-in");
+    router.replace("/sign-in");
   }
 
   return (

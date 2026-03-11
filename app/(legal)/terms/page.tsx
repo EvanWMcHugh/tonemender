@@ -11,7 +11,7 @@ export default function TermsPage() {
   return (
     <main className="bg-white">
       <div className="max-w-3xl mx-auto px-6 py-14 text-gray-800 leading-relaxed">
-        <BackButton fallbackHref="/(marketing)/landing" />
+        <BackButton fallbackHref="/landing" />
 
         <header className="mb-10">
           <h1 className="text-3xl font-bold mb-2">Terms of Service</h1>

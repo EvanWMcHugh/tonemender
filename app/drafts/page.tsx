@@ -75,7 +75,7 @@ export default function DraftsPage() {
         const meJson = await meResp.json().catch(() => ({ user: null }));
 
         if (!meJson?.user?.id) {
-          router.replace("/(auth)/sign-in?error=not-authenticated");
+          router.replace("/sign-in?error=not-authenticated");
           return;
         }
 

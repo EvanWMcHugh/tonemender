@@ -257,7 +257,7 @@ export async function POST(req: Request) {
         return jsonNoStore({ error: "Server error" }, { status: 500 });
       }
 
-      const confirmUrl = `${appUrl}/(auth)/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
+      const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
 
       try {
         await sendEmail({

@@ -47,7 +47,7 @@ export default function UpgradePage() {
 
         // Not logged in → go to sign-in
         if (!user?.id) {
-          router.replace("/(auth)/sign-in");
+          router.replace("/sign-in");
           return;
         }
 
@@ -91,7 +91,7 @@ export default function UpgradePage() {
 
     // extra guards
     if (!me?.id) {
-      router.replace("/(auth)/sign-in");
+      router.replace("/sign-in");
       return;
     }
     if (reviewerIsPro) {

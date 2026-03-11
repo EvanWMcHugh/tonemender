@@ -87,7 +87,7 @@ export default function RewritePage() {
         const user: MeUser | null = meJson?.user ?? null;
 
         if (!user?.id) {
-          router.replace("/(auth)/sign-in");
+          router.replace("/sign-in");
           return;
         }
 
@@ -105,7 +105,7 @@ export default function RewritePage() {
           return;
         }
 
-        router.replace("/(auth)/sign-in");
+        router.replace("/sign-in");
       }
     }
 
@@ -170,7 +170,7 @@ export default function RewritePage() {
     try {
       if (!me?.id) {
         setError("You must be logged in to use ToneMender.");
-        router.replace("/(auth)/sign-in");
+        router.replace("/sign-in");
         return;
       }
 

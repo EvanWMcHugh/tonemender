@@ -12,7 +12,7 @@ export default function PrivacyPage() {
   return (
     <main className="bg-white">
       <div className="max-w-3xl mx-auto px-6 py-14 text-gray-800 leading-relaxed">
-        <BackButton fallbackHref="/(marketing)/landing" />
+        <BackButton fallbackHref="/landing" />
 
         <header className="mb-10">
           <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
@@ -138,10 +138,10 @@ export default function PrivacyPage() {
         <div className="mt-10 pt-8 border-t text-sm text-gray-500 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
           <p>© {new Date().getFullYear()} ToneMender</p>
           <div className="flex gap-4">
-            <Link href="/(legal)/terms" className="underline hover:opacity-80">
+            <Link href="/terms" className="underline hover:opacity-80">
               Terms
             </Link>
-            <Link href="/(marketing)/landing" className="underline hover:opacity-80">
+            <Link href="/landing" className="underline hover:opacity-80">
               Back to Landing
             </Link>
           </div>

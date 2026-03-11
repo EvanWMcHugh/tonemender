@@ -124,7 +124,7 @@ export default function ResetPasswordPage() {
 
       // short friendly redirect after success
       redirectTimerRef.current = setTimeout(() => {
-        router.replace("/(auth)/sign-in");
+        router.replace("/sign-in");
       }, 900);
     } catch (err) {
       console.error("RESET PASSWORD ERROR:", err);
@@ -239,7 +239,7 @@ export default function ResetPasswordPage() {
         </form>
 
         <div className="mt-5 text-center">
-          <Link href="/(auth)/sign-in" className="text-sm text-blue-600 underline">
+          <Link href="/sign-in" className="text-sm text-blue-600 underline">
             Back to sign in
           </Link>
         </div>

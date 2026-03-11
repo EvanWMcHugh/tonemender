@@ -103,7 +103,7 @@ export default function AccountPage() {
         const meUser: MeUser | null = meJson?.user ?? null;
 
         if (!meUser?.id) {
-          router.replace("/(auth)/sign-in");
+          router.replace("/sign-in");
           return;
         }
 
@@ -133,7 +133,7 @@ export default function AccountPage() {
           return;
         }
 
-        router.replace("/(auth)/sign-in");
+        router.replace("/sign-in");
       } finally {
         setLoading(false);
       }
@@ -152,7 +152,7 @@ export default function AccountPage() {
       });
     } catch {}
 
-    router.replace("/(auth)/sign-in");
+    router.replace("/sign-in");
   }
 
   async function submitDeleteAccount(turnstileToken: string) {
@@ -179,7 +179,7 @@ export default function AccountPage() {
 
       resetDeleteCaptchaState();
       alert("Account deleted.");
-      router.replace("/(marketing)/landing");
+      router.replace("/landing");
     } catch (err: unknown) {
       setDeleteError(err instanceof Error ? err.message : "Failed to delete account.");
       resetDeleteCaptchaState();
@@ -243,7 +243,7 @@ export default function AccountPage() {
 
       setNewEmail("");
       resetEmailCaptchaState();
-      router.push("/(auth)/check-email?type=email-change");
+      router.push("/check-email?type=email-change");
     } catch (err: unknown) {
       setEmailError(err instanceof Error ? err.message : "Failed to send confirmation email.");
       resetEmailCaptchaState();

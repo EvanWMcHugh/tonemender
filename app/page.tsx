@@ -65,7 +65,7 @@ export default function AppHomePage() {
         }
 
         if (!user?.id) {
-          router.replace("/(marketing)/landing");
+          router.replace("/landing");
           return;
         }
 
@@ -81,7 +81,7 @@ export default function AppHomePage() {
           return;
         }
 
-        router.replace("/(marketing)/landing");
+        router.replace("/landing");
       }
     }
 

@@ -247,7 +247,7 @@ export default function LoginPage() {
 
       setResetSent(true);
       cleanupCaptchaState();
-      router.push("/(auth)/check-email?type=password-reset");
+      router.push("/check-email?type=password-reset");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Password reset failed");
       cleanupCaptchaState();
@@ -306,7 +306,7 @@ export default function LoginPage() {
 
       setResendSent(true);
       cleanupCaptchaState();
-      router.push("/(auth)/check-email?type=signup");
+      router.push("/check-email?type=signup");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not resend confirmation email");
       cleanupCaptchaState();
@@ -358,7 +358,7 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
         <Link
-          href="/(marketing)/landing"
+          href="/landing"
           className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:underline"
         >
           <span aria-hidden>←</span>
@@ -476,7 +476,7 @@ export default function LoginPage() {
 
         <p className="mt-6 text-center text-sm">
           Don’t have an account?{" "}
-          <Link href="/(auth)/sign-up" className="text-blue-600 underline">
+          <Link href="/sign-up" className="text-blue-600 underline">
             Sign Up
           </Link>
         </p>

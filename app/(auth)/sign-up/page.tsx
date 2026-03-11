@@ -149,7 +149,7 @@ export default function SignUpPage() {
       if (!json?.success) throw new Error(json?.error || "Sign up failed");
 
       cleanupCaptchaState();
-      router.replace("/(auth)/check-email?type=signup");
+      router.replace("/check-email?type=signup");
     } catch (err: any) {
       setError(err?.message || "Sign up failed");
       cleanupCaptchaState();
@@ -185,7 +185,7 @@ export default function SignUpPage() {
     <main className="flex min-h-screen items-center justify-center bg-white">
       <div className="w-[360px]">
         <Link
-          href="/(marketing)/landing"
+          href="/landing"
           className="inline-flex items-center gap-1 mb-4 text-sm text-slate-600 hover:underline"
         >
           <span aria-hidden>←</span>
@@ -277,7 +277,7 @@ export default function SignUpPage() {
 
         <p className="mt-6 text-center text-sm">
           Already have an account?{" "}
-          <Link href="/(auth)/sign-in" className="text-blue-600 underline">
+          <Link href="/sign-in" className="text-blue-600 underline">
             Sign In
           </Link>
         </p>
