@@ -181,7 +181,7 @@ export default function MarketingLandingPage() {
         </p>
 
         <div className="mt-3 flex items-center justify-center gap-4">
-          <Link href="/(makreting)/blog" className="underline">
+          <Link href="/blog" className="underline">
             Read the Blog
           </Link>
           <span className="text-slate-300">•</span>
