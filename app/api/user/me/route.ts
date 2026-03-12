@@ -35,8 +35,12 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === "android";
+}
+
 function clearSessionCookie(req: Request, res: NextResponse) {
-  const cookieDomain = getCookieDomain(req);
+  const cookieDomain = isAndroidClient(req) ? undefined : getCookieDomain(req);
 
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,

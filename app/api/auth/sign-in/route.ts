@@ -252,16 +252,16 @@ export async function POST(req: Request) {
       },
     });
 
-    const cookieDomain = getCookieDomain(req);
+    const cookieDomain = androidClient ? undefined : getCookieDomain(req);
 
-    res.cookies.set(SESSION_COOKIE, rawSessionToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: maxAgeSeconds,
-      ...(cookieDomain ? { domain: cookieDomain } : {}),
-    });
+res.cookies.set(SESSION_COOKIE, rawSessionToken, {
+  httpOnly: true,
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+  maxAge: maxAgeSeconds,
+  ...(cookieDomain ? { domain: cookieDomain } : {}),
+});
 
     return res;
   } catch {

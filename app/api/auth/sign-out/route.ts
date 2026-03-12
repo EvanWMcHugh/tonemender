@@ -5,6 +5,7 @@ import { sha256Hex } from "@/lib/security/crypto";
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
+const ANDROID_CLIENT_HEADER = "android";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -28,10 +29,18 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-// Share cookie across tonemender.com + www.tonemender.com
+function isAndroidClient(req: Request) {
+  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+}
+
+// Share cookie across tonemender.com + www.tonemender.com for web only
 function getCookieDomain(req: Request) {
   const host = req.headers.get("host") || "";
-  if (host === "tonemender.com" || host === "www.tonemender.com" || host.endsWith(".tonemender.com")) {
+  if (
+    host === "tonemender.com" ||
+    host === "www.tonemender.com" ||
+    host.endsWith(".tonemender.com")
+  ) {
     return ".tonemender.com";
   }
   return undefined;
@@ -58,7 +67,6 @@ export async function POST(req: Request) {
     if (raw) {
       const hash = sha256Hex(raw);
 
-      // Revoke rather than delete (keeps auditability)
       try {
         await supabaseAdmin
           .from("sessions")
@@ -66,7 +74,6 @@ export async function POST(req: Request) {
           .eq("session_token_hash", hash)
           .is("revoked_at", null);
       } catch {
-        // If revoke fails, fall back to delete best-effort
         try {
           await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
         } catch {}
@@ -75,15 +82,13 @@ export async function POST(req: Request) {
 
     await audit("SIGN_OUT_OK", req, {});
   } catch (err) {
-    // Best-effort logout: never block client
     console.warn("SIGN OUT CLEANUP WARNING:", err);
   }
 
   const res = jsonNoStore({ ok: true });
 
-  const cookieDomain = getCookieDomain(req);
+  const cookieDomain = isAndroidClient(req) ? undefined : getCookieDomain(req);
 
-  // Clear cookie (match domain used at sign-in)
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
