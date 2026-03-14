@@ -9,19 +9,26 @@ function jsonNoStore(data: unknown, init?: ResponseInit) {
   return res;
 }
 
+function getPlatform(req: Request) {
+  return req.headers.get("x-client-platform") ?? null;
+}
+
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const keyId = typeof body?.keyId === "string" ? body.keyId : null;
-    const requestHash = typeof body?.requestHash === "string" ? body.requestHash : null;
+    const platform = getPlatform(req);
+
+    if (platform !== "ios") {
+      return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
+    }
 
     const result = await createAppAttestChallenge({
       purpose: "assertion",
-      keyId,
-      requestHash,
     });
 
-    return jsonNoStore(result);
+    return jsonNoStore({
+      challengeId: result.challengeId,
+      challenge: result.challenge,
+    });
   } catch {
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }

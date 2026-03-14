@@ -28,12 +28,16 @@ function shouldBypassInternalChecks(email: string) {
   return isReviewer(email);
 }
 
+function getClientPlatform(req: Request) {
+  return req.headers.get("x-client-platform");
+}
+
 function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
 }
 
 function isIosClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === IOS_CLIENT_HEADER;
+  return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
 function isValidEmail(email: string) {
@@ -51,7 +55,12 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, any> = {}
+) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -101,7 +110,10 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({} as any));
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const body = rawText ? JSON.parse(rawText) : {};
+
     const emailRaw = body?.email;
     const password = body?.password;
     const captchaToken = body?.captchaToken;
@@ -126,7 +138,11 @@ export async function POST(req: Request) {
     const emailAllowed = await rateLimitHit(`email:${email}:sign_up`, 300, 5);
 
     if (!ipAllowed || !emailAllowed) {
-      await audit("SIGN_UP_RATE_LIMITED", null, req, { email, androidClient });
+      await audit("SIGN_UP_RATE_LIMITED", null, req, {
+        email,
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
@@ -143,80 +159,85 @@ export async function POST(req: Request) {
     }
 
     if (!shouldBypassInternal) {
-  if (androidClient) {
-    if (typeof integrityToken !== "string" || !integrityToken) {
-      return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      if (androidClient) {
+        if (typeof integrityToken !== "string" || !integrityToken) {
+          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        }
+
+        if (typeof integrityRequestHash !== "string" || !integrityRequestHash) {
+          return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+        }
+
+        const integrity = await verifyAndroidPlayIntegrity({
+          integrityToken,
+          expectedPackageName: ANDROID_PACKAGE_NAME,
+          expectedRequestHash: integrityRequestHash,
+        });
+
+        if (!integrity.ok) {
+          await audit("SIGN_UP_INTEGRITY_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+            payload: integrity.payload ?? null,
+          });
+
+          return jsonNoStore(
+            {
+              error: integrity.publicMessage,
+              reason: integrity.reason,
+              payload:
+                process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            },
+            { status: 403 }
+          );
+        }
+      } else if (iosClient) {
+        const keyId = req.headers.get("x-app-attest-key-id");
+        const assertion = req.headers.get("x-app-attest-assertion");
+        const challengeId = req.headers.get("x-app-attest-challenge-id");
+
+        if (!keyId || !assertion || !challengeId) {
+          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        }
+
+        const integrity = await verifyIosAppAttestAssertion({
+          keyId,
+          assertion,
+          challengeId,
+          method: "POST",
+          path: "/api/auth/sign-up",
+          requestBody: rawBodyBuffer,
+        });
+
+        if (!integrity.ok) {
+          await audit("SIGN_UP_IOS_APP_ATTEST_FAILED", null, req, {
+            email,
+            reason: integrity.reason,
+            payload: integrity.payload ?? null,
+          });
+
+          return jsonNoStore(
+            {
+              error: integrity.publicMessage,
+              reason: integrity.reason,
+              payload:
+                process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            },
+            { status: 403 }
+          );
+        }
+      } else {
+        if (typeof captchaToken !== "string" || !captchaToken) {
+          return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+        }
+
+        const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
+        if (!okCaptcha) {
+          await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
+          return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+        }
+      }
     }
-
-    if (typeof integrityRequestHash !== "string" || !integrityRequestHash) {
-      return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
-    }
-
-    const integrity = await verifyAndroidPlayIntegrity({
-      integrityToken,
-      expectedPackageName: ANDROID_PACKAGE_NAME,
-      expectedRequestHash: integrityRequestHash,
-    });
-
-    if (!integrity.ok) {
-      await audit("SIGN_UP_INTEGRITY_FAILED", null, req, {
-        email,
-        reason: integrity.reason,
-        payload: integrity.payload ?? null,
-      });
-
-      return jsonNoStore(
-        {
-          error: integrity.publicMessage,
-          reason: integrity.reason,
-          payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
-        },
-        { status: 403 }
-      );
-    }
-  } else if (iosClient) {
-    const keyId = req.headers.get("x-tonemender-app-attest-key-id");
-    const assertion = req.headers.get("x-tonemender-app-attest-assertion");
-    const challenge = req.headers.get("x-tonemender-app-attest-challenge");
-    const requestHash = req.headers.get("x-tonemender-request-hash");
-
-    if (!keyId || !assertion || !challenge || !requestHash) {
-      return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
-    }
-
-    const integrity = await verifyIosAppAttestAssertion({
-      keyId,
-      assertion,
-      challenge,
-      requestHash,
-    });
-
-    if (!integrity.ok) {
-      await audit("SIGN_UP_IOS_APP_ATTEST_FAILED", null, req, {
-        email,
-        reason: integrity.reason,
-      });
-
-      return jsonNoStore(
-        {
-          error: integrity.publicMessage,
-          reason: integrity.reason,
-        },
-        { status: 403 }
-      );
-    }
-  } else {
-    if (typeof captchaToken !== "string" || !captchaToken) {
-      return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
-    }
-
-    const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
-    if (!okCaptcha) {
-      await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
-      return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
-    }
-  }
-}
 
     const { data: existing, error: existErr } = await supabaseAdmin
       .from("users")
@@ -333,6 +354,7 @@ export async function POST(req: Request) {
       email,
       bypassed_internal_checks: shouldBypassInternal,
       androidClient,
+      iosClient,
     });
 
     return jsonNoStore({ success: true });

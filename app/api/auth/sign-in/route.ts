@@ -52,12 +52,16 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
+function getClientPlatform(req: Request) {
+  return req.headers.get("x-client-platform");
+}
+
 function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
 }
 
 function isIosClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === IOS_CLIENT_HEADER;
+  return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
@@ -117,7 +121,10 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const body = rawText ? JSON.parse(rawText) : {};
+
     const emailRaw = body?.email;
     const password = body?.password;
     const captchaToken = body?.captchaToken;
@@ -142,85 +149,92 @@ export async function POST(req: Request) {
     const emailAllowed = await rateLimitHit(`email:${email}:sign_in`, 300, 10);
 
     if (!ipAllowed || !emailAllowed) {
-      await audit("SIGN_IN_RATE_LIMITED", null, req, { email, androidClient });
+      await audit("SIGN_IN_RATE_LIMITED", null, req, {
+        email,
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
     const bypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
 
     if (androidClient) {
-  if (!integrityToken || typeof integrityToken !== "string") {
-    return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
-  }
+      if (!integrityToken || typeof integrityToken !== "string") {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
 
-  if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-    return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
-  }
+      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
+        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      }
 
-  const integrity = await verifyAndroidPlayIntegrity({
-    integrityToken,
-    expectedPackageName: ANDROID_PACKAGE_NAME,
-    expectedRequestHash: integrityRequestHash,
-  });
+      const integrity = await verifyAndroidPlayIntegrity({
+        integrityToken,
+        expectedPackageName: ANDROID_PACKAGE_NAME,
+        expectedRequestHash: integrityRequestHash,
+      });
 
-  if (!integrity.ok) {
-    await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
-      email,
-      reason: integrity.reason,
-      payload: integrity.payload ?? null,
-    });
+      if (!integrity.ok) {
+        await audit("SIGN_IN_INTEGRITY_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
 
-    return jsonNoStore(
-      {
-        error: integrity.publicMessage,
-        reason: integrity.reason,
-        payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
-      },
-      { status: 403 }
-    );
-  }
-} else if (iosClient && !bypassCaptcha) {
-  const keyId = req.headers.get("x-tonemender-app-attest-key-id");
-  const assertion = req.headers.get("x-tonemender-app-attest-assertion");
-  const challenge = req.headers.get("x-tonemender-app-attest-challenge");
-  const requestHash = req.headers.get("x-tonemender-request-hash");
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
+    } else if (iosClient && !bypassCaptcha) {
+      const keyId = req.headers.get("x-app-attest-key-id");
+      const assertion = req.headers.get("x-app-attest-assertion");
+      const challengeId = req.headers.get("x-app-attest-challenge-id");
 
-  if (!keyId || !assertion || !challenge || !requestHash) {
-    return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
-  }
+      if (!keyId || !assertion || !challengeId) {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
 
-  const integrity = await verifyIosAppAttestAssertion({
-    keyId,
-    assertion,
-    challenge,
-    requestHash,
-  });
+      const integrity = await verifyIosAppAttestAssertion({
+        keyId,
+        assertion,
+        challengeId,
+        method: "POST",
+        path: "/api/auth/sign-in",
+        requestBody: rawBodyBuffer,
+      });
 
-  if (!integrity.ok) {
-    await audit("SIGN_IN_IOS_APP_ATTEST_FAILED", null, req, {
-      email,
-      reason: integrity.reason,
-    });
+      if (!integrity.ok) {
+        await audit("SIGN_IN_IOS_APP_ATTEST_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
 
-    return jsonNoStore(
-      {
-        error: integrity.publicMessage,
-        reason: integrity.reason,
-      },
-      { status: 403 }
-    );
-  }
-} else if (!bypassCaptcha) {
-  if (!captchaToken || typeof captchaToken !== "string") {
-    return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
-  }
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
+    } else if (!bypassCaptcha) {
+      if (!captchaToken || typeof captchaToken !== "string") {
+        return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+      }
 
-  const captchaOk = await verifyTurnstile(captchaToken, getClientIp(req));
-  if (!captchaOk) {
-    await audit("SIGN_IN_CAPTCHA_FAILED", null, req, { email });
-    return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
-  }
-}
+      const captchaOk = await verifyTurnstile(captchaToken, getClientIp(req));
+      if (!captchaOk) {
+        await audit("SIGN_IN_CAPTCHA_FAILED", null, req, { email });
+        return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+      }
+    }
 
     const { data: user, error } = await supabaseAdmin
       .from("users")
@@ -233,23 +247,36 @@ export async function POST(req: Request) {
     }
 
     if (!user) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", null, req, { email, androidClient });
+      await audit("SIGN_IN_BAD_CREDENTIALS", null, req, {
+        email,
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
     if (user.disabled_at || user.deleted_at) {
-      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, { androidClient });
+      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, {
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
     }
 
     if (!user.email_verified_at) {
-      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, { androidClient });
+      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Email not confirmed" }, { status: 403 });
     }
 
     const passwordOk = await bcrypt.compare(password, user.password_hash);
     if (!passwordOk) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, { androidClient });
+      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
+        androidClient,
+        iosClient,
+      });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
 
@@ -278,7 +305,10 @@ export async function POST(req: Request) {
       await supabaseAdmin.from("users").update({ last_login_at: nowIso }).eq("id", user.id);
     } catch {}
 
-    await audit("SIGN_IN_OK", String(user.id), req, { androidClient });
+    await audit("SIGN_IN_OK", String(user.id), req, {
+      androidClient,
+      iosClient,
+    });
 
     const res = jsonNoStore({
       ok: true,
@@ -290,16 +320,16 @@ export async function POST(req: Request) {
       },
     });
 
-    const cookieDomain = androidClient ? undefined : getCookieDomain(req);
+    const cookieDomain = androidClient || iosClient ? undefined : getCookieDomain(req);
 
-res.cookies.set(SESSION_COOKIE, rawSessionToken, {
-  httpOnly: true,
-  sameSite: "lax",
-  secure: process.env.NODE_ENV === "production",
-  path: "/",
-  maxAge: maxAgeSeconds,
-  ...(cookieDomain ? { domain: cookieDomain } : {}),
-});
+    res.cookies.set(SESSION_COOKIE, rawSessionToken, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: maxAgeSeconds,
+      ...(cookieDomain ? { domain: cookieDomain } : {}),
+    });
 
     return res;
   } catch {

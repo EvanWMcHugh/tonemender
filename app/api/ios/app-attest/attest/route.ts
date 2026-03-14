@@ -22,24 +22,35 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
+function getPlatform(req: Request) {
+  return req.headers.get("x-client-platform") ?? null;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
 
-    const keyId = body?.keyId;
-    const attestation = body?.attestation;
-    const challenge = body?.challenge;
+    const keyId = typeof body?.keyId === "string" ? body.keyId.trim() : "";
+    const attestation =
+      typeof body?.attestation === "string" ? body.attestation.trim() : "";
+    const challenge =
+      typeof body?.challenge === "string" ? body.challenge.trim() : "";
 
-    if (!keyId || typeof keyId !== "string") {
+    if (!keyId) {
       return jsonNoStore({ error: "Missing keyId" }, { status: 400 });
     }
 
-    if (!attestation || typeof attestation !== "string") {
+    if (!attestation) {
       return jsonNoStore({ error: "Missing attestation" }, { status: 400 });
     }
 
-    if (!challenge || typeof challenge !== "string") {
+    if (!challenge) {
       return jsonNoStore({ error: "Missing challenge" }, { status: 400 });
+    }
+
+    const platform = getPlatform(req);
+    if (platform !== "ios") {
+      return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
     }
 
     const challengeResult = await consumeAppAttestChallenge({
@@ -51,7 +62,9 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Invalid challenge" }, { status: 403 });
     }
 
-    // Placeholder until full Apple cryptographic attestation verification is added.
+    // TODO: Add full Apple App Attest cryptographic verification here.
+    // For now, this stores the key after validating challenge consumption.
+
     await storeAttestedKey({
       keyId,
       ip: getClientIp(req),
