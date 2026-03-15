@@ -7,9 +7,6 @@ import dynamic from "next/dynamic";
 
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
-// ✅ Only these are excluded from captcha
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
-
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -20,9 +17,12 @@ const MAX_PASSWORD_LEN = 200;
 type PendingAction = null | "signup";
 
 function getPasswordIssue(pw: string) {
-  if (pw.length < MIN_PASSWORD_LEN)
+  if (pw.length < MIN_PASSWORD_LEN) {
     return `Password must be at least ${MIN_PASSWORD_LEN} characters.`;
-  if (pw.length > MAX_PASSWORD_LEN) return "Password is too long.";
+  }
+  if (pw.length > MAX_PASSWORD_LEN) {
+    return "Password is too long.";
+  }
   return "";
 }
 
@@ -42,11 +42,6 @@ export default function SignUpPage() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
-  const isBypassEmail = useMemo(
-    () => (normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false),
-    [normalizedEmail]
-  );
-
   const passwordIssue = useMemo(() => getPasswordIssue(password), [password]);
 
   const canAttemptSignup = useMemo(() => {
@@ -57,7 +52,6 @@ export default function SignUpPage() {
     return true;
   }, [loading, normalizedEmail, password, passwordIssue]);
 
-  // If already logged in, go home
   useEffect(() => {
     const controller = new AbortController();
 
@@ -69,17 +63,17 @@ export default function SignUpPage() {
           signal: controller.signal,
         });
         const json = await resp.json().catch(() => ({ user: null }));
-        if (json?.user?.id) router.replace("/");
-      } catch {
-        // ignore
-      }
+
+        if (json?.user?.id) {
+          router.replace("/");
+        }
+      } catch {}
     }
 
     checkSession();
     return () => controller.abort();
   }, [router]);
 
-  // Reset captcha when email changes
   useEffect(() => {
     setShowCaptcha(false);
     setPendingAction(null);
@@ -115,25 +109,26 @@ export default function SignUpPage() {
 
     if (loading) return;
 
-    // Show captcha only after click
-    if (!isBypassEmail && !withToken) {
+    if (!withToken) {
       requireCaptcha();
       return;
     }
 
-    // snapshot token and clear immediately to prevent reuse/double-submit
     const tokenToUse = withToken;
-    if (!isBypassEmail) setCaptchaToken(null);
+    setCaptchaToken(null);
 
     setLoading(true);
+
     try {
-      const payload: any = {
+      const payload: {
+        email: string;
+        password: string;
+        captchaToken: string | null;
+      } = {
         email: normalizedEmail,
         password,
+        captchaToken: tokenToUse,
       };
-
-      // Only include captchaToken when needed
-      if (!isBypassEmail) payload.captchaToken = tokenToUse;
 
       const resp = await fetch("/api/auth/sign-up", {
         method: "POST",
@@ -143,15 +138,18 @@ export default function SignUpPage() {
 
       const json = await resp.json().catch(() => ({}));
 
-      if (!resp.ok) throw new Error(json?.error || "Sign up failed");
+      if (!resp.ok) {
+        throw new Error(json?.error || "Sign up failed");
+      }
 
-      // ✅ API returns { success: true }
-      if (!json?.success) throw new Error(json?.error || "Sign up failed");
+      if (!json?.success) {
+        throw new Error(json?.error || "Sign up failed");
+      }
 
       cleanupCaptchaState();
       router.replace("/check-email?type=signup");
-    } catch (err: any) {
-      setError(err?.message || "Sign up failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Sign up failed");
       cleanupCaptchaState();
     } finally {
       setLoading(false);
@@ -169,14 +167,13 @@ export default function SignUpPage() {
       return;
     }
 
-    await doSignUp(isBypassEmail ? null : captchaToken);
+    await doSignUp(captchaToken);
   }
 
   async function handleCaptchaSuccess(token: string) {
     if (pendingAction !== "signup") return;
     if (loading) return;
 
-    // store token and immediately execute the pending action (single-use)
     setCaptchaToken(token);
     await doSignUp(token);
   }
@@ -186,20 +183,20 @@ export default function SignUpPage() {
       <div className="w-[360px]">
         <Link
           href="/landing"
-          className="inline-flex items-center gap-1 mb-4 text-sm text-slate-600 hover:underline"
+          className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:underline"
         >
           <span aria-hidden>←</span>
           <span>Back to home</span>
         </Link>
 
-        <h1 className="text-2xl font-bold mb-2 text-center">Sign Up</h1>
-        <p className="text-sm text-slate-500 mb-6 text-center">
+        <h1 className="mb-2 text-center text-2xl font-bold">Sign Up</h1>
+        <p className="mb-6 text-center text-sm text-slate-500">
           Create an account to start rewriting safely.
         </p>
 
         {error && (
           <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 p-3">
-            <p className="text-red-700 text-sm">{error}</p>
+            <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
 
@@ -212,7 +209,7 @@ export default function SignUpPage() {
               id={emailId}
               type="email"
               placeholder="Email"
-              className="border p-3 rounded-2xl w-full"
+              className="w-full rounded-2xl border p-3"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
@@ -230,7 +227,7 @@ export default function SignUpPage() {
               id={passwordId}
               type="password"
               placeholder="Password"
-              className="border p-3 rounded-2xl w-full"
+              className="w-full rounded-2xl border p-3"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -240,11 +237,11 @@ export default function SignUpPage() {
               aria-invalid={!!password && !!passwordIssue}
             />
             {password && passwordIssue && (
-              <p className="text-[11px] text-slate-500 mt-1">{passwordIssue}</p>
+              <p className="mt-1 text-[11px] text-slate-500">{passwordIssue}</p>
             )}
           </div>
 
-          {!isBypassEmail && showCaptcha && (
+          {showCaptcha && (
             <div className="mt-1">
               <Turnstile
                 sitekey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
@@ -259,7 +256,7 @@ export default function SignUpPage() {
                   setError("Captcha error. Please try again.");
                 }}
               />
-              <p className="text-[11px] text-slate-500 mt-2">
+              <p className="mt-2 text-[11px] text-slate-500">
                 Complete the captcha to create your account.
               </p>
             </div>
@@ -268,8 +265,7 @@ export default function SignUpPage() {
           <button
             type="submit"
             disabled={loading}
-            className="bg-blue-600 text-white px-4 py-3 rounded-2xl font-semibold
-                       hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            className="rounded-2xl bg-blue-600 px-4 py-3 font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? "Creating account..." : "Create Account"}
           </button>

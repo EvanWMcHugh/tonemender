@@ -3,6 +3,12 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  getReviewerMode,
+  isFreeReviewer,
+  isProReviewer,
+  isReviewerEmail,
+} from "@/lib/auth/reviewers";
 import { sha256Hex } from "@/lib/security/crypto";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
@@ -11,7 +17,6 @@ import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
@@ -144,6 +149,7 @@ export async function POST(req: Request) {
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
+    const isReviewer = isReviewerEmail(email);
 
     const ipAllowed = await rateLimitHit(`ip:${ip}:sign_in`, 60, 20);
     const emailAllowed = await rateLimitHit(`email:${email}:sign_in`, 300, 10);
@@ -153,13 +159,13 @@ export async function POST(req: Request) {
         email,
         androidClient,
         iosClient,
+        isReviewer,
       });
+
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
-    const bypassCaptcha = CAPTCHA_BYPASS_EMAILS.has(email);
-
-    if (androidClient) {
+    if (androidClient && !isReviewer) {
       if (!integrityToken || typeof integrityToken !== "string") {
         return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
       }
@@ -190,7 +196,7 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
-    } else if (iosClient && !bypassCaptcha) {
+    } else if (iosClient && !isReviewer) {
       const keyId = req.headers.get("x-app-attest-key-id");
       const assertion = req.headers.get("x-app-attest-assertion");
       const challengeId = req.headers.get("x-app-attest-challenge-id");
@@ -224,7 +230,7 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
-    } else if (!bypassCaptcha) {
+    } else if (!isReviewer) {
       if (!captchaToken || typeof captchaToken !== "string") {
         return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
       }
@@ -251,6 +257,7 @@ export async function POST(req: Request) {
         email,
         androidClient,
         iosClient,
+        isReviewer,
       });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
@@ -259,6 +266,7 @@ export async function POST(req: Request) {
       await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, {
         androidClient,
         iosClient,
+        isReviewer,
       });
       return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
     }
@@ -267,6 +275,7 @@ export async function POST(req: Request) {
       await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
         androidClient,
         iosClient,
+        isReviewer,
       });
       return jsonNoStore({ error: "Email not confirmed" }, { status: 403 });
     }
@@ -276,6 +285,7 @@ export async function POST(req: Request) {
       await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
         androidClient,
         iosClient,
+        isReviewer,
       });
       return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
     }
@@ -308,15 +318,29 @@ export async function POST(req: Request) {
     await audit("SIGN_IN_OK", String(user.id), req, {
       androidClient,
       iosClient,
+      isReviewer,
     });
+
+    let isPro = Boolean(user.is_pro);
+    let planType = user.plan_type ?? null;
+
+    if (isProReviewer(email)) {
+      isPro = true;
+      planType = "reviewer";
+    } else if (isFreeReviewer(email)) {
+      isPro = false;
+      planType = null;
+    }
 
     const res = jsonNoStore({
       ok: true,
       user: {
         id: user.id,
         email: user.email,
-        isPro: user.is_pro,
-        planType: user.plan_type,
+        isPro,
+        planType,
+        isReviewer,
+        reviewerMode: getReviewerMode(email),
       },
     });
 

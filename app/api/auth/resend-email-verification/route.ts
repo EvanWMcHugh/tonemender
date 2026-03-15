@@ -7,7 +7,6 @@ import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 
 export const runtime = "nodejs";
 
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
 const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME = "com.tonemender.app";
 
@@ -103,47 +102,45 @@ export async function POST(req: Request) {
     const emailAllowed = await rateLimitHit(`email:${email}:resend_verify`, 300, 5);
     if (!ipAllowed || !emailAllowed) return jsonNoStore({ ok: true });
 
-    if (!CAPTCHA_BYPASS_EMAILS.has(email)) {
-      if (androidClient) {
-        if (!integrityToken || typeof integrityToken !== "string") {
-          return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
-        }
+    if (androidClient) {
+      if (!integrityToken || typeof integrityToken !== "string") {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
 
-        if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-          return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
-        }
+      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
+        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      }
 
-        const integrity = await verifyAndroidPlayIntegrity({
-          integrityToken,
-          expectedPackageName: ANDROID_PACKAGE_NAME,
-          expectedRequestHash: integrityRequestHash,
+      const integrity = await verifyAndroidPlayIntegrity({
+        integrityToken,
+        expectedPackageName: ANDROID_PACKAGE_NAME,
+        expectedRequestHash: integrityRequestHash,
+      });
+
+      if (!integrity.ok) {
+        await audit("EMAIL_VERIFY_RESEND_INTEGRITY_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
         });
 
-        if (!integrity.ok) {
-          await audit("EMAIL_VERIFY_RESEND_INTEGRITY_FAILED", null, req, {
-            email,
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: integrity.payload ?? null,
-          });
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
+    } else {
+      if (!turnstileToken || typeof turnstileToken !== "string") {
+        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+      }
 
-          return jsonNoStore(
-            {
-              error: integrity.publicMessage,
-              reason: integrity.reason,
-              payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
-            },
-            { status: 403 }
-          );
-        }
-      } else {
-        if (!turnstileToken || typeof turnstileToken !== "string") {
-          return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
-        }
-
-        const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-        if (!okCaptcha) {
-          return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
-        }
+      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+      if (!okCaptcha) {
+        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
       }
     }
 

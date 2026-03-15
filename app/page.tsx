@@ -5,22 +5,19 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import LogoutButton from "./components/LogoutButton";
-import { isProReviewer } from "../lib/auth/reviewers";
 
-type MeResponse =
-  | { user: null }
-  | {
-      user: {
-        id: string;
-        email: string;
-        isPro?: boolean;
-        planType?: string | null;
-      };
-    };
+type MeUser = {
+  id: string;
+  email: string;
+  isPro?: boolean;
+  planType?: string | null;
+  isReviewer?: boolean;
+  reviewerMode?: "free" | "pro" | null;
+};
 
-function normalizeEmail(email: string | null | undefined) {
-  return (email ?? "").trim().toLowerCase();
-}
+type MeResponse = {
+  user: MeUser | null;
+};
 
 async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,7 +27,7 @@ export default function AppHomePage() {
   const router = useRouter();
 
   const [authReady, setAuthReady] = useState(false);
-  const [isPro, setIsPro] = useState(false);
+  const [user, setUser] = useState<MeUser | null>(null);
 
   const mountedRef = useRef(true);
   const brandInitial = useMemo(() => "T", []);
@@ -52,29 +49,26 @@ export default function AppHomePage() {
 
     async function load() {
       try {
-        let user: MeResponse["user"] = null;
+        let nextUser: MeUser | null = null;
 
         for (let attempt = 0; attempt < 8; attempt++) {
-          user = await fetchMe();
+          nextUser = await fetchMe();
 
-          if (user?.id) {
+          if (nextUser?.id) {
             break;
           }
 
           await sleep(250);
         }
 
-        if (!user?.id) {
+        if (!nextUser?.id) {
           router.replace("/landing");
           return;
         }
 
         if (!mountedRef.current) return;
 
-        const email = normalizeEmail(user.email);
-        const pro = Boolean(user.isPro) || isProReviewer(email);
-
-        setIsPro(pro);
+        setUser(nextUser);
         setAuthReady(true);
       } catch (err: unknown) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -93,7 +87,15 @@ export default function AppHomePage() {
     };
   }, [router]);
 
-  if (!authReady) return null;
+  if (!authReady || !user) return null;
+
+  const isPro = Boolean(user.isPro);
+  const reviewerLabel =
+    user.reviewerMode === "pro"
+      ? "Reviewer Mode · Pro"
+      : user.reviewerMode === "free"
+      ? "Reviewer Mode · Free"
+      : null;
 
   return (
     <main className="w-full max-w-xl">
@@ -114,6 +116,14 @@ export default function AppHomePage() {
 
           <LogoutButton />
         </div>
+
+        {reviewerLabel && (
+          <div className="mb-4">
+            <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+              {reviewerLabel}
+            </div>
+          </div>
+        )}
 
         <p className="text-sm leading-relaxed text-slate-700 sm:text-base">
           Welcome back! Rewrite your messages into calm, clear, relationship-safe

@@ -1,4 +1,8 @@
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  isFreeReviewer,
+  isProReviewer,
+} from "@/lib/auth/reviewers";
 import { sha256Hex } from "@/lib/security/crypto";
 
 const SESSION_COOKIE = "tm_session";
@@ -52,10 +56,23 @@ export async function getAuthUserFromRequest(req: Request): Promise<AuthUser | n
       .is("revoked_at", null);
   } catch {}
 
+  const email = String(user.email);
+
+  let isPro = Boolean(user.is_pro);
+  let planType = user.plan_type ?? null;
+
+  if (isProReviewer(email)) {
+    isPro = true;
+    planType = "reviewer";
+  } else if (isFreeReviewer(email)) {
+    isPro = false;
+    planType = null;
+  }
+
   return {
     id: String(user.id),
-    email: String(user.email),
-    isPro: Boolean(user.is_pro),
-    planType: user.plan_type ?? null,
+    email,
+    isPro,
+    planType,
   };
 }

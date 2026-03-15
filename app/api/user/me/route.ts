@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  getReviewerMode,
+  isFreeReviewer,
+  isProReviewer,
+  isReviewerEmail,
+} from "@/lib/auth/reviewers";
 import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
@@ -119,12 +125,29 @@ export async function GET(req: Request) {
         .is("revoked_at", null);
     } catch {}
 
+    const email = String(user.email);
+    const reviewerMode = getReviewerMode(email);
+    const isReviewer = isReviewerEmail(email);
+
+    let isPro = Boolean(user.is_pro);
+    let planType = user.plan_type ?? null;
+
+    if (isProReviewer(email)) {
+      isPro = true;
+      planType = "reviewer";
+    } else if (isFreeReviewer(email)) {
+      isPro = false;
+      planType = null;
+    }
+
     return jsonNoStore({
       user: {
         id: String(user.id),
-        email: String(user.email),
-        isPro: Boolean(user.is_pro),
-        planType: user.plan_type ?? null,
+        email,
+        isPro,
+        planType,
+        isReviewer,
+        reviewerMode,
       },
     });
   } catch {

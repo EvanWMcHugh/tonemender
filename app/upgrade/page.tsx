@@ -1,35 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { isProReviewer } from "../../lib/auth/reviewers";
 
 type MeUser = {
   id: string;
   email: string;
   isPro?: boolean;
   planType?: string | null;
+  isReviewer?: boolean;
+  reviewerMode?: "free" | "pro" | null;
 };
 
 type PlanType = "monthly" | "yearly";
 
-function normalizeEmail(email: string | null | undefined) {
-  return (email ?? "").trim().toLowerCase();
-}
-
 export default function UpgradePage() {
   const router = useRouter();
 
-  const [loading, setLoading] = useState(true); // while checking auth + pro status
+  const [loading, setLoading] = useState(true);
   const [checkoutLoading, setCheckoutLoading] = useState<PlanType | null>(null);
   const [error, setError] = useState("");
   const [me, setMe] = useState<MeUser | null>(null);
 
   const mountedRef = useRef(true);
-
-  const reviewerIsPro = useMemo(() => {
-    return isProReviewer(normalizeEmail(me?.email));
-  }, [me?.email]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -42,10 +35,10 @@ export default function UpgradePage() {
           cache: "no-store",
           signal: controller.signal,
         });
+
         const json = await resp.json().catch(() => ({ user: null }));
         const user: MeUser | null = json?.user ?? null;
 
-        // Not logged in → go to sign-in
         if (!user?.id) {
           router.replace("/sign-in");
           return;
@@ -55,22 +48,17 @@ export default function UpgradePage() {
 
         setMe(user);
 
-        // Reviewer pro accounts should never see upgrade page
-        if (isProReviewer(normalizeEmail(user.email))) {
-          router.replace("/");
-          return;
-        }
-
-        // Already pro → send home
         if (user.isPro) {
           router.replace("/");
           return;
         }
 
         setLoading(false);
-      } catch (err: any) {
-        if (err?.name === "AbortError") return;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") return;
+
         console.error("UPGRADE CHECK ERROR:", err);
+
         if (mountedRef.current) {
           setError("Could not verify your account. Please try again.");
           setLoading(false);
@@ -89,15 +77,11 @@ export default function UpgradePage() {
   async function startCheckout(type: PlanType) {
     setError("");
 
-    // extra guards
     if (!me?.id) {
       router.replace("/sign-in");
       return;
     }
-    if (reviewerIsPro) {
-      router.replace("/");
-      return;
-    }
+
     if (checkoutLoading) return;
 
     setCheckoutLoading(type);
@@ -106,7 +90,7 @@ export default function UpgradePage() {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // ✅ cookie-auth now; no Authorization header
+        cache: "no-store",
         body: JSON.stringify({ type }),
       });
 
@@ -131,18 +115,18 @@ export default function UpgradePage() {
   }
 
   return (
-    <main className="max-w-xl mx-auto p-6">
+    <main className="mx-auto max-w-xl p-6">
       <button
         type="button"
         onClick={() => router.push("/")}
-        className="mb-4 text-sm text-slate-600 hover:underline inline-flex items-center gap-1"
+        className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:underline"
       >
         <span aria-hidden>←</span>
         <span>Back to Home</span>
       </button>
 
       <header className="mb-6">
-        <h1 className="text-3xl font-bold mb-2">Upgrade to ToneMender Pro</h1>
+        <h1 className="mb-2 text-3xl font-bold">Upgrade to ToneMender Pro</h1>
         <p className="text-slate-700">
           Unlock unlimited rewrites, tone control, relationship types, priority
           processing, and access to future premium features.
@@ -151,38 +135,36 @@ export default function UpgradePage() {
 
       {error && (
         <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-3">
-          <p className="text-red-700 text-sm">{error}</p>
+          <p className="text-sm text-red-700">{error}</p>
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Monthly plan */}
-        <div className="border rounded-2xl p-5 bg-white shadow-sm">
-          <h2 className="text-xl font-semibold mb-2">Monthly</h2>
-          <p className="text-2xl font-bold mb-1">$7.99</p>
-          <p className="text-sm text-slate-600 mb-4">Billed every month.</p>
+        <div className="rounded-2xl border bg-white p-5 shadow-sm">
+          <h2 className="mb-2 text-xl font-semibold">Monthly</h2>
+          <p className="mb-1 text-2xl font-bold">$7.99</p>
+          <p className="mb-4 text-sm text-slate-600">Billed every month.</p>
           <button
             type="button"
             onClick={() => startCheckout("monthly")}
             disabled={!!checkoutLoading}
-            className="w-full bg-blue-600 text-white py-2.5 rounded-xl hover:bg-blue-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full rounded-xl bg-blue-600 py-2.5 text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {checkoutLoading === "monthly" ? "Starting..." : "Subscribe Monthly"}
           </button>
         </div>
 
-        {/* Yearly plan */}
-        <div className="border rounded-2xl p-5 bg-white shadow-sm">
-          <h2 className="text-xl font-semibold mb-2">Yearly</h2>
-          <p className="text-2xl font-bold mb-1">$49.99</p>
-          <p className="text-sm text-slate-600 mb-4">
+        <div className="rounded-2xl border bg-white p-5 shadow-sm">
+          <h2 className="mb-2 text-xl font-semibold">Yearly</h2>
+          <p className="mb-1 text-2xl font-bold">$49.99</p>
+          <p className="mb-4 text-sm text-slate-600">
             Billed once per year. Save big vs monthly.
           </p>
           <button
             type="button"
             onClick={() => startCheckout("yearly")}
             disabled={!!checkoutLoading}
-            className="w-full bg-emerald-600 text-white py-2.5 rounded-xl hover:bg-emerald-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full rounded-xl bg-emerald-600 py-2.5 text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {checkoutLoading === "yearly" ? "Starting..." : "Subscribe Yearly"}
           </button>

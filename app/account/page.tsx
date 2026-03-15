@@ -4,8 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
-import { isProReviewer } from "@/lib/auth/reviewers";
-
 const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
 type UsageStats = {
@@ -18,6 +16,8 @@ type MeUser = {
   email: string;
   isPro?: boolean;
   planType?: string | null;
+  isReviewer?: boolean;
+  reviewerMode?: "free" | "pro" | null;
 };
 
 function getPacificDateString(date = new Date()) {
@@ -37,7 +37,6 @@ export default function AccountPage() {
   const router = useRouter();
 
   const [user, setUser] = useState<MeUser | null>(null);
-  const [isPro, setIsPro] = useState(false);
   const [stats, setStats] = useState<UsageStats>({ today: 0, total: 0 });
   const [loading, setLoading] = useState(true);
 
@@ -108,9 +107,6 @@ export default function AccountPage() {
         }
 
         setUser(meUser);
-
-        const pro = Boolean(meUser.isPro) || isProReviewer(meUser.email ?? null);
-        setIsPro(pro);
 
         const statsResp = await fetch(
           `/api/usage/stats?day=${encodeURIComponent(todayStr)}`,
@@ -306,6 +302,7 @@ export default function AccountPage() {
     return null;
   }
 
+  const isPro = Boolean(user.isPro);
   const candidateNormalized = normalizeEmail(newEmail);
   const emailValidation = newEmail ? validateEmailCandidate(candidateNormalized) : "";
 
@@ -317,6 +314,13 @@ export default function AccountPage() {
 
   const deleteSubmitDisabled =
     deleteLoading || (showDeleteCaptcha && !deleteCaptchaToken);
+
+  const reviewerLabel =
+    user.reviewerMode === "pro"
+      ? "Reviewer Mode · Pro"
+      : user.reviewerMode === "free"
+      ? "Reviewer Mode · Free"
+      : null;
 
   return (
     <main className="mx-auto max-w-xl p-6">
@@ -331,6 +335,14 @@ export default function AccountPage() {
 
       <div className="mb-6 rounded-2xl border bg-white p-4 shadow-sm">
         <h2 className="mb-2 text-xl font-semibold">Profile</h2>
+
+        {reviewerLabel && (
+          <div className="mb-3">
+            <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+              {reviewerLabel}
+            </div>
+          </div>
+        )}
 
         <p className="text-sm">
           <strong>Email:</strong> {user.email}

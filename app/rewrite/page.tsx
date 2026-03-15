@@ -6,7 +6,6 @@ import html2canvas from "html2canvas";
 
 import Toast from "../components/Toast";
 import PullToRefresh from "../components/PullToRefresh";
-import { isProReviewer } from "../../lib/auth/reviewers";
 
 type ToneKey = "soft" | "calm" | "clear";
 
@@ -15,6 +14,8 @@ type MeUser = {
   email: string;
   isPro?: boolean;
   planType?: string | null;
+  isReviewer?: boolean;
+  reviewerMode?: "free" | "pro" | null;
 };
 
 type RewriteResponse = {
@@ -25,10 +26,6 @@ type RewriteResponse = {
   emotion_prediction?: string;
   error?: string;
 };
-
-function normalizeEmail(email: string | null | undefined) {
-  return (email ?? "").trim().toLowerCase();
-}
 
 function vibrate(ms = 20) {
   if (typeof window !== "undefined" && "vibrate" in navigator) {
@@ -41,7 +38,6 @@ export default function RewritePage() {
 
   const [ready, setReady] = useState(false);
   const [me, setMe] = useState<MeUser | null>(null);
-  const [isPro, setIsPro] = useState(false);
 
   const [message, setMessage] = useState("");
   const [recipient, setRecipient] = useState("");
@@ -94,11 +90,6 @@ export default function RewritePage() {
         if (!mountedRef.current) return;
 
         setMe(user);
-
-        const email = normalizeEmail(user.email);
-        const pro = Boolean(user.isPro) || isProReviewer(email);
-        setIsPro(pro);
-
         setReady(true);
       } catch (err: unknown) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -117,6 +108,8 @@ export default function RewritePage() {
       rewriteAbortRef.current?.abort();
     };
   }, [router]);
+
+  const isPro = Boolean(me?.isPro);
 
   const resetUiForNewRewrite = useCallback(() => {
     setError("");
@@ -430,6 +423,13 @@ export default function RewritePage() {
     return <main className="p-8 text-center">Checking authentication…</main>;
   }
 
+  const reviewerLabel =
+    me?.reviewerMode === "pro"
+      ? "Reviewer Mode · Pro"
+      : me?.reviewerMode === "free"
+      ? "Reviewer Mode · Free"
+      : null;
+
   return (
     <main className="w-full max-w-2xl">
       <PullToRefresh onRefresh={() => window.location.reload()}>
@@ -461,6 +461,14 @@ export default function RewritePage() {
             your meaning but removes the heat so you don&apos;t start a fight by
             accident.
           </p>
+
+          {reviewerLabel && (
+            <div className="mb-4">
+              <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                {reviewerLabel}
+              </div>
+            </div>
+          )}
 
           {limitReached && (
             <div className="mb-4 rounded-2xl border border-yellow-200 bg-yellow-50 p-4">

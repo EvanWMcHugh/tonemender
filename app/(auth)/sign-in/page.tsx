@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 
-const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
+import { isReviewerEmail } from "@/lib/auth/reviewers";
 
-const CAPTCHA_BYPASS_EMAILS = new Set(["pro@tonemender.com", "free@tonemender.com"]);
+const Turnstile = dynamic(() => import("react-turnstile"), { ssr: false });
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -59,7 +59,7 @@ export default function LoginPage() {
   const normalizedEmail = useMemo(() => normalizeEmail(email), [email]);
 
   const isBypassEmail = useMemo(() => {
-    return normalizedEmail ? CAPTCHA_BYPASS_EMAILS.has(normalizedEmail) : false;
+    return isReviewerEmail(normalizedEmail);
   }, [normalizedEmail]);
 
   const canAttemptLogin = useMemo(() => {
