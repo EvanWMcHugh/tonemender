@@ -1,55 +1,46 @@
-# =========================
-# Node / Next.js
-# =========================
+# dependencies
 node_modules/
+
+# next.js
 .next/
-dist/
 out/
-.vercel/
 
-# =========================
-# Environment variables (NEVER COMMIT)
-# =========================
+# production
+dist/
+
+# environment variables
 .env
-.env.*
-!.env.example
+.env.local
+.env.development
+.env.production
 
-# =========================
-# Logs
-# =========================
+# logs
 *.log
 npm-debug.log*
 yarn-debug.log*
-pnpm-debug.log*
+yarn-error.log*
 
-# =========================
-# Android Studio / IntelliJ
-# (safe to ignore – NEVER delete real app files)
-# =========================
-android/.idea/
-android/.gradle/
-android/**/build/
-android/local.properties
-*.iml
-
-# =========================
-# iOS / Xcode (future-proof)
-# =========================
-ios/DerivedData/
-ios/Pods/
-ios/*.xcworkspace
-ios/*.xcuserstate
-ios/.DS_Store
-
-# =========================
-# OS junk
-# =========================
+# OS files
 .DS_Store
 Thumbs.db
 
-# =========================
-# Editor / tooling
-# =========================
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
+# editor files
+.vscode/
+.idea/
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# vercel
+.vercel
+
+# misc
+coverage/
+.cache/
+
+# build artifacts
+build/
+
+# local dev files
+local.properties
