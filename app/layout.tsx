@@ -10,6 +10,10 @@ export const metadata: Metadata = {
     "ToneMender is an AI relationship message rewriter that fixes tone in text messages before you send — helping prevent misunderstandings and arguments.",
   metadataBase: new URL("https://tonemender.com"),
 
+  verification: {
+    google: "2qQMiAg0p0tbUPUA1j8xbyHEQl4WEhThFiRd8-K32yE",
+  },
+
   alternates: {
     canonical: "/",
   },
@@ -30,6 +34,7 @@ export const metadata: Metadata = {
       "Fix the tone of your texts before you send. Prevent misunderstandings and arguments with AI rewrites.",
   },
 };
+
 export const viewport = {
   width: "device-width",
   initialScale: 1,
@@ -63,16 +68,13 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* ✅ Structured SEO Schema */}
         <script
           type="application/ld+json"
-          // NOTE: JSON.stringify is safe here; do not inject user content.
           dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         />
       </head>
 
       <body className="min-h-screen flex flex-col">
-        {/* Cloudflare Turnstile (loaded once globally) */}
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js"
           strategy="afterInteractive"
@@ -82,7 +84,6 @@ export default function RootLayout({
           <main className="flex-1">{children}</main>
         </Providers>
 
-        {/* ✅ Global Footer */}
         <footer className="border-t py-6 text-sm text-gray-500">
           <div className="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <span>© {new Date().getFullYear()} ToneMender</span>
