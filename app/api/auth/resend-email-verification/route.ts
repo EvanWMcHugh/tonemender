@@ -4,11 +4,13 @@ import { sendEmail } from "@/lib/email/sendEmail";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 
 export const runtime = "nodejs";
 
 const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -30,11 +32,27 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+function getClientPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+function isAndroidClient(req: Request) {
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+}
+
+function isIosClient(req: Request) {
+  return getClientPlatform(req) === IOS_CLIENT_HEADER;
+}
+
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, any> = {}
+) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -84,7 +102,10 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const body = rawText ? JSON.parse(rawText) : {};
+
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
     const integrityToken = body?.integrityToken;
@@ -97,6 +118,7 @@ export async function POST(req: Request) {
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
+    const iosClient = isIosClient(req);
 
     const ipAllowed = await rateLimitHit(`ip:${ip}:resend_verify`, 60, 10);
     const emailAllowed = await rateLimitHit(`email:${email}:resend_verify`, 300, 5);
@@ -119,6 +141,40 @@ export async function POST(req: Request) {
 
       if (!integrity.ok) {
         await audit("EMAIL_VERIFY_RESEND_INTEGRITY_FAILED", null, req, {
+          email,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
+
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
+    } else if (iosClient) {
+      const keyId = req.headers.get("x-app-attest-key-id");
+      const assertion = req.headers.get("x-app-attest-assertion");
+      const challengeId = req.headers.get("x-app-attest-challenge-id");
+
+      if (!keyId || !assertion || !challengeId) {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
+
+      const integrity = await verifyIosAppAttestAssertion({
+        keyId,
+        assertion,
+        challengeId,
+        method: "POST",
+        path: "/api/auth/resend-email-verification",
+        requestBody: rawBodyBuffer,
+      });
+
+      if (!integrity.ok) {
+        await audit("EMAIL_VERIFY_RESEND_IOS_APP_ATTEST_FAILED", null, req, {
           email,
           reason: integrity.reason,
           payload: integrity.payload ?? null,
@@ -204,7 +260,11 @@ export async function POST(req: Request) {
       `,
     });
 
-    await audit("EMAIL_VERIFICATION_RESENT", userId, req, { androidClient });
+    await audit("EMAIL_VERIFICATION_RESENT", userId, req, {
+      androidClient,
+      iosClient,
+    });
+
     return jsonNoStore({ ok: true });
   } catch (e: any) {
     console.error("RESEND EMAIL VERIFICATION ERROR:", e);

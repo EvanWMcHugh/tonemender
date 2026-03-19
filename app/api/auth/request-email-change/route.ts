@@ -4,12 +4,14 @@ import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: any, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -37,8 +39,19 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
+function getClientPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
+}
+
 function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+}
+
+function isIosClient(req: Request) {
+  return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
@@ -77,7 +90,12 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
   return next <= limit;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, any> = {}
+) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -128,7 +146,10 @@ async function getUserFromSession(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const body = rawText ? JSON.parse(rawText) : {};
+
     const newEmailRaw = body?.newEmail;
     const turnstileToken = body?.turnstileToken;
     const integrityToken = body?.integrityToken;
@@ -140,6 +161,7 @@ export async function POST(req: Request) {
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
+    const iosClient = isIosClient(req);
 
     const ipAllowed = await rateLimitHit(`ip:${ip}:email_change_request`, 60, 10);
     if (!ipAllowed) {
@@ -201,6 +223,40 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+    } else if (iosClient) {
+      const keyId = req.headers.get("x-app-attest-key-id");
+      const assertion = req.headers.get("x-app-attest-assertion");
+      const challengeId = req.headers.get("x-app-attest-challenge-id");
+
+      if (!keyId || !assertion || !challengeId) {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
+
+      const integrity = await verifyIosAppAttestAssertion({
+        keyId,
+        assertion,
+        challengeId,
+        method: "POST",
+        path: "/api/auth/request-email-change",
+        requestBody: rawBodyBuffer,
+      });
+
+      if (!integrity.ok) {
+        await audit("EMAIL_CHANGE_REQUEST_IOS_APP_ATTEST_FAILED", userId, req, {
+          next_email: nextEmail,
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
+
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+          },
+          { status: 403 }
+        );
+      }
     } else {
       if (!turnstileToken || typeof turnstileToken !== "string") {
         return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
@@ -208,7 +264,9 @@ export async function POST(req: Request) {
 
       const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
       if (!okCaptcha) {
-        await audit("EMAIL_CHANGE_REQUEST_CAPTCHA_FAILED", userId, req, { next_email: nextEmail });
+        await audit("EMAIL_CHANGE_REQUEST_CAPTCHA_FAILED", userId, req, {
+          next_email: nextEmail,
+        });
         return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
       }
     }
@@ -275,7 +333,12 @@ export async function POST(req: Request) {
       `,
     });
 
-    await audit("EMAIL_CHANGE_REQUESTED", userId, req, { next_email: nextEmail, androidClient });
+    await audit("EMAIL_CHANGE_REQUESTED", userId, req, {
+      next_email: nextEmail,
+      androidClient,
+      iosClient,
+    });
+
     return jsonNoStore({ ok: true });
   } catch (err) {
     console.error("REQUEST EMAIL CHANGE ERROR:", err);

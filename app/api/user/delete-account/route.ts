@@ -4,12 +4,14 @@ import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import { verifyTurnstile } from "@/lib/security/turnstile";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -41,8 +43,19 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
+function getClientPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
+}
+
 function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+}
+
+function isIosClient(req: Request) {
+  return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
 async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
@@ -102,6 +115,9 @@ async function audit(
 
 function clearSessionCookie(res: NextResponse, req: Request) {
   const cookieDomain = getCookieDomain(req);
+  const clientPlatform = getClientPlatform(req);
+  const nativeClient =
+    clientPlatform === ANDROID_CLIENT_HEADER || clientPlatform === IOS_CLIENT_HEADER;
 
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
@@ -109,19 +125,23 @@ function clearSessionCookie(res: NextResponse, req: Request) {
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 0,
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
+    ...(!nativeClient && cookieDomain ? { domain: cookieDomain } : {}),
   });
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const body = rawText ? JSON.parse(rawText) : {};
+
     const turnstileToken = body?.turnstileToken;
     const integrityToken = body?.integrityToken;
     const integrityRequestHash = body?.integrityRequestHash;
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
+    const iosClient = isIosClient(req);
 
     const ipAllowed = await rateLimitHit(`ip:${ip}:delete_account`, 60, 10);
     if (!ipAllowed) {
@@ -172,6 +192,42 @@ export async function POST(req: Request) {
           { status: 403 }
         );
       }
+    } else if (iosClient) {
+      const keyId = req.headers.get("x-app-attest-key-id");
+      const assertion = req.headers.get("x-app-attest-assertion");
+      const challengeId = req.headers.get("x-app-attest-challenge-id");
+
+      if (!keyId || !assertion || !challengeId) {
+        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      }
+
+      const integrity = await verifyIosAppAttestAssertion({
+        keyId,
+        assertion,
+        challengeId,
+        method: "POST",
+        path: "/api/user/delete-account",
+        requestBody: rawBodyBuffer,
+      });
+
+      if (!integrity.ok) {
+        await audit("ACCOUNT_DELETE_IOS_APP_ATTEST_FAILED", authUser.id, req, {
+          reason: integrity.reason,
+          payload: integrity.payload ?? null,
+        });
+
+        return jsonNoStore(
+          {
+            error: integrity.publicMessage,
+            reason: integrity.reason,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
+          },
+          { status: 403 }
+        );
+      }
     } else {
       if (!turnstileToken || typeof turnstileToken !== "string") {
         return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
@@ -199,6 +255,7 @@ export async function POST(req: Request) {
       stripe_subscription_id: userRow.stripe_subscription_id ?? null,
       plan_type: userRow.plan_type ?? null,
       androidClient,
+      iosClient,
     });
 
     const { error: sessionsError } = await supabaseAdmin
@@ -278,6 +335,7 @@ export async function POST(req: Request) {
       stripe_subscription_id: userRow.stripe_subscription_id ?? null,
       plan_type: userRow.plan_type ?? null,
       androidClient,
+      iosClient,
     });
 
     const res = jsonNoStore({
