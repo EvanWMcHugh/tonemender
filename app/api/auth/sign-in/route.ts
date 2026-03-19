@@ -58,7 +58,10 @@ function getCookieDomain(req: Request) {
 }
 
 function getClientPlatform(req: Request) {
-  return req.headers.get("x-client-platform");
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
 }
 
 function isAndroidClient(req: Request) {
