@@ -170,13 +170,14 @@ export default function LoginPage() {
       const json = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const message = json?.error || "Login failed";
+        const errorCode = json?.error;
+const message = json?.message || json?.error || "Login failed";
 
-        if (String(message).toLowerCase().includes("not confirmed")) {
-          setNeedsEmailConfirm(true);
-        }
+if (errorCode === "EMAIL_NOT_VERIFIED") {
+  setNeedsEmailConfirm(true);
+}
 
-        throw new Error(message);
+throw new Error(message);
       }
 
       cleanupCaptchaState();

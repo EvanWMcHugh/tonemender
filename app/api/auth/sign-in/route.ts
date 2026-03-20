@@ -275,13 +275,20 @@ export async function POST(req: Request) {
     }
 
     if (!user.email_verified_at) {
-      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-      return jsonNoStore({ error: "Email not confirmed" }, { status: 403 });
-    }
+  await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
+    androidClient,
+    iosClient,
+    isReviewer,
+  });
+
+  return jsonNoStore(
+    {
+      error: "EMAIL_NOT_VERIFIED",
+      message: "Email not confirmed",
+    },
+    { status: 403 }
+  );
+}
 
     const passwordOk = await bcrypt.compare(password, user.password_hash);
     if (!passwordOk) {

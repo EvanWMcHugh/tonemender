@@ -146,8 +146,10 @@ export default function SignUpPage() {
         throw new Error(json?.error || "Sign up failed");
       }
 
-      cleanupCaptchaState();
-      router.replace("/check-email?type=signup");
+       cleanupCaptchaState();
+      router.replace(
+        `/check-email?type=signup&email=${encodeURIComponent(normalizedEmail)}`
+      );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Sign up failed");
       cleanupCaptchaState();
