@@ -21,6 +21,7 @@
     "googleapis": "^171.4.0",
     "html2canvas": "^1.4.1",
     "next": "13.4.19",
+    "node-app-attest": "^1.0.1",
     "openai": "^6.9.1",
     "react": "18.2.0",
     "react-dom": "18.2.0",

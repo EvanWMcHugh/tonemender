@@ -10,7 +10,10 @@ function jsonNoStore(data: unknown, init?: ResponseInit) {
 }
 
 function getPlatform(req: Request) {
-  return req.headers.get("x-client-platform") ?? null;
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
 }
 
 export async function POST(req: Request) {
@@ -29,7 +32,8 @@ export async function POST(req: Request) {
       challengeId: result.challengeId,
       challenge: result.challenge,
     });
-  } catch {
+  } catch (error) {
+    console.error("APP ATTEST ASSERTION CHALLENGE ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

@@ -1,5 +1,8 @@
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+// Example package; install and type-check in your project.
+// npm i node-app-attest
+import { verifyAttestation, verifyAssertion } from "node-app-attest";
 
 type VerifyIosAppAttestAssertionArgs = {
   keyId: string;
@@ -14,14 +17,11 @@ type VerifyIosAppAttestAssertionResult = {
   ok: boolean;
   reason: string;
   publicMessage: string;
-  payload?: {
-    keyId: string;
-    challengeId: string;
-    clientDataHashHex: string;
-  };
+  payload?: Record<string, unknown>;
 };
 
-const APPLE_APP_ID = `${process.env.APPLE_TEAM_ID}.${process.env.APPLE_BUNDLE_ID}`;
+const APPLE_TEAM_ID = process.env.APPLE_TEAM_ID ?? "";
+const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID ?? "";
 
 function sha256Hex(input: string | Buffer) {
   return crypto.createHash("sha256").update(input).digest("hex");
@@ -56,6 +56,10 @@ function buildAssertionPayload(args: {
   ]);
 }
 
+function allowDevelopmentEnvironment() {
+  return process.env.NODE_ENV !== "production";
+}
+
 export async function createAppAttestChallenge(params: {
   purpose: "attest" | "assertion";
   keyId?: string | null;
@@ -64,17 +68,15 @@ export async function createAppAttestChallenge(params: {
   const challengeHash = sha256Hex(Buffer.from(challenge, "base64"));
   const expiresAt = new Date(Date.now() + 1000 * 60 * 5).toISOString();
 
-  const insertPayload = {
-    challenge,
-    challenge_hash: challengeHash,
-    purpose: params.purpose,
-    key_id: params.keyId ?? null,
-    expires_at: expiresAt,
-  };
-
   const { data, error } = await supabaseAdmin
     .from("app_attest_challenges")
-    .insert(insertPayload)
+    .insert({
+      challenge,
+      challenge_hash: challengeHash,
+      purpose: params.purpose,
+      key_id: params.keyId ?? null,
+      expires_at: expiresAt,
+    })
     .select("id")
     .single();
 
@@ -83,7 +85,7 @@ export async function createAppAttestChallenge(params: {
   }
 
   return {
-    challengeId: data.id as string,
+    challengeId: String(data.id),
     challenge,
     expiresAt,
   };
@@ -167,23 +169,44 @@ export async function consumeAppAttestChallenge(params: {
   return { ok: true as const, row };
 }
 
-export async function storeAttestedKey(params: {
+export async function verifyAndStoreAttestation(params: {
   keyId: string;
+  attestationBase64: string;
+  challengeBase64: string;
   ip: string | null;
   userAgent: string | null;
 }) {
+  const attestationBuffer = Buffer.from(params.attestationBase64, "base64");
+  const challengeBuffer = Buffer.from(params.challengeBase64, "base64");
+
+  const verified = await verifyAttestation({
+    attestation: attestationBuffer,
+    challenge: challengeBuffer,
+    keyId: params.keyId,
+    bundleIdentifier: APPLE_BUNDLE_ID,
+    teamIdentifier: APPLE_TEAM_ID,
+    allowDevelopmentEnvironment: allowDevelopmentEnvironment(),
+  });
+
+  const nowIso = new Date().toISOString();
+
   const { error } = await supabaseAdmin.from("app_attest_keys").upsert({
     key_id: params.keyId,
-    app_id: APPLE_APP_ID,
-    environment: process.env.NODE_ENV === "production" ? "production" : "development",
-    last_seen_at: new Date().toISOString(),
+    app_id: `${APPLE_TEAM_ID}.${APPLE_BUNDLE_ID}`,
+    environment: allowDevelopmentEnvironment() ? "development" : "production",
+    public_key_pem: verified.publicKey,
+    receipt: verified.receipt ?? null,
+    last_seen_at: nowIso,
     last_ip: params.ip,
     last_user_agent: params.userAgent,
+    revoked_at: null,
   });
 
   if (error) {
     throw new Error("Failed to store attested key");
   }
+
+  return verified;
 }
 
 export async function verifyIosAppAttestAssertion({
@@ -212,23 +235,15 @@ export async function verifyIosAppAttestAssertion({
 
   const { data: keyRow, error } = await supabaseAdmin
     .from("app_attest_keys")
-    .select("*")
+    .select("key_id, public_key_pem, revoked_at")
     .eq("key_id", keyId)
     .is("revoked_at", null)
     .maybeSingle();
 
-  if (error || !keyRow) {
+  if (error || !keyRow?.public_key_pem) {
     return {
       ok: false,
       reason: "unknown_key",
-      publicMessage: "Integrity verification failed.",
-    };
-  }
-
-  if (!assertion || typeof assertion !== "string") {
-    return {
-      ok: false,
-      reason: "missing_assertion",
       publicMessage: "Integrity verification failed.",
     };
   }
@@ -248,35 +263,33 @@ export async function verifyIosAppAttestAssertion({
     requestBody,
   });
 
-  const clientDataHashHex = sha256Hex(assertionPayload);
+  const clientDataHash = crypto.createHash("sha256").update(assertionPayload).digest();
 
-  // TODO:
-  // Replace this placeholder with real Apple App Attest assertion verification.
-  // That verification must prove the assertion is valid for:
-  // - the attested key
-  // - this app ID / bundle
-  // - this exact clientDataHash
-  //
-  // For now, we only enforce:
-  // - known attested key
-  // - valid, unexpired, single-use challenge ID
-  // - non-empty assertion string
+  try {
+    await verifyAssertion({
+      assertion: Buffer.from(assertion, "base64"),
+      publicKey: keyRow.public_key_pem,
+      clientDataHash,
+      bundleIdentifier: APPLE_BUNDLE_ID,
+      teamIdentifier: APPLE_TEAM_ID,
+      allowDevelopmentEnvironment: allowDevelopmentEnvironment(),
+    });
+  } catch {
+    return {
+      ok: false,
+      reason: "assertion_invalid",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
 
   await supabaseAdmin
     .from("app_attest_keys")
-    .update({
-      last_seen_at: new Date().toISOString(),
-    })
+    .update({ last_seen_at: new Date().toISOString() })
     .eq("key_id", keyId);
 
   return {
     ok: true,
-    reason: "placeholder_verified",
+    reason: "verified",
     publicMessage: "ok",
-    payload: {
-      keyId,
-      challengeId,
-      clientDataHashHex,
-    },
   };
 }

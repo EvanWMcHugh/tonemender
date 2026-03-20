@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   consumeAppAttestChallenge,
-  storeAttestedKey,
+  verifyAndStoreAttestation,
 } from "@/lib/security/app-attest";
 
 export const runtime = "nodejs";
@@ -23,7 +23,10 @@ function getUserAgent(req: Request) {
 }
 
 function getPlatform(req: Request) {
-  return req.headers.get("x-client-platform") ?? null;
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
 }
 
 export async function POST(req: Request) {
@@ -36,20 +39,11 @@ export async function POST(req: Request) {
     const challenge =
       typeof body?.challenge === "string" ? body.challenge.trim() : "";
 
-    if (!keyId) {
-      return jsonNoStore({ error: "Missing keyId" }, { status: 400 });
-    }
+    if (!keyId) return jsonNoStore({ error: "Missing keyId" }, { status: 400 });
+    if (!attestation) return jsonNoStore({ error: "Missing attestation" }, { status: 400 });
+    if (!challenge) return jsonNoStore({ error: "Missing challenge" }, { status: 400 });
 
-    if (!attestation) {
-      return jsonNoStore({ error: "Missing attestation" }, { status: 400 });
-    }
-
-    if (!challenge) {
-      return jsonNoStore({ error: "Missing challenge" }, { status: 400 });
-    }
-
-    const platform = getPlatform(req);
-    if (platform !== "ios") {
+    if (getPlatform(req) !== "ios") {
       return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
     }
 
@@ -62,17 +56,17 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Invalid challenge" }, { status: 403 });
     }
 
-    // TODO: Add full Apple App Attest cryptographic verification here.
-    // For now, this stores the key after validating challenge consumption.
-
-    await storeAttestedKey({
+    await verifyAndStoreAttestation({
       keyId,
+      attestationBase64: attestation,
+      challengeBase64: challenge,
       ip: getClientIp(req),
       userAgent: getUserAgent(req),
     });
 
     return jsonNoStore({ ok: true });
-  } catch {
+  } catch (error) {
+    console.error("APP ATTEST ATTEST ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }
