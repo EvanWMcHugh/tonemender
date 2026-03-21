@@ -6,7 +6,11 @@ import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+const apiKey = process.env.OPENAI_API_KEY;
+if (!apiKey) {
+  throw new Error("Missing OPENAI_API_KEY");
+}
+const openai = new OpenAI({ apiKey });
 
 const TIMEZONE = "America/Los_Angeles";
 const DAILY_FREE_LIMIT = 3;
@@ -151,7 +155,7 @@ async function audit(
   } catch {}
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   try {
     const now = Date.now();
     const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -217,31 +221,35 @@ async function recordUsage(userId: string) {
   }
 }
 
-async function getLifetimeFreeUsedByEmail(email: string) {
+async function getFreeDailyUsedByEmail(email: string, date = new Date()) {
   const normalizedEmail = normalizeEmail(email);
+  const day = formatLA_YYYY_MM_DD(date);
 
   const { data, error } = await supabaseAdmin
-    .from("free_limit_history")
-    .select("free_rewrite_count")
+    .from("free_daily_usage")
+    .select("rewrite_count")
     .eq("normalized_email", normalizedEmail)
+    .eq("day", day)
     .maybeSingle();
 
   if (error) {
-    throw new Error("Lifetime usage check failed");
+    throw new Error("Daily email usage check failed");
   }
 
-  return data?.free_rewrite_count ?? 0;
+  return data?.rewrite_count ?? 0;
 }
 
-async function incrementLifetimeFreeUsageByEmail(email: string) {
+async function incrementFreeDailyUsageByEmail(email: string, date = new Date()) {
   const normalizedEmail = normalizeEmail(email);
+  const day = formatLA_YYYY_MM_DD(date);
 
-  const { error } = await supabaseAdmin.rpc("increment_free_limit_history", {
+  const { error } = await supabaseAdmin.rpc("increment_free_daily_usage", {
     p_normalized_email: normalizedEmail,
+    p_day: day,
   });
 
   if (error) {
-    throw new Error("Failed to record lifetime free usage");
+    throw new Error("Failed to record daily email usage");
   }
 }
 
@@ -254,14 +262,19 @@ export async function POST(req: Request) {
     }
 
     const ip = getClientIp(req) || "unknown";
-    const okUserRate = await rateLimitHit(`user:${authUser.id}:rewrite`, 60, 30);
-    const okIpRate = await rateLimitHit(`ip:${ip}:rewrite`, 60, 60);
+    const okUserRate = await isRateLimitAllowed(`user:${authUser.id}:rewrite`, 60, 30);
+    const okIpRate = await isRateLimitAllowed(`ip:${ip}:rewrite`, 60, 60);
 
     if (!okUserRate || !okIpRate) {
       return jsonNoStore({ error: "Too many requests" }, { status: 429 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as RewriteRequestBody;
+    let body: RewriteRequestBody = {};
+try {
+  body = (await req.json()) as RewriteRequestBody;
+} catch {
+  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+}
 
     const messageRaw = body.message;
     const recipient = parseRecipient(body.recipient);
@@ -291,26 +304,26 @@ export async function POST(req: Request) {
     }
 
     if (!authUser.isPro) {
-      const usedToday = await getUsedToday(authUser.id);
-      const lifetimeUsed = await getLifetimeFreeUsedByEmail(normalizedEmail);
+  const usedToday = await getUsedToday(authUser.id);
+  const emailUsedToday = await getFreeDailyUsedByEmail(normalizedEmail);
 
-      if (usedToday >= DAILY_FREE_LIMIT || lifetimeUsed >= DAILY_FREE_LIMIT) {
-        await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
-          usedToday,
-          lifetimeUsed,
-          limit: DAILY_FREE_LIMIT,
-          normalized_email: normalizedEmail,
-        });
+  if (usedToday >= DAILY_FREE_LIMIT || emailUsedToday >= DAILY_FREE_LIMIT) {
+    await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
+      usedToday,
+      emailUsedToday,
+      limit: DAILY_FREE_LIMIT,
+      normalized_email: normalizedEmail,
+    });
 
-        return jsonNoStore(
-          {
-            error: "Free rewrite limit reached. Upgrade to Pro for unlimited rewrites.",
-            code: "FREE_LIMIT_REACHED",
-          },
-          { status: 429 }
-        );
-      }
-    }
+    return jsonNoStore(
+      {
+        error: "You’ve used all 3 free rewrites for today. Upgrade to Pro for unlimited rewrites.",
+        code: "FREE_LIMIT_REACHED",
+      },
+      { status: 429 }
+    );
+  }
+}
 
     const prompt = `
 You are an expert communication and relationship coach. Rewrite the user's message into healthier versions and analyze emotional tone.
@@ -366,6 +379,12 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const soft = extractBlock(raw, "SOFT");
     const calm = extractBlock(raw, "CALM");
     const clear = extractBlock(raw, "CLEAR");
+    if (!soft || !calm || !clear) {
+  return jsonNoStore(
+    { error: "AI response format was invalid. Please try again." },
+    { status: 502 }
+  );
+}
     const toneScoreRaw = extractBlock(raw, "TONE_SCORE");
     const emotionImpact = extractBlock(raw, "EMOTION_IMPACT");
 
@@ -376,8 +395,8 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     await recordUsage(authUser.id);
 
     if (!authUser.isPro) {
-      await incrementLifetimeFreeUsageByEmail(normalizedEmail);
-    }
+    await incrementFreeDailyUsageByEmail(normalizedEmail);
+}
 
     await audit("REWRITE_OK", authUser.id, req, {
       is_pro: authUser.isPro,
@@ -403,11 +422,11 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
       err instanceof Error ? err.message : "Server error while rewriting message";
 
     if (
-      message === "Usage check failed" ||
-      message === "Lifetime usage check failed" ||
-      message === "Failed to record rewrite usage" ||
-      message === "Failed to record lifetime free usage"
-    ) {
+  message === "Usage check failed" ||
+  message === "Daily email usage check failed" ||
+  message === "Failed to record rewrite usage" ||
+  message === "Failed to record daily email usage"
+) {
       return jsonNoStore({ error: message }, { status: 500 });
     }
 

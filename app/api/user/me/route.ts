@@ -41,13 +41,20 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
-function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === "android";
+function getClientPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
+}
+
+function isNativeClient(req: Request) {
+  const platform = getClientPlatform(req);
+  return platform === "android" || platform === "ios";
 }
 
 function clearSessionCookie(req: Request, res: NextResponse) {
-  const cookieDomain = isAndroidClient(req) ? undefined : getCookieDomain(req);
-
+  const cookieDomain = isNativeClient(req) ? undefined : getCookieDomain(req);
   res.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
@@ -150,7 +157,8 @@ export async function GET(req: Request) {
         reviewerMode,
       },
     });
-  } catch {
-    return jsonNoStore({ user: null }, { status: 500 });
-  }
+  } catch (err) {
+  console.error("USER ME ERROR:", err);
+  return jsonNoStore({ user: null }, { status: 500 });
+}
 }

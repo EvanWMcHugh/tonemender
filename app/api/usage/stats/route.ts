@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 
@@ -67,110 +66,42 @@ export async function GET(req: Request) {
     const user = await getAuthUserFromRequest(req);
 
     if (!user?.id) {
-      return jsonNoStore({ stats: { today: 0, total: 0 }, day });
+      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let total = 0;
-    let today = 0;
+    const [startIso, endIso] = laDayBoundsUtcIso(day);
 
-    try {
-      const totalResult = await supabaseAdmin
-        .from("rewrite_usage")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", user.id);
+    const totalResult = await supabaseAdmin
+      .from("rewrite_usage")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id);
 
-      if (totalResult.error) {
-        return jsonNoStore(
-          {
-            stats: { today: 0, total: 0 },
-            day,
-            error: "total_query_failed",
-            details: totalResult.error.message,
-          },
-          { status: 500 }
-        );
-      }
-
-      total = totalResult.count ?? 0;
-    } catch (err: unknown) {
-      return jsonNoStore(
-        {
-          stats: { today: 0, total: 0 },
-          day,
-          error: "total_query_threw",
-          details: err instanceof Error ? err.message : "Unknown error",
-        },
-        { status: 500 }
-      );
+    if (totalResult.error) {
+      console.error("USAGE STATS total query failed:", totalResult.error);
+      return jsonNoStore({ error: "Failed to load usage stats" }, { status: 500 });
     }
 
-    let startIso = "";
-    let endIso = "";
+    const todayResult = await supabaseAdmin
+      .from("rewrite_usage")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .gte("created_at", startIso)
+      .lt("created_at", endIso);
 
-    try {
-      [startIso, endIso] = laDayBoundsUtcIso(day);
-    } catch (err: unknown) {
-      return jsonNoStore(
-        {
-          stats: { today: 0, total },
-          day,
-          error: "day_bounds_failed",
-          details: err instanceof Error ? err.message : "Unknown error",
-        },
-        { status: 500 }
-      );
-    }
-
-    try {
-      const todayResult = await supabaseAdmin
-        .from("rewrite_usage")
-        .select("id", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .gte("created_at", startIso)
-        .lt("created_at", endIso);
-
-      if (todayResult.error) {
-        return jsonNoStore(
-          {
-            stats: { today: 0, total },
-            day,
-            error: "today_query_failed",
-            details: todayResult.error.message,
-            startIso,
-            endIso,
-          },
-          { status: 500 }
-        );
-      }
-
-      today = todayResult.count ?? 0;
-    } catch (err: unknown) {
-      return jsonNoStore(
-        {
-          stats: { today: 0, total },
-          day,
-          error: "today_query_threw",
-          details: err instanceof Error ? err.message : "Unknown error",
-          startIso,
-          endIso,
-        },
-        { status: 500 }
-      );
+    if (todayResult.error) {
+      console.error("USAGE STATS today query failed:", todayResult.error);
+      return jsonNoStore({ error: "Failed to load usage stats" }, { status: 500 });
     }
 
     return jsonNoStore({
-      stats: { today, total },
+      stats: {
+        today: todayResult.count ?? 0,
+        total: totalResult.count ?? 0,
+      },
       day,
     });
-  } catch (err: unknown) {
-    return jsonNoStore(
-      {
-        stats: { today: 0, total: 0 },
-        day,
-        error: "outer_catch",
-        details: err instanceof Error ? err.message : "Unknown error",
-      },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("USAGE STATS ERROR:", err);
+    return jsonNoStore({ error: "Failed to load usage stats" }, { status: 500 });
   }
 }

@@ -9,11 +9,18 @@ function jsonNoStore(data: unknown, init?: ResponseInit) {
   return res;
 }
 
+function getPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
+}
+
 export async function POST(req: Request) {
   try {
-    const platform = req.headers.get("x-client-platform");
+    const platform = getPlatform(req);
 
-    if (platform && platform !== "ios") {
+    if (platform !== "ios") {
       return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
     }
 
@@ -24,7 +31,8 @@ export async function POST(req: Request) {
       challenge: result.challenge,
       expiresAt: result.expiresAt,
     });
-  } catch {
+  } catch (error) {
+    console.error("APP ATTEST CHALLENGE ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

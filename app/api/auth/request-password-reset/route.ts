@@ -9,14 +9,15 @@ import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 export const runtime = "nodejs";
 
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -47,7 +48,7 @@ function isIosClient(req: Request) {
   return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -87,7 +88,7 @@ async function audit(
   event: string,
   userId: string | null,
   req: Request,
-  meta: Record<string, any> = {}
+  meta: Record<string, unknown> = {}
 ) {
   try {
     await supabaseAdmin.from("audit_log").insert({
@@ -106,7 +107,12 @@ export async function POST(req: Request) {
   try {
     const rawText = await req.text();
     const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
+    let body: Record<string, unknown> = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ ok: true });
+}
 
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
@@ -122,8 +128,8 @@ export async function POST(req: Request) {
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:pw_reset_request`, 60, 10);
-    const emailAllowed = await rateLimitHit(`email:${email}:pw_reset_request`, 300, 5);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:pw_reset_request`, 60, 10);
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:pw_reset_request`, 300, 5);
     if (!ipAllowed || !emailAllowed) {
       return jsonNoStore({ ok: true });
     }
@@ -242,7 +248,8 @@ export async function POST(req: Request) {
 
     if (insErr) return jsonNoStore({ ok: true });
 
-    const appUrl = process.env.APP_URL || "https://tonemender.com";
+    const appUrl = process.env.APP_URL;
+if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
     const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(raw)}`;
 
     await sendEmail({

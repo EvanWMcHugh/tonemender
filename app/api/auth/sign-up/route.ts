@@ -11,7 +11,8 @@ import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 export const runtime = "nodejs";
 
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
@@ -71,7 +72,7 @@ async function audit(
   } catch {}
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -112,8 +113,14 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
 export async function POST(req: Request) {
   try {
     const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
+const rawBodyBuffer = Buffer.from(rawText, "utf8");
+
+let body: Record<string, unknown> = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+}
 
     const emailRaw = body?.email;
     const password = body?.password;
@@ -134,8 +141,8 @@ export async function POST(req: Request) {
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:sign_up`, 60, 10);
-    const emailAllowed = await rateLimitHit(`email:${email}:sign_up`, 300, 5);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:sign_up`, 60, 10);
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:sign_up`, 300, 5);
 
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_UP_RATE_LIMITED", null, req, {
@@ -336,7 +343,11 @@ export async function POST(req: Request) {
       });
     } catch (emailErr) {
       console.error("SIGN UP: sendEmail failed:", emailErr);
-      await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {});
+      await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {
+  email,
+  androidClient,
+  iosClient,
+});
 
       return jsonNoStore(
         {

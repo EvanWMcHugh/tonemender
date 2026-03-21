@@ -19,7 +19,7 @@ export default function TermsPage() {
         </header>
 
         <p>
-          These Terms of Service ("Terms") govern your use of ToneMender. By
+          These Terms of Service (&quot;Terms&quot;) govern your use of ToneMender. By
           accessing or using the service, you agree to be bound by these Terms.
           If you do not agree to these Terms, you may not use the service.
         </p>
@@ -96,7 +96,7 @@ export default function TermsPage() {
             7. Limitation of Liability
           </h2>
           <p className="mt-4">
-            ToneMender is provided on an “as is” and “as available” basis. To
+            ToneMender is provided on an &ldquo;as is&rdquo; and &ldquo;as available&rdquo; basis. To
             the maximum extent permitted by law, we are not liable for any
             indirect, incidental, or consequential damages resulting from the
             use of the service.

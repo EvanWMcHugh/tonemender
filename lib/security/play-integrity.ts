@@ -1,3 +1,5 @@
+// lib/security/play-integrity.ts
+import "server-only";
 import crypto from "crypto";
 
 type VerifyAndroidPlayIntegrityArgs = {
@@ -7,16 +9,50 @@ type VerifyAndroidPlayIntegrityArgs = {
   maxAgeMs?: number;
 };
 
+type PlayIntegrityPayload = {
+  requestDetails?: {
+    requestPackageName?: string;
+    requestHash?: string;
+    timestampMillis?: string | number;
+  };
+  appIntegrity?: {
+    appRecognitionVerdict?: string;
+    packageName?: string;
+    certificateSha256Digest?: string[];
+    versionCode?: string;
+  };
+  deviceIntegrity?: {
+    deviceRecognitionVerdict?: string[];
+  };
+  accountDetails?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
 type VerifyAndroidPlayIntegrityResult = {
   ok: boolean;
   reason: string;
   publicMessage: string;
-  payload?: any;
+  payload?: PlayIntegrityPayload;
 };
 
-const PLAY_INTEGRITY_SCOPE = "https://www.googleapis.com/auth/playintegrity";
+type GoogleAccessTokenResponse = {
+  access_token: string;
+  expires_in?: number;
+  token_type?: string;
+};
 
-function getEnv(name: string) {
+const PLAY_INTEGRITY_SCOPE =
+  "https://www.googleapis.com/auth/playintegrity";
+
+const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const PLAY_INTEGRITY_API_BASE = "https://playintegrity.googleapis.com/v1";
+const FETCH_TIMEOUT_MS = 15_000;
+const ACCESS_TOKEN_SKEW_SECONDS = 60;
+
+let cachedAccessToken: string | null = null;
+let cachedAccessTokenExpiresAt = 0;
+
+function getEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`Missing required env var: ${name}`);
@@ -24,11 +60,11 @@ function getEnv(name: string) {
   return value;
 }
 
-function normalizePrivateKey(value: string) {
+function normalizePrivateKey(value: string): string {
   return value.replace(/\\n/g, "\n");
 }
 
-function base64Url(input: Buffer | string) {
+function base64Url(input: Buffer | string): string {
   return Buffer.from(input)
     .toString("base64")
     .replace(/\+/g, "-")
@@ -36,11 +72,58 @@ function base64Url(input: Buffer | string) {
     .replace(/=+$/g, "");
 }
 
-async function getGoogleAccessToken(): Promise<string> {
-  const clientEmail = getEnv("GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL");
-  const privateKey = normalizePrivateKey(getEnv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY"));
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
 
-  const now = Math.floor(Date.now() / 1000);
+async function safeReadText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+async function safeReadJson<T>(res: Response): Promise<T | null> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = FETCH_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getGoogleAccessToken(): Promise<string> {
+  const nowMs = Date.now();
+
+  if (cachedAccessToken && nowMs < cachedAccessTokenExpiresAt) {
+    return cachedAccessToken;
+  }
+
+  const clientEmail = getEnv("GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL");
+  const privateKey = normalizePrivateKey(
+    getEnv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY")
+  );
+
+  const now = Math.floor(nowMs / 1000);
 
   const header = {
     alg: "RS256",
@@ -50,7 +133,7 @@ async function getGoogleAccessToken(): Promise<string> {
   const claimSet = {
     iss: clientEmail,
     scope: PLAY_INTEGRITY_SCOPE,
-    aud: "https://oauth2.googleapis.com/token",
+    aud: GOOGLE_OAUTH_TOKEN_URL,
     exp: now + 3600,
     iat: now,
   };
@@ -66,7 +149,7 @@ async function getGoogleAccessToken(): Promise<string> {
   const signature = signer.sign(privateKey);
   const jwt = `${unsignedJwt}.${base64Url(signature)}`;
 
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+  const tokenRes = await fetchWithTimeout(GOOGLE_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -75,31 +158,50 @@ async function getGoogleAccessToken(): Promise<string> {
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
     }),
-    cache: "no-store",
   });
 
   if (!tokenRes.ok) {
-    const text = await tokenRes.text().catch(() => "");
-    throw new Error(`Failed to get Google access token: ${tokenRes.status} ${text}`);
+    const text = await safeReadText(tokenRes);
+    throw new Error(
+      `Failed to get Google access token (status ${tokenRes.status})${
+        text ? `: ${text.slice(0, 500)}` : ""
+      }`
+    );
   }
 
-  const tokenJson = await tokenRes.json();
+  const tokenJson = await safeReadJson<GoogleAccessTokenResponse>(tokenRes);
 
   if (!tokenJson?.access_token || typeof tokenJson.access_token !== "string") {
     throw new Error("Google access token missing from response");
   }
 
-  return tokenJson.access_token;
+  const expiresIn = Math.max(
+    0,
+    Number(tokenJson.expires_in ?? 3600) - ACCESS_TOKEN_SKEW_SECONDS
+  );
+
+  cachedAccessToken = tokenJson.access_token;
+  cachedAccessTokenExpiresAt = Date.now() + expiresIn * 1000;
+
+  return cachedAccessToken;
 }
 
 async function decodeIntegrityToken(
   packageName: string,
   integrityToken: string
-): Promise<any> {
+): Promise<Record<string, unknown>> {
+  if (!isNonEmptyString(packageName)) {
+    throw new Error("packageName is required");
+  }
+
+  if (!isNonEmptyString(integrityToken)) {
+    throw new Error("integrityToken is required");
+  }
+
   const accessToken = await getGoogleAccessToken();
 
-  const decodeRes = await fetch(
-    `https://playintegrity.googleapis.com/v1/${encodeURIComponent(
+  const decodeRes = await fetchWithTimeout(
+    `${PLAY_INTEGRITY_API_BASE}/${encodeURIComponent(
       packageName
     )}:decodeIntegrityToken`,
     {
@@ -107,20 +209,29 @@ async function decodeIntegrityToken(
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
+        Accept: "application/json",
       },
       body: JSON.stringify({
         integrity_token: integrityToken,
       }),
-      cache: "no-store",
     }
   );
 
   if (!decodeRes.ok) {
-    const text = await decodeRes.text().catch(() => "");
-    throw new Error(`Play Integrity decode failed: ${decodeRes.status} ${text}`);
+    const text = await safeReadText(decodeRes);
+    throw new Error(
+      `Play Integrity decode failed (status ${decodeRes.status})${
+        text ? `: ${text.slice(0, 500)}` : ""
+      }`
+    );
   }
 
-  return decodeRes.json();
+  const json = await safeReadJson<Record<string, unknown>>(decodeRes);
+  if (!json) {
+    throw new Error("Play Integrity decode returned invalid JSON");
+  }
+
+  return json;
 }
 
 export async function verifyAndroidPlayIntegrity({
@@ -129,10 +240,48 @@ export async function verifyAndroidPlayIntegrity({
   expectedRequestHash,
   maxAgeMs = 2 * 60 * 1000,
 }: VerifyAndroidPlayIntegrityArgs): Promise<VerifyAndroidPlayIntegrityResult> {
-  try {
-    const decoded = await decodeIntegrityToken(expectedPackageName, integrityToken);
+  if (!isNonEmptyString(integrityToken)) {
+    return {
+      ok: false,
+      reason: "missing_integrity_token",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
 
-    const payload = decoded?.tokenPayloadExternal || decoded?.tokenPayload || null;
+  if (!isNonEmptyString(expectedPackageName)) {
+    return {
+      ok: false,
+      reason: "missing_expected_package_name",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
+
+  if (!isNonEmptyString(expectedRequestHash)) {
+    return {
+      ok: false,
+      reason: "missing_expected_request_hash",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
+
+  if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0) {
+    return {
+      ok: false,
+      reason: "invalid_max_age",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
+
+  try {
+    const decoded = await decodeIntegrityToken(
+      expectedPackageName,
+      integrityToken
+    );
+
+    const payload =
+      (decoded.tokenPayloadExternal as PlayIntegrityPayload | undefined) ||
+      (decoded.tokenPayload as PlayIntegrityPayload | undefined) ||
+      null;
 
     if (!payload) {
       return {
@@ -199,10 +348,13 @@ export async function verifyAndroidPlayIntegrity({
       };
     }
 
-    const deviceRecognitionVerdict: string[] =
-      deviceIntegrity.deviceRecognitionVerdict ?? [];
+    const deviceRecognitionVerdict = Array.isArray(
+      deviceIntegrity.deviceRecognitionVerdict
+    )
+      ? deviceIntegrity.deviceRecognitionVerdict
+      : [];
 
-    if (!Array.isArray(deviceRecognitionVerdict) || deviceRecognitionVerdict.length === 0) {
+    if (deviceRecognitionVerdict.length === 0) {
       return {
         ok: false,
         reason: "device_not_recognized",
@@ -218,7 +370,10 @@ export async function verifyAndroidPlayIntegrity({
       payload,
     };
   } catch (error) {
-    console.error("verifyAndroidPlayIntegrity error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("verifyAndroidPlayIntegrity error", { message });
+
     return {
       ok: false,
       reason: "verification_exception",

@@ -4,17 +4,56 @@ import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
 }
 
 type ConfirmType = "signup" | "email-verify" | "email-change" | "newsletter";
+type Purpose =
+  | "signup_verify"
+  | "email_verify"
+  | "email_change"
+  | "newsletter_confirm";
 
 type ConfirmBody = {
   token?: unknown;
   type?: unknown;
+};
+
+type TokenRow = {
+  id: string;
+  user_id: string | null;
+  email: string | null;
+  data: unknown;
+  expires_at: string | null;
+  consumed_at: string | null;
+  purpose: Purpose;
+};
+
+type ConfirmSuccess =
+  | {
+      ok: true;
+      success: true;
+      type: "signup";
+      email: string | null;
+    }
+  | {
+      ok: true;
+      success: true;
+      type: "email-change";
+    }
+  | {
+      ok: true;
+      success: true;
+      type: "newsletter";
+      email: string;
+    };
+
+type ConfirmConflict = {
+  ok: false;
+  error: string;
 };
 
 function normalizeEmail(email: string) {
@@ -29,13 +68,33 @@ function parseType(raw: unknown): ConfirmType | null {
   return null;
 }
 
-type Purpose = "signup_verify" | "email_verify" | "email_change" | "newsletter_confirm";
+function isConflictResult(value: ConfirmSuccess | ConfirmConflict | null): value is ConfirmConflict {
+  return Boolean(value && value.ok === false);
+}
+
+function getTokenDataValue(data: unknown, keys: string[]): string | null {
+  if (!data || typeof data !== "object") return null;
+
+  const record = data as Record<string, unknown>;
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Atomically consume an auth token (single-use).
  * Returns token row if consumed; otherwise null.
  */
-async function consumeAuthToken(params: { token: string; purpose: Purpose }) {
+async function consumeAuthToken(params: {
+  token: string;
+  purpose: Purpose;
+}): Promise<TokenRow | null> {
   const { token, purpose } = params;
 
   const tokenHash = sha256Hex(token);
@@ -56,10 +115,25 @@ async function consumeAuthToken(params: { token: string; purpose: Purpose }) {
     throw new Error("TOKEN_CONSUME_FAILED");
   }
 
-  return tok ?? null;
+  if (!tok) return null;
+
+  return {
+    id: String(tok.id),
+    user_id: tok.user_id ? String(tok.user_id) : null,
+    email: typeof tok.email === "string" ? tok.email : null,
+    data: tok.data ?? null,
+    expires_at: tok.expires_at ? String(tok.expires_at) : null,
+    consumed_at: tok.consumed_at ? String(tok.consumed_at) : null,
+    purpose: tok.purpose as Purpose,
+  };
 }
 
-async function bestEffortAudit(event: string, meta: any, userId?: string | null, req?: Request) {
+async function bestEffortAudit(
+  event: string,
+  meta: Record<string, unknown> = {},
+  userId?: string | null,
+  req?: Request
+) {
   try {
     const cfIp = req?.headers.get("cf-connecting-ip");
     const forwardedFor = req?.headers.get("x-forwarded-for");
@@ -71,27 +145,27 @@ async function bestEffortAudit(event: string, meta: any, userId?: string | null,
       event,
       ip,
       user_agent: ua,
-      meta: meta ?? {},
+      meta,
     });
   } catch {
     // ignore
   }
 }
 
-async function confirmEmailVerify(token: string, req: Request) {
-  // You previously had both signup_verify and email_verify in your CHECK constraint.
-  // If you've truly merged them, pick ONE and delete the other from the constraint.
-  // For safety/compat, we try email_verify first, then signup_verify.
+async function confirmEmailVerify(
+  token: string,
+  req: Request
+): Promise<ConfirmSuccess | null> {
+  // Back-compat: support legacy signup_verify while email_verify is canonical.
   const tok =
     (await consumeAuthToken({ token, purpose: "email_verify" }).catch(() => null)) ||
     (await consumeAuthToken({ token, purpose: "signup_verify" }).catch(() => null));
 
   if (!tok?.user_id) return null;
 
-  const userId = tok.user_id as string;
+  const userId = tok.user_id;
   const nowIso = new Date().toISOString();
 
-  // Idempotent: set verified if missing
   const { data: user, error: userErr } = await supabaseAdmin
     .from("users")
     .select("id,email,email_verified_at")
@@ -117,26 +191,34 @@ async function confirmEmailVerify(token: string, req: Request) {
 
   await bestEffortAudit(
     "EMAIL_VERIFIED",
-    { email: user.email, purpose: tok.purpose },
+    {
+      email: typeof user.email === "string" ? user.email : null,
+      purpose: tok.purpose,
+    },
     userId,
     req
   );
 
-  return { ok: true, success: true, type: "signup" as const, email: user.email };
+  return {
+    ok: true,
+    success: true,
+    type: "signup",
+    email: typeof user.email === "string" ? user.email : null,
+  };
 }
 
-async function confirmEmailChange(token: string, req: Request) {
+async function confirmEmailChange(
+  token: string,
+  req: Request
+): Promise<ConfirmSuccess | ConfirmConflict | null> {
   const tok = await consumeAuthToken({ token, purpose: "email_change" }).catch(() => null);
   if (!tok?.user_id) return null;
 
-  const userId = tok.user_id as string;
+  const userId = tok.user_id;
   const nowIso = new Date().toISOString();
 
   const newEmailRaw =
-    (tok.data && typeof tok.data === "object" ? (tok.data as any).new_email : null) ??
-    (tok.data && typeof tok.data === "object" ? (tok.data as any).newEmail : null) ??
-    tok.email ??
-    null;
+    getTokenDataValue(tok.data, ["new_email", "newEmail"]) ?? tok.email ?? null;
 
   const newEmail = normalizeEmail(String(newEmailRaw || ""));
   if (!newEmail) {
@@ -144,7 +226,6 @@ async function confirmEmailChange(token: string, req: Request) {
     throw new Error("EMAIL_CHANGE_BAD_TOKEN_DATA");
   }
 
-  // Ensure not used by a different user (defensive; your unique index should also protect this)
   const { data: existing, error: existErr } = await supabaseAdmin
     .from("users")
     .select("id")
@@ -155,29 +236,33 @@ async function confirmEmailChange(token: string, req: Request) {
     console.error("CONFIRM email-change: existing email check failed", existErr);
     throw new Error("EMAIL_CHANGE_EXIST_CHECK_FAILED");
   }
-  if (existing && existing.id !== userId) {
+
+  if (existing && String(existing.id) !== userId) {
     return { ok: false, error: "Unable to use that email address." };
   }
 
   const { error: updErr } = await supabaseAdmin
     .from("users")
-    .update({ email: newEmail })
+    .update({
+      email: newEmail,
+      email_verified_at: nowIso,
+    })
     .eq("id", userId);
 
   if (updErr) {
     console.error("CONFIRM email-change: update users failed", updErr);
-    // Token is already consumed; safest is to ask user to request again.
     throw new Error("EMAIL_CHANGE_UPDATE_FAILED");
   }
 
-  // Security: revoke sessions (prefer revoke_at over delete for auditability)
   try {
     await supabaseAdmin
       .from("sessions")
       .update({ revoked_at: nowIso })
       .eq("user_id", userId)
       .is("revoked_at", null);
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   await bestEffortAudit(
     "EMAIL_CHANGE_COMPLETED",
@@ -186,25 +271,30 @@ async function confirmEmailChange(token: string, req: Request) {
     req
   );
 
-  return { ok: true, success: true, type: "email-change" as const };
+  return { ok: true, success: true, type: "email-change" };
 }
 
-async function confirmNewsletter(token: string, req: Request) {
-  const tok = await consumeAuthToken({ token, purpose: "newsletter_confirm" }).catch(() => null);
+async function confirmNewsletter(
+  token: string,
+  req: Request
+): Promise<ConfirmSuccess | null> {
+  const tok = await consumeAuthToken({
+    token,
+    purpose: "newsletter_confirm",
+  }).catch(() => null);
+
   if (!tok?.email) return null;
 
-  const email = normalizeEmail(String(tok.email || ""));
+  const email = normalizeEmail(tok.email);
   if (!email) return null;
 
   const nowIso = new Date().toISOString();
 
-  // Upsert subscriber (idempotent)
   const { error: upsertErr } = await supabaseAdmin.from("newsletter_subscribers").upsert(
     {
       email,
       confirmed: true,
       confirmed_at: nowIso,
-      // if your table still has confirm_token_hash lingering, keep clearing it
       confirm_token_hash: null,
     },
     { onConflict: "email" }
@@ -217,22 +307,28 @@ async function confirmNewsletter(token: string, req: Request) {
 
   await bestEffortAudit("NEWSLETTER_CONFIRMED", { email }, null, req);
 
-  return { ok: true, success: true, type: "newsletter" as const, email };
+  return { ok: true, success: true, type: "newsletter", email };
 }
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json().catch(() => ({}))) as ConfirmBody;
+    let body: ConfirmBody = {};
+    try {
+      body = (await req.json()) as ConfirmBody;
+    } catch {
+      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+    }
 
-    const token = body?.token;
+    const token = body.token;
     if (typeof token !== "string" || !token) {
       return jsonNoStore({ error: "Missing token" }, { status: 400 });
     }
 
-    const type = parseType(body?.type);
+    const type = parseType(body.type);
 
     // Back-compat: "signup" is email verification
-    const normalizedType: ConfirmType | null = type === "signup" ? "email-verify" : type;
+    const normalizedType: ConfirmType | null =
+      type === "signup" ? "email-verify" : type;
 
     if (normalizedType === "email-verify") {
       const out = await confirmEmailVerify(token, req);
@@ -242,7 +338,7 @@ export async function POST(req: Request) {
     if (normalizedType === "email-change") {
       const out = await confirmEmailChange(token, req);
       if (!out) return jsonNoStore({ error: "Invalid token" }, { status: 400 });
-      if ((out as any).ok === false) return jsonNoStore(out, { status: 400 });
+      if (isConflictResult(out)) return jsonNoStore(out, { status: 400 });
       return jsonNoStore(out);
     }
 
@@ -251,14 +347,19 @@ export async function POST(req: Request) {
       return out ? jsonNoStore(out) : jsonNoStore({ error: "Invalid token" }, { status: 400 });
     }
 
-    // If type missing/unknown: try all in a safe order
     const out =
       (await confirmEmailVerify(token, req).catch(() => null)) ||
       (await confirmEmailChange(token, req).catch(() => null)) ||
       (await confirmNewsletter(token, req).catch(() => null));
 
-    if (!out) return jsonNoStore({ error: "Invalid token" }, { status: 400 });
-    if ((out as any).ok === false) return jsonNoStore(out, { status: 400 });
+    if (!out) {
+      return jsonNoStore({ error: "Invalid token" }, { status: 400 });
+    }
+
+    if (isConflictResult(out)) {
+      return jsonNoStore(out, { status: 400 });
+    }
+
     return jsonNoStore(out);
   } catch (err) {
     console.error("CONFIRM ERROR:", err);

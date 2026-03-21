@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 const MONTHLY_PRODUCT_ID = "tonemender_pro_monthly";
 const YEARLY_PRODUCT_ID = "tonemender_pro_yearly";
 
-const bundleId = process.env.APPLE_BUNDLE_ID!;
+const bundleId = process.env.APPLE_BUNDLE_ID;
 const envRaw = process.env.APPLE_IAP_ENVIRONMENT ?? "Sandbox";
 const appAppleIdRaw = process.env.APPLE_APPLE_ID;
 
@@ -20,6 +20,10 @@ const environment =
   envRaw.toLowerCase() === "production"
     ? Environment.PRODUCTION
     : Environment.SANDBOX;
+
+type SyncBody = {
+  signedTransaction?: unknown;
+};
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
@@ -45,13 +49,6 @@ function requireEnv(name: string, value: string | undefined) {
 }
 
 async function loadAppleRootCertificates(): Promise<Buffer[]> {
-  // Put these in /certs or another server-side-only location:
-  // AppleRootCA-G2.cer
-  // AppleRootCA-G3.cer
-  // AppleIncRootCertificate.cer
-  // AppleComputerRootCertificate.cer
-  //
-  // For now, keep this minimal. Add/remove roots based on what you download.
   const fs = await import("fs/promises");
   const path = await import("path");
 
@@ -84,8 +81,7 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
 }
 
 async function makeVerifier() {
-  requireEnv("APPLE_BUNDLE_ID", bundleId);
-
+  const resolvedBundleId = requireEnv("APPLE_BUNDLE_ID", bundleId);
   const roots = await loadAppleRootCertificates();
 
   const appAppleId =
@@ -97,7 +93,7 @@ async function makeVerifier() {
     roots,
     true,
     environment,
-    bundleId,
+    resolvedBundleId,
     appAppleId
   );
 }
@@ -116,9 +112,15 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.json().catch(() => ({} as any));
+    let body: SyncBody = {};
+    try {
+      body = (await req.json()) as SyncBody;
+    } catch {
+      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+    }
+
     const signedTransaction =
-      typeof body?.signedTransaction === "string"
+      typeof body.signedTransaction === "string"
         ? body.signedTransaction.trim()
         : "";
 

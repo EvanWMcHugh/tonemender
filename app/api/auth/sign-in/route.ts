@@ -18,7 +18,8 @@ export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
@@ -72,7 +73,7 @@ function isIosClient(req: Request) {
   return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -129,9 +130,15 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-    const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
+   const rawText = await req.text();
+const rawBodyBuffer = Buffer.from(rawText, "utf8");
+
+let body: Record<string, unknown> = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+}
 
     const emailRaw = body?.email;
     const password = body?.password;
@@ -154,8 +161,8 @@ export async function POST(req: Request) {
     const iosClient = isIosClient(req);
     const isReviewer = isReviewerEmail(email);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:sign_in`, 60, 20);
-    const emailAllowed = await rateLimitHit(`email:${email}:sign_in`, 300, 10);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:sign_in`, 60, 20);
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:sign_in`, 300, 10);
 
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_IN_RATE_LIMITED", null, req, {
@@ -290,15 +297,14 @@ export async function POST(req: Request) {
   );
 }
 
-    const passwordOk = await bcrypt.compare(password, user.password_hash);
-    if (!passwordOk) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-      return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
-    }
+    if (!user.password_hash || typeof user.password_hash !== "string") {
+  await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
+    androidClient,
+    iosClient,
+    isReviewer,
+  });
+  return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
+}
 
     const rawSessionToken = cryptoRandomHex(32);
     const sessionTokenHash = sha256Hex(rawSessionToken);
@@ -366,7 +372,8 @@ export async function POST(req: Request) {
     });
 
     return res;
-  } catch {
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+  } catch (err) {
+  console.error("SIGN IN ERROR:", err);
+  return jsonNoStore({ error: "Server error" }, { status: 500 });
   }
 }

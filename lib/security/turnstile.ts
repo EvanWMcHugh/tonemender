@@ -1,4 +1,5 @@
-// lib/turnstile.ts
+// lib/security/turnstile.ts
+import "server-only";
 
 type TurnstileResponse = {
   success: boolean;
@@ -9,7 +10,14 @@ type TurnstileResponse = {
   cdata?: string;
 };
 
-export async function verifyTurnstile(token: string, ip: string | null) {
+const TURNSTILE_VERIFY_URL =
+  "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const TURNSTILE_TIMEOUT_MS = 5_000;
+
+export async function verifyTurnstile(
+  token: string,
+  ip: string | null
+): Promise<boolean> {
   const secret = process.env.TURNSTILE_SECRET_KEY;
 
   if (!secret) {
@@ -17,35 +25,41 @@ export async function verifyTurnstile(token: string, ip: string | null) {
     return false;
   }
 
-  if (!token || typeof token !== "string") {
+  if (typeof token !== "string" || token.trim().length === 0) {
     console.error("Turnstile verify called with invalid token");
     return false;
   }
 
+  const form = new FormData();
+  form.append("secret", secret);
+  form.append("response", token.trim());
+
+  if (ip) {
+    form.append("remoteip", ip);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TURNSTILE_TIMEOUT_MS);
+
   try {
-    const form = new FormData();
-    form.append("secret", secret);
-    form.append("response", token);
-    if (ip) form.append("remoteip", ip);
+    const resp = await fetch(TURNSTILE_VERIFY_URL, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+      cache: "no-store",
+    });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    if (!resp.ok) {
+      console.error("Turnstile verify HTTP error", {
+        status: resp.status,
+      });
+      return false;
+    }
 
-    const resp = await fetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        body: form,
-        signal: controller.signal,
-      }
-    );
-
-    clearTimeout(timeout);
-
-    const data: TurnstileResponse = await resp.json();
+    const data = (await resp.json()) as TurnstileResponse;
 
     if (!data.success) {
-      console.error("Turnstile verify failed:", {
+      console.error("Turnstile verify failed", {
         codes: data["error-codes"] ?? [],
         hostname: data.hostname ?? null,
         action: data.action ?? null,
@@ -54,7 +68,11 @@ export async function verifyTurnstile(token: string, ip: string | null) {
 
     return data.success === true;
   } catch (err) {
-    console.error("Turnstile verify error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("Turnstile verify error", { message });
     return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }

@@ -5,23 +5,14 @@ import { sha256Hex } from "@/lib/security/crypto";
 export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
-
-/**
- * Optional hardening (recommended):
- * - Set DEBUG_KEY in .env.local, and the page will send it as x-debug-key.
- * - Set DEBUG_IP_ALLOWLIST as comma-separated list (optional).
- *
- * Example:
- * DEBUG_KEY=dev-super-secret
- * DEBUG_IP_ALLOWLIST=127.0.0.1,::1
- */
 const DEBUG_KEY = process.env.DEBUG_KEY || "";
+const ENABLE_DEBUG_ROUTES = process.env.ENABLE_DEBUG_ROUTES === "true";
 const DEBUG_IP_ALLOWLIST = (process.env.DEBUG_IP_ALLOWLIST || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -44,18 +35,17 @@ function isDev() {
 }
 
 function deny() {
-  // 404 (not 401/403) = less discoverable
   return jsonNoStore({ error: "Not found" }, { status: 404 });
 }
 
 function requireDebugKey(req: Request) {
-  if (!DEBUG_KEY) return true; // not enabled
+  if (!DEBUG_KEY) return true;
   const k = req.headers.get("x-debug-key") || "";
   return k === DEBUG_KEY;
 }
 
 function requireIpAllowlist(req: Request) {
-  if (DEBUG_IP_ALLOWLIST.length === 0) return true; // not enabled
+  if (DEBUG_IP_ALLOWLIST.length === 0) return true;
   const ip = getClientIp(req);
   if (!ip) return false;
   return DEBUG_IP_ALLOWLIST.includes(ip);
@@ -68,13 +58,8 @@ function isExpired(expiresAt: string | null | undefined) {
 }
 
 export async function GET(req: Request) {
-  // 🔒 Layer 1: env lock
-  if (!isDev()) return deny();
-
-  // 🔒 Layer 2: optional header secret
+  if (!isDev() || !ENABLE_DEBUG_ROUTES) return deny();
   if (!requireDebugKey(req)) return deny();
-
-  // 🔒 Layer 3: optional IP allowlist
   if (!requireIpAllowlist(req)) return deny();
 
   const raw = readCookie(req, SESSION_COOKIE);
@@ -93,7 +78,6 @@ export async function GET(req: Request) {
 
   const hash = sha256Hex(raw);
 
-  // Pull session row
   const { data: session, error: sErr } = await supabaseAdmin
     .from("sessions")
     .select("id,user_id,expires_at,last_seen_at,revoked_at,ip,user_agent,device_name")
@@ -111,7 +95,6 @@ export async function GET(req: Request) {
     });
   }
 
-  // Validate session
   if (session.revoked_at) {
     return jsonNoStore({
       ok: true,
@@ -124,7 +107,6 @@ export async function GET(req: Request) {
   }
 
   if (isExpired(session.expires_at)) {
-    // Best-effort cleanup
     try {
       await supabaseAdmin.from("sessions").delete().eq("id", session.id);
     } catch {}
@@ -134,19 +116,17 @@ export async function GET(req: Request) {
       env: "development",
       sessionExists,
       status: "expired",
-      session: { ...session, expires_at: session.expires_at },
+      session,
       user: null,
     });
   }
 
-  // Load user
   const { data: user } = await supabaseAdmin
     .from("users")
     .select("id,email,is_pro,plan_type,disabled_at,deleted_at,last_login_at")
     .eq("id", session.user_id)
     .maybeSingle();
 
-  // Best-effort last_seen update (helpful for debugging)
   try {
     await supabaseAdmin
       .from("sessions")

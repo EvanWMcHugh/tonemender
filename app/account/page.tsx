@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 
@@ -61,19 +61,20 @@ export default function AccountPage() {
   const pendingEmailSubmitRef = useRef(false);
   const pendingDeleteSubmitRef = useRef(false);
 
-  function resetEmailCaptchaState() {
-    setEmailCaptchaToken(null);
-    setShowEmailCaptcha(false);
-    pendingEmailSubmitRef.current = false;
-  }
+  const resetEmailCaptchaState = useCallback(() => {
+  setEmailCaptchaToken(null);
+  setShowEmailCaptcha(false);
+  pendingEmailSubmitRef.current = false;
+}, []);
 
-  function resetDeleteCaptchaState() {
-    setDeleteCaptchaToken(null);
-    setShowDeleteCaptcha(false);
-    pendingDeleteSubmitRef.current = false;
-  }
+const resetDeleteCaptchaState = useCallback(() => {
+  setDeleteCaptchaToken(null);
+  setShowDeleteCaptcha(false);
+  pendingDeleteSubmitRef.current = false;
+}, []);
 
-  function validateEmailCandidate(candidate: string) {
+  const validateEmailCandidate = useCallback(
+  (candidate: string) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
     if (!emailRegex.test(candidate)) {
@@ -85,7 +86,9 @@ export default function AccountPage() {
     }
 
     return "";
-  }
+  },
+  [normalizedCurrentEmail]
+);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -151,7 +154,8 @@ export default function AccountPage() {
     router.replace("/sign-in");
   }
 
-  async function submitDeleteAccount(turnstileToken: string) {
+  const submitDeleteAccount = useCallback(
+  async (turnstileToken: string) => {
     setDeleteLoading(true);
     setDeleteError("");
 
@@ -177,12 +181,16 @@ export default function AccountPage() {
       alert("Account deleted.");
       router.replace("/landing");
     } catch (err: unknown) {
-      setDeleteError(err instanceof Error ? err.message : "Failed to delete account.");
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete account."
+      );
       resetDeleteCaptchaState();
     } finally {
       setDeleteLoading(false);
     }
-  }
+  },
+  [resetDeleteCaptchaState, router]
+);
 
   async function handleDeleteAccount() {
     setDeleteError("");
@@ -215,7 +223,8 @@ export default function AccountPage() {
     alert("Could not open billing portal.");
   }
 
-  async function submitEmailChange(candidate: string, turnstileToken: string) {
+  const submitEmailChange = useCallback(
+  async (candidate: string, turnstileToken: string) => {
     setEmailLoading(true);
 
     try {
@@ -241,12 +250,16 @@ export default function AccountPage() {
       resetEmailCaptchaState();
       router.push("/check-email?type=email-change");
     } catch (err: unknown) {
-      setEmailError(err instanceof Error ? err.message : "Failed to send confirmation email.");
+      setEmailError(
+        err instanceof Error ? err.message : "Failed to send confirmation email."
+      );
       resetEmailCaptchaState();
     } finally {
       setEmailLoading(false);
     }
-  }
+  },
+  [resetEmailCaptchaState, router]
+);
 
   async function handleChangeEmail(e: React.FormEvent) {
     e.preventDefault();
@@ -270,29 +283,36 @@ export default function AccountPage() {
   }
 
   useEffect(() => {
-    if (!emailCaptchaToken) return;
-    if (!pendingEmailSubmitRef.current) return;
-    if (emailLoading) return;
+  if (!emailCaptchaToken) return;
+  if (!pendingEmailSubmitRef.current) return;
+  if (emailLoading) return;
 
-    const candidate = normalizeEmail(newEmail);
-    const validation = validateEmailCandidate(candidate);
+  const candidate = normalizeEmail(newEmail);
+  const validation = validateEmailCandidate(candidate);
 
-    if (validation) {
-      setEmailError(validation);
-      resetEmailCaptchaState();
-      return;
-    }
+  if (validation) {
+    setEmailError(validation);
+    resetEmailCaptchaState();
+    return;
+  }
 
-    submitEmailChange(candidate, emailCaptchaToken);
-  }, [emailCaptchaToken, emailLoading, newEmail, normalizedCurrentEmail]);
+  submitEmailChange(candidate, emailCaptchaToken);
+}, [
+  emailCaptchaToken,
+  emailLoading,
+  newEmail,
+  validateEmailCandidate,
+  resetEmailCaptchaState,
+  submitEmailChange,
+]); 
 
   useEffect(() => {
-    if (!deleteCaptchaToken) return;
-    if (!pendingDeleteSubmitRef.current) return;
-    if (deleteLoading) return;
+  if (!deleteCaptchaToken) return;
+  if (!pendingDeleteSubmitRef.current) return;
+  if (deleteLoading) return;
 
-    submitDeleteAccount(deleteCaptchaToken);
-  }, [deleteCaptchaToken, deleteLoading]);
+  submitDeleteAccount(deleteCaptchaToken);
+}, [deleteCaptchaToken, deleteLoading, submitDeleteAccount]);
 
   if (loading) {
     return <p className="p-5">Loading...</p>;

@@ -112,13 +112,15 @@ export default function RewritePage() {
   const isPro = Boolean(me?.isPro);
 
   const resetUiForNewRewrite = useCallback(() => {
-    setError("");
-    setLimitReached(false);
-    setToneScore(null);
-    setEmotion("");
-    setToast("");
-    setResults({ soft: "", calm: "", clear: "" });
-  }, []);
+  setError("");
+  setLimitReached(false);
+  setToneScore(null);
+  setEmotion("");
+  setToast("");
+  setResults({ soft: "", calm: "", clear: "" });
+  setOriginalForCard("");
+  setRewrittenForCard("");
+}, []);
 
   const ensureOriginalSnapshot = useCallback(
     (original: string) => {
@@ -273,7 +275,7 @@ export default function RewritePage() {
     }
   }, []);
 
-  const useThis = useCallback(
+  const applyRewrite = useCallback(
     (text: string) => {
       if (!text) return;
 
@@ -348,7 +350,9 @@ export default function RewritePage() {
         setToast("App link copied!");
         vibrate(10);
       }
-    } catch {}
+    } catch {
+  setToast("Could not share right now.");
+}
   }, []);
 
   const shareRewrite = useCallback(async () => {
@@ -375,7 +379,9 @@ export default function RewritePage() {
         setToast("Rewrite copied to clipboard!");
         vibrate(10);
       }
-    } catch {}
+    } catch {
+  setToast("Could not share right now.");
+}
   }, [isPro, tone, results, originalMessageSnapshot, message]);
 
   const shareBeforeAfterImage = useCallback(async () => {
@@ -659,7 +665,7 @@ export default function RewritePage() {
 
                   <button
                     type="button"
-                    onClick={() => useThis(displayText)}
+                    onClick={() => applyRewrite(displayText)}
                     className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 hover:bg-slate-50"
                   >
                     Use This

@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
     }
 
-    return jsonNoStore({ success: true });
+    return jsonNoStore({ ok: true });
   } catch (error) {
     console.error("DELETE ALL DRAFTS ROUTE ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });

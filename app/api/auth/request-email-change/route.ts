@@ -10,10 +10,10 @@ export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME = process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -54,7 +54,7 @@ function isIosClient(req: Request) {
   return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -94,7 +94,7 @@ async function audit(
   event: string,
   userId: string | null,
   req: Request,
-  meta: Record<string, any> = {}
+  meta: Record<string, unknown> = {}
 ) {
   try {
     await supabaseAdmin.from("audit_log").insert({
@@ -147,8 +147,13 @@ async function getUserFromSession(req: Request) {
 export async function POST(req: Request) {
   try {
     const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
+const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    let body: any = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ error: "Invalid JSON body" }, { status: 400 });
+}
 
     const newEmailRaw = body?.newEmail;
     const turnstileToken = body?.turnstileToken;
@@ -163,7 +168,7 @@ export async function POST(req: Request) {
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:email_change_request`, 60, 10);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:email_change_request`, 60, 10);
     if (!ipAllowed) {
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
@@ -176,7 +181,7 @@ export async function POST(req: Request) {
     const userId = me.id;
     const oldEmail = normalizeEmail(me.email);
 
-    const userAllowed = await rateLimitHit(`user:${userId}:email_change_request`, 300, 5);
+    const userAllowed = await isRateLimitAllowed(`user:${userId}:email_change_request`, 300, 5);
     if (!userAllowed) {
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
@@ -312,7 +317,8 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Could not create request" }, { status: 500 });
     }
 
-    const appUrl = process.env.APP_URL || "https://tonemender.com";
+    const appUrl = process.env.APP_URL;
+if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
     const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
 
     await sendEmail({

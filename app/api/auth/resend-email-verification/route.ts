@@ -9,10 +9,11 @@ import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 export const runtime = "nodejs";
 
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -51,7 +52,7 @@ async function audit(
   event: string,
   userId: string | null,
   req: Request,
-  meta: Record<string, any> = {}
+  meta: Record<string, unknown> = {}
 ) {
   try {
     await supabaseAdmin.from("audit_log").insert({
@@ -64,7 +65,7 @@ async function audit(
   } catch {}
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -104,7 +105,12 @@ export async function POST(req: Request) {
   try {
     const rawText = await req.text();
     const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
+       let body: Record<string, unknown> = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ ok: true });
+}
 
     const emailRaw = body?.email;
     const turnstileToken = body?.turnstileToken;
@@ -120,8 +126,8 @@ export async function POST(req: Request) {
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:resend_verify`, 60, 10);
-    const emailAllowed = await rateLimitHit(`email:${email}:resend_verify`, 300, 5);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:resend_verify`, 60, 10);
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:resend_verify`, 300, 5);
     if (!ipAllowed || !emailAllowed) return jsonNoStore({ ok: true });
 
     if (androidClient) {
@@ -266,14 +272,18 @@ export async function POST(req: Request) {
     });
 
     return jsonNoStore({ ok: true });
-  } catch (e: any) {
-    console.error("RESEND EMAIL VERIFICATION ERROR:", e);
+  } catch (e: unknown) {
+  console.error("RESEND EMAIL VERIFICATION ERROR:", e);
 
-    const msg = String(e?.message ?? "");
-    if (msg.includes("Missing APP_URL") || msg.includes("TURNSTILE_SECRET_KEY")) {
-      return jsonNoStore({ error: msg || "Server error" }, { status: 500 });
-    }
-
-    return jsonNoStore({ ok: true });
+  let msg = "";
+  if (e instanceof Error) {
+    msg = e.message;
   }
+
+  if (msg.includes("Missing APP_URL") || msg.includes("TURNSTILE_SECRET_KEY")) {
+    return jsonNoStore({ error: msg || "Server error" }, { status: 500 });
+  }
+
+  return jsonNoStore({ ok: true });
+}
 }

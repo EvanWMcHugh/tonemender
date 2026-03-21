@@ -4,10 +4,51 @@ import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 
 export const runtime = "nodejs";
 
+const MAX_MESSAGE_LENGTH = 5000;
+const VALID_TONES = new Set(["soft", "calm", "clear"]);
+
+type MessageRow = {
+  id: string | number;
+  created_at: string | null;
+  original: string | null;
+  tone: string | null;
+  soft_rewrite: string | null;
+  calm_rewrite: string | null;
+  clear_rewrite: string | null;
+};
+
+type SaveMessageBody = {
+  original?: unknown;
+  message?: unknown;
+  tone?: unknown;
+  soft_rewrite?: unknown;
+  softRewrite?: unknown;
+  calm_rewrite?: unknown;
+  calmRewrite?: unknown;
+  clear_rewrite?: unknown;
+  clearRewrite?: unknown;
+};
+
 function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function parseTone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return VALID_TONES.has(trimmed) ? trimmed : null;
+}
+
+function enforceMaxLength(value: string | null, fieldName: string) {
+  if (value && value.length > MAX_MESSAGE_LENGTH) {
+    throw new Error(`${fieldName} is too long`);
+  }
 }
 
 export async function GET(req: Request) {
@@ -20,7 +61,8 @@ export async function GET(req: Request) {
 
     const { data, error } = await supabaseAdmin
       .from("messages")
-      .select(`
+      .select(
+        `
         id,
         created_at,
         original,
@@ -28,7 +70,8 @@ export async function GET(req: Request) {
         soft_rewrite,
         calm_rewrite,
         clear_rewrite
-      `)
+      `
+      )
       .eq("user_id", authUser.id)
       .order("created_at", { ascending: false });
 
@@ -37,7 +80,7 @@ export async function GET(req: Request) {
       return jsonNoStore({ error: "Could not load drafts" }, { status: 500 });
     }
 
-    const drafts = (data ?? []).map((row: any) => ({
+    const drafts = ((data ?? []) as MessageRow[]).map((row) => ({
       id: String(row.id),
       created_at: row.created_at ?? "",
       original: row.original ?? null,
@@ -62,42 +105,42 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.json().catch(() => ({} as any));
+    let body: SaveMessageBody = {};
+    try {
+      body = (await req.json()) as SaveMessageBody;
+    } catch {
+      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+    }
 
     const original =
-      typeof body?.original === "string"
+      typeof body.original === "string"
         ? body.original.trim()
-        : typeof body?.message === "string"
+        : typeof body.message === "string"
         ? body.message.trim()
         : "";
 
-    const tone =
-      typeof body?.tone === "string" ? body.tone.trim() : null;
+    const tone = parseTone(body.tone);
 
     const softRewrite =
-      typeof body?.soft_rewrite === "string"
-        ? body.soft_rewrite
-        : typeof body?.softRewrite === "string"
-        ? body.softRewrite
-        : null;
+      normalizeOptionalString(body.soft_rewrite) ??
+      normalizeOptionalString(body.softRewrite);
 
     const calmRewrite =
-      typeof body?.calm_rewrite === "string"
-        ? body.calm_rewrite
-        : typeof body?.calmRewrite === "string"
-        ? body.calmRewrite
-        : null;
+      normalizeOptionalString(body.calm_rewrite) ??
+      normalizeOptionalString(body.calmRewrite);
 
     const clearRewrite =
-      typeof body?.clear_rewrite === "string"
-        ? body.clear_rewrite
-        : typeof body?.clearRewrite === "string"
-        ? body.clearRewrite
-        : null;
+      normalizeOptionalString(body.clear_rewrite) ??
+      normalizeOptionalString(body.clearRewrite);
 
     if (!original) {
       return jsonNoStore({ error: "Missing original message" }, { status: 400 });
     }
+
+    enforceMaxLength(original, "Original message");
+    enforceMaxLength(softRewrite, "Soft rewrite");
+    enforceMaxLength(calmRewrite, "Calm rewrite");
+    enforceMaxLength(clearRewrite, "Clear rewrite");
 
     const { data, error } = await supabaseAdmin
       .from("messages")
@@ -114,20 +157,11 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error("SAVE MESSAGE ERROR:", error);
-      return jsonNoStore(
-        {
-          error: "Failed to save draft",
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        },
-        { status: 500 }
-      );
+      return jsonNoStore({ error: "Failed to save draft" }, { status: 500 });
     }
 
     return jsonNoStore({
-      success: true,
+      ok: true,
       draft: {
         id: String(data.id),
         created_at: data.created_at ?? "",
@@ -139,6 +173,10 @@ export async function POST(req: Request) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message.endsWith("is too long")) {
+      return jsonNoStore({ error: error.message }, { status: 400 });
+    }
+
     console.error("SAVE MESSAGE ROUTE ERROR:", error);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }

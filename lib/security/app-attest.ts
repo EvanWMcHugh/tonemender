@@ -1,8 +1,10 @@
+// lib/security/app-attest.ts
+import "server-only";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-// Example package; install and type-check in your project.
-// npm i node-app-attest
 import { verifyAttestation, verifyAssertion } from "node-app-attest";
+
+type AppAttestPurpose = "attest" | "assertion";
 
 type VerifyIosAppAttestAssertionArgs = {
   keyId: string;
@@ -20,19 +22,41 @@ type VerifyIosAppAttestAssertionResult = {
   payload?: Record<string, unknown>;
 };
 
-const APPLE_TEAM_ID = process.env.APPLE_TEAM_ID ?? "";
-const APPLE_BUNDLE_ID = process.env.APPLE_BUNDLE_ID ?? "";
+type AppAttestChallengeRow = {
+  id: string;
+  challenge: string;
+  challenge_hash: string;
+  purpose: AppAttestPurpose;
+  key_id: string | null;
+  expires_at: string;
+  consumed_at: string | null;
+};
 
-function sha256Hex(input: string | Buffer) {
+function getRequiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+const APPLE_TEAM_ID = getRequiredEnv("APPLE_TEAM_ID");
+const APPLE_BUNDLE_ID = getRequiredEnv("APPLE_BUNDLE_ID");
+
+function sha256Hex(input: string | Buffer): string {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-function randomChallengeBase64(size = 32) {
+function randomChallengeBase64(size = 32): string {
   return crypto.randomBytes(size).toString("base64");
 }
 
-function normalizePath(path: string) {
+function normalizePath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
+}
+
+function allowDevelopmentEnvironment(): boolean {
+  return process.env.APP_ATTEST_ALLOW_DEV === "true";
 }
 
 function buildAssertionPayload(args: {
@@ -40,7 +64,7 @@ function buildAssertionPayload(args: {
   method: string;
   path: string;
   requestBody: Buffer;
-}) {
+}): Buffer {
   const challengeBytes = Buffer.from(args.challengeBase64, "base64");
   const methodBytes = Buffer.from(args.method.toUpperCase(), "utf8");
   const pathBytes = Buffer.from(normalizePath(args.path), "utf8");
@@ -56,17 +80,39 @@ function buildAssertionPayload(args: {
   ]);
 }
 
-function allowDevelopmentEnvironment() {
-  return process.env.NODE_ENV !== "production";
+function isValidBase64(value: string): boolean {
+  try {
+    return Buffer.from(value, "base64").length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function consumeChallengeRowAtomically(params: {
+  row: AppAttestChallengeRow;
+}): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("app_attest_challenges")
+    .update({ consumed_at: new Date().toISOString() })
+    .eq("id", params.row.id)
+    .is("consumed_at", null)
+    .select("id")
+    .maybeSingle();
+
+  return !error && !!data?.id;
 }
 
 export async function createAppAttestChallenge(params: {
-  purpose: "attest" | "assertion";
+  purpose: AppAttestPurpose;
   keyId?: string | null;
-}) {
+}): Promise<{
+  challengeId: string;
+  challenge: string;
+  expiresAt: string;
+}> {
   const challenge = randomChallengeBase64(32);
   const challengeHash = sha256Hex(Buffer.from(challenge, "base64"));
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 5).toISOString();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
   const { data, error } = await supabaseAdmin
     .from("app_attest_challenges")
@@ -80,7 +126,7 @@ export async function createAppAttestChallenge(params: {
     .select("id")
     .single();
 
-  if (error || !data) {
+  if (error || !data?.id) {
     throw new Error("Failed to create App Attest challenge");
   }
 
@@ -93,80 +139,80 @@ export async function createAppAttestChallenge(params: {
 
 export async function consumeAppAttestChallengeById(params: {
   challengeId: string;
-  purpose: "attest" | "assertion";
+  purpose: AppAttestPurpose;
   keyId?: string | null;
-}) {
+}): Promise<
+  | { ok: true; row: AppAttestChallengeRow }
+  | { ok: false; reason: string }
+> {
   const { data: row, error } = await supabaseAdmin
     .from("app_attest_challenges")
-    .select("*")
+    .select("id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at")
     .eq("id", params.challengeId)
     .eq("purpose", params.purpose)
     .is("consumed_at", null)
-    .maybeSingle();
+    .maybeSingle<AppAttestChallengeRow>();
 
   if (error || !row) {
-    return { ok: false as const, reason: "challenge_not_found" };
+    return { ok: false, reason: "challenge_not_found" };
   }
 
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    return { ok: false as const, reason: "challenge_expired" };
+  if (!row.expires_at || new Date(row.expires_at).getTime() <= Date.now()) {
+    return { ok: false, reason: "challenge_expired" };
   }
 
   if (params.keyId && row.key_id && row.key_id !== params.keyId) {
-    return { ok: false as const, reason: "challenge_key_mismatch" };
+    return { ok: false, reason: "challenge_key_mismatch" };
   }
 
-  const { error: updateError } = await supabaseAdmin
-    .from("app_attest_challenges")
-    .update({ consumed_at: new Date().toISOString() })
-    .eq("id", row.id)
-    .is("consumed_at", null);
-
-  if (updateError) {
-    return { ok: false as const, reason: "challenge_consume_failed" };
+  const consumed = await consumeChallengeRowAtomically({ row });
+  if (!consumed) {
+    return { ok: false, reason: "challenge_consume_failed" };
   }
 
-  return { ok: true as const, row };
+  return { ok: true, row };
 }
 
 export async function consumeAppAttestChallenge(params: {
   challengeBase64: string;
-  purpose: "attest" | "assertion";
+  purpose: AppAttestPurpose;
   keyId?: string | null;
-}) {
+}): Promise<
+  | { ok: true; row: AppAttestChallengeRow }
+  | { ok: false; reason: string }
+> {
+  if (!isValidBase64(params.challengeBase64)) {
+    return { ok: false, reason: "challenge_invalid_base64" };
+  }
+
   const challengeHash = sha256Hex(Buffer.from(params.challengeBase64, "base64"));
 
   const { data: row, error } = await supabaseAdmin
     .from("app_attest_challenges")
-    .select("*")
+    .select("id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at")
     .eq("challenge_hash", challengeHash)
     .eq("purpose", params.purpose)
     .is("consumed_at", null)
-    .maybeSingle();
+    .maybeSingle<AppAttestChallengeRow>();
 
   if (error || !row) {
-    return { ok: false as const, reason: "challenge_not_found" };
+    return { ok: false, reason: "challenge_not_found" };
   }
 
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    return { ok: false as const, reason: "challenge_expired" };
+  if (!row.expires_at || new Date(row.expires_at).getTime() <= Date.now()) {
+    return { ok: false, reason: "challenge_expired" };
   }
 
   if (params.keyId && row.key_id && row.key_id !== params.keyId) {
-    return { ok: false as const, reason: "challenge_key_mismatch" };
+    return { ok: false, reason: "challenge_key_mismatch" };
   }
 
-  const { error: updateError } = await supabaseAdmin
-    .from("app_attest_challenges")
-    .update({ consumed_at: new Date().toISOString() })
-    .eq("id", row.id)
-    .is("consumed_at", null);
-
-  if (updateError) {
-    return { ok: false as const, reason: "challenge_consume_failed" };
+  const consumed = await consumeChallengeRowAtomically({ row });
+  if (!consumed) {
+    return { ok: false, reason: "challenge_consume_failed" };
   }
 
-  return { ok: true as const, row };
+  return { ok: true, row };
 }
 
 export async function verifyAndStoreAttestation(params: {
@@ -176,6 +222,14 @@ export async function verifyAndStoreAttestation(params: {
   ip: string | null;
   userAgent: string | null;
 }) {
+  if (
+    !params.keyId ||
+    !isValidBase64(params.attestationBase64) ||
+    !isValidBase64(params.challengeBase64)
+  ) {
+    throw new Error("Invalid App Attest input");
+  }
+
   const attestationBuffer = Buffer.from(params.attestationBase64, "base64");
   const challengeBuffer = Buffer.from(params.challengeBase64, "base64");
 
@@ -217,6 +271,22 @@ export async function verifyIosAppAttestAssertion({
   path,
   requestBody,
 }: VerifyIosAppAttestAssertionArgs): Promise<VerifyIosAppAttestAssertionResult> {
+  if (!keyId || !assertion || !challengeId) {
+    return {
+      ok: false,
+      reason: "missing_required_fields",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
+
+  if (!isValidBase64(assertion)) {
+    return {
+      ok: false,
+      reason: "assertion_invalid_base64",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
+
   const challengeResult = await consumeAppAttestChallengeById({
     challengeId,
     purpose: "assertion",
@@ -238,7 +308,7 @@ export async function verifyIosAppAttestAssertion({
     .select("key_id, public_key_pem, revoked_at")
     .eq("key_id", keyId)
     .is("revoked_at", null)
-    .maybeSingle();
+    .maybeSingle<{ key_id: string; public_key_pem: string | null; revoked_at: string | null }>();
 
   if (error || !keyRow?.public_key_pem) {
     return {
@@ -263,7 +333,10 @@ export async function verifyIosAppAttestAssertion({
     requestBody,
   });
 
-  const clientDataHash = crypto.createHash("sha256").update(assertionPayload).digest();
+  const clientDataHash = crypto
+    .createHash("sha256")
+    .update(assertionPayload)
+    .digest();
 
   try {
     await verifyAssertion({
@@ -282,14 +355,25 @@ export async function verifyIosAppAttestAssertion({
     };
   }
 
-  await supabaseAdmin
+  const { error: lastSeenError } = await supabaseAdmin
     .from("app_attest_keys")
     .update({ last_seen_at: new Date().toISOString() })
     .eq("key_id", keyId);
+
+  if (lastSeenError) {
+    console.error("Failed to update app_attest_keys.last_seen_at", {
+      keyId,
+      message: lastSeenError.message,
+    });
+  }
 
   return {
     ok: true,
     reason: "verified",
     publicMessage: "ok",
+    payload: {
+      keyId,
+      challengeId,
+    },
   };
 }

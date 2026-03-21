@@ -7,7 +7,7 @@ import bcrypt from "bcryptjs";
 
 export const runtime = "nodejs";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -23,7 +23,7 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, any> = {}) {
+async function audit(event: string, userId: string | null, req: Request, meta: Record<string, unknown> = {}) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -37,7 +37,12 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    let body: Record<string, unknown> = {};
+try {
+  body = await req.json();
+} catch {
+  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+}
     const token = body?.token;
     const newPassword = body?.newPassword;
 
@@ -55,6 +60,9 @@ export async function POST(req: Request) {
     if (newPassword.length > 200) {
       return jsonNoStore({ error: "Password is too long" }, { status: 400 });
     }
+    if (!newPassword.trim()) {
+  return jsonNoStore({ error: "Password cannot be blank" }, { status: 400 });
+}
 
     const tokenHash = sha256Hex(token);
     const nowIso = new Date().toISOString();
@@ -79,7 +87,6 @@ export async function POST(req: Request) {
 
     const userId = String(tok.user_id);
 
-    // Optional: ensure user is not disabled/deleted (token is already consumed; but prevents changing a dead account)
     const { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .select("email,disabled_at,deleted_at")

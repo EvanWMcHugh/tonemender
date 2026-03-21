@@ -1,15 +1,14 @@
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import {
-  isFreeReviewer,
-  isProReviewer,
-} from "@/lib/auth/reviewers";
+import { isFreeReviewer, isProReviewer } from "@/lib/auth/reviewers";
 import { sha256Hex } from "@/lib/security/crypto";
 
 const SESSION_COOKIE = "tm_session";
+const LAST_SEEN_UPDATE_INTERVAL_MS = 5 * 60 * 1000;
 
-function readCookie(req: Request, name: string) {
+function readCookie(req: Request, name: string): string | null {
   const cookie = req.headers.get("cookie") || "";
   const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -20,7 +19,9 @@ export type AuthUser = {
   planType: string | null;
 };
 
-export async function getAuthUserFromRequest(req: Request): Promise<AuthUser | null> {
+export async function getAuthUserFromRequest(
+  req: Request
+): Promise<AuthUser | null> {
   const rawSessionToken = readCookie(req, SESSION_COOKIE);
   if (!rawSessionToken) return null;
 
@@ -28,19 +29,24 @@ export async function getAuthUserFromRequest(req: Request): Promise<AuthUser | n
 
   const { data: session, error: sessionError } = await supabaseAdmin
     .from("sessions")
-    .select("user_id,expires_at,revoked_at")
+    .select("user_id, expires_at, revoked_at, last_seen_at")
     .eq("session_token_hash", sessionTokenHash)
     .maybeSingle();
 
   if (sessionError || !session?.user_id) return null;
   if (session.revoked_at) return null;
-  if (!session.expires_at || new Date(session.expires_at).getTime() <= Date.now()) {
+
+  const expiresAtMs = session.expires_at
+    ? new Date(session.expires_at).getTime()
+    : 0;
+
+  if (!expiresAtMs || expiresAtMs <= Date.now()) {
     return null;
   }
 
   const { data: user, error: userError } = await supabaseAdmin
     .from("users")
-    .select("id,email,is_pro,plan_type,disabled_at,deleted_at")
+    .select("id, email, is_pro, plan_type, disabled_at, deleted_at")
     .eq("id", session.user_id)
     .maybeSingle();
 
@@ -48,16 +54,7 @@ export async function getAuthUserFromRequest(req: Request): Promise<AuthUser | n
     return null;
   }
 
-  try {
-    await supabaseAdmin
-      .from("sessions")
-      .update({ last_seen_at: new Date().toISOString() })
-      .eq("session_token_hash", sessionTokenHash)
-      .is("revoked_at", null);
-  } catch {}
-
-  const email = String(user.email);
-
+  const email = String(user.email).trim().toLowerCase();
   let isPro = Boolean(user.is_pro);
   let planType = user.plan_type ?? null;
 
@@ -67,6 +64,25 @@ export async function getAuthUserFromRequest(req: Request): Promise<AuthUser | n
   } else if (isFreeReviewer(email)) {
     isPro = false;
     planType = null;
+  }
+
+  const lastSeenAtMs = session.last_seen_at
+    ? new Date(session.last_seen_at).getTime()
+    : 0;
+
+  if (!lastSeenAtMs || Date.now() - lastSeenAtMs >= LAST_SEEN_UPDATE_INTERVAL_MS) {
+    const { error: updateError } = await supabaseAdmin
+      .from("sessions")
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq("session_token_hash", sessionTokenHash)
+      .is("revoked_at", null);
+
+    if (updateError) {
+      console.error("Failed to update session last_seen_at", {
+        code: updateError.code,
+        message: updateError.message,
+      });
+    }
   }
 
   return {

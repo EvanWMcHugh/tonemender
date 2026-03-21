@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -29,8 +29,15 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
+function getClientPlatform(req: Request) {
+  return (
+    req.headers.get("x-client-platform") ??
+    req.headers.get("x-tonemender-client")
+  )?.trim().toLowerCase() ?? null;
+}
+
 function isAndroidClient(req: Request) {
-  return req.headers.get("x-tonemender-client") === ANDROID_CLIENT_HEADER;
+  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
 }
 
 // Share cookie across tonemender.com + www.tonemender.com for web only
@@ -46,7 +53,7 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
-async function audit(event: string, req: Request, meta: Record<string, any> = {}) {
+async function audit(event: string, req: Request, meta: Record<string, unknown> = {}) {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: null,

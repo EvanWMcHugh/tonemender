@@ -12,17 +12,30 @@ const PRODUCT_ID = "tonemender_pro";
 const MONTHLY_BASE_PLAN_ID = "monthly";
 const YEARLY_BASE_PLAN_ID = "yearly";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
 type VerifyBody = {
   purchaseToken?: unknown;
   productId?: unknown;
   basePlanId?: unknown;
 };
+
+type GoogleLineItem = {
+  productId?: string;
+  expiryTime?: string | null;
+  offerDetails?: {
+    basePlanId?: string;
+  } | null;
+};
+
+type GoogleSubscriptionResponse = {
+  subscriptionState?: string | null;
+  lineItems?: GoogleLineItem[] | null;
+};
+
+function jsonNoStore(data: unknown, init?: ResponseInit) {
+  const res = NextResponse.json(data, init);
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
 function normalizePlanType(basePlanId: string) {
   if (basePlanId === MONTHLY_BASE_PLAN_ID) return "monthly";
@@ -44,7 +57,12 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as VerifyBody;
+    let body: VerifyBody = {};
+    try {
+      body = (await req.json()) as VerifyBody;
+    } catch {
+      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+    }
 
     const purchaseToken =
       typeof body.purchaseToken === "string" ? body.purchaseToken.trim() : "";
@@ -76,17 +94,17 @@ export async function POST(req: Request) {
 
     const packageName = getGooglePlayPackageName();
 
-    const sub = await getGooglePlaySubscription({
+    const sub = (await getGooglePlaySubscription({
       packageName,
       purchaseToken,
-    });
+    })) as GoogleSubscriptionResponse;
 
     const subscriptionState =
       typeof sub?.subscriptionState === "string" ? sub.subscriptionState : null;
 
     const lineItems = Array.isArray(sub?.lineItems) ? sub.lineItems : [];
 
-    const matchingLineItem = lineItems.find((item: any) => {
+    const matchingLineItem = lineItems.find((item: GoogleLineItem) => {
       return (
         item?.productId === PRODUCT_ID &&
         item?.offerDetails?.basePlanId === basePlanId
@@ -110,12 +128,17 @@ export async function POST(req: Request) {
       );
     }
 
+    // Optional but strongly recommended:
+    // also persist google purchase linkage columns if your schema has them.
     const { error: updateErr } = await supabaseAdmin
       .from("users")
       .update({
         is_pro: true,
         plan_type: planType,
         updated_at: new Date().toISOString(),
+        // google_purchase_token: purchaseToken,
+        // google_product_id: productId,
+        // google_base_plan_id: basePlanId,
       })
       .eq("id", authUser.id);
 
@@ -125,13 +148,13 @@ export async function POST(req: Request) {
     }
 
     return jsonNoStore({
-      success: true,
+      ok: true,
       message: "Purchase verified",
       planType,
       subscriptionState,
       expiryTime: matchingLineItem?.expiryTime ?? null,
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("GOOGLE VERIFY ERROR:", e);
     return jsonNoStore({ error: "Server error" }, { status: 500 });
   }

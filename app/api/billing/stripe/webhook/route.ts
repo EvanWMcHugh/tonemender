@@ -4,13 +4,25 @@ import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 export const runtime = "nodejs";
 
-// Stripe uses default stable API version
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+if (!stripeSecretKey) {
+  throw new Error("Missing STRIPE_SECRET_KEY");
+}
 
-const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY!;
-const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY!;
+const stripe = new Stripe(stripeSecretKey);
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY;
+const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY;
+
+if (!PRICE_MONTHLY) {
+  throw new Error("Missing STRIPE_PRICE_MONTHLY");
+}
+
+if (!PRICE_YEARLY) {
+  throw new Error("Missing STRIPE_PRICE_YEARLY");
+}
+
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -27,16 +39,31 @@ function isActiveStatus(status?: Stripe.Subscription.Status | null) {
   return status === "active" || status === "trialing";
 }
 
-async function audit(userId: string | null, event: string, meta: Record<string, any> = {}) {
+async function audit(
+  userId: string | null,
+  event: string,
+  meta: Record<string, unknown> = {}
+) {
   try {
-    await supabaseAdmin.from("audit_log").insert({ user_id: userId, event, meta });
-  } catch {}
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      meta,
+    });
+  } catch {
+    // ignore audit failures
+  }
 }
 
-function asId(v: unknown): string | null {
-  if (!v) return null;
-  if (typeof v === "string") return v;
-  if (typeof v === "object" && "id" in (v as any) && typeof (v as any).id === "string") return (v as any).id;
+function asId(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+
+  if (typeof value === "object" && value !== null) {
+    const maybeId = (value as Record<string, unknown>).id;
+    if (typeof maybeId === "string") return maybeId;
+  }
+
   return null;
 }
 
@@ -85,8 +112,13 @@ async function markEventProcessedOnce(event: Stripe.Event) {
     type: event.type,
   });
 
+  const errorCode =
+    error && typeof error === "object"
+      ? (error as { code?: string }).code
+      : undefined;
+
   // Unique violation => already processed
-  if (error && (error as any).code === "23505") return false;
+  if (errorCode === "23505") return false;
   if (error) throw error;
 
   return true;
@@ -94,34 +126,41 @@ async function markEventProcessedOnce(event: Stripe.Event) {
 
 export async function POST(req: Request) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!secret) return jsonNoStore({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+  if (!secret) {
+    return jsonNoStore({ error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+  }
 
   const signature = req.headers.get("stripe-signature");
-  if (!signature) return jsonNoStore({ error: "Missing stripe-signature" }, { status: 400 });
+  if (!signature) {
+    return jsonNoStore({ error: "Missing stripe-signature" }, { status: 400 });
+  }
 
   const rawBody = await req.text();
 
   let event: Stripe.Event;
   try {
     event = stripe.webhooks.constructEvent(rawBody, signature, secret);
-  } catch (err: any) {
-    console.error("❌ WEBHOOK SIGNING ERROR:", err?.message || err);
-    return jsonNoStore({ error: err?.message ?? "Invalid signature" }, { status: 400 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Invalid signature";
+    console.error("WEBHOOK SIGNING ERROR:", message);
+    return jsonNoStore({ error: message }, { status: 400 });
   }
 
   try {
-    // ---- idempotency guard (Stripe retries) ----
     const shouldProcess = await markEventProcessedOnce(event);
-    if (!shouldProcess) return jsonNoStore({ received: true });
+    if (!shouldProcess) {
+      return jsonNoStore({ received: true });
+    }
 
-    // -------------------------------------------------
-    // checkout.session.completed
-    // Save customer/sub IDs early (status truth comes from subscription events)
-    // -------------------------------------------------
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
 
-      const userId = (session.metadata as any)?.userId as string | undefined;
+      const metadata =
+        session.metadata && typeof session.metadata === "object"
+          ? (session.metadata as Record<string, string>)
+          : null;
+
+      const userId = metadata?.userId;
       const subscriptionId = asId(session.subscription);
       const customerId = asId(session.customer);
 
@@ -130,7 +169,6 @@ export async function POST(req: Request) {
         return jsonNoStore({ received: true });
       }
 
-      // Best-effort: store IDs; do not force is_pro here.
       try {
         await supabaseAdmin
           .from("users")
@@ -139,7 +177,9 @@ export async function POST(req: Request) {
             stripe_subscription_id: subscriptionId,
           })
           .eq("id", userId);
-      } catch {}
+      } catch {
+        // best effort only
+      }
 
       await audit(userId, "STRIPE_CHECKOUT_COMPLETED", {
         eventId: event.id,
@@ -148,7 +188,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // Helper for subscription-driven truth updates
     const handleSubscription = async (sub: Stripe.Subscription, kind: string) => {
       const customerId = asId(sub.customer);
       const subscriptionId = sub.id;
@@ -158,8 +197,23 @@ export async function POST(req: Request) {
 
       const userId = await findUserIdByCustomerId(customerId);
       if (!userId) {
-        await audit(null, "STRIPE_SUB_NO_USER", { kind, eventId: event.id, customerId });
+        await audit(null, "STRIPE_SUB_NO_USER", {
+          kind,
+          eventId: event.id,
+          customerId,
+        });
         return;
+      }
+
+      if (!planType) {
+        await audit(userId, "STRIPE_UNKNOWN_PRICE_ID", {
+          kind,
+          eventId: event.id,
+          customerId,
+          subscriptionId,
+          stripePriceId,
+          status: sub.status,
+        });
       }
 
       await upsertUserBilling({
@@ -180,9 +234,6 @@ export async function POST(req: Request) {
       });
     };
 
-    // -------------------------------------------------
-    // customer.subscription.created / updated / deleted
-    // -------------------------------------------------
     if (event.type === "customer.subscription.created") {
       const sub = event.data.object as Stripe.Subscription;
       await handleSubscription(sub, "STRIPE_SUB_CREATED");
@@ -198,7 +249,9 @@ export async function POST(req: Request) {
       const customerId = asId(sub.customer);
 
       const userId = await findUserIdByCustomerId(customerId);
-      if (!userId) return jsonNoStore({ received: true });
+      if (!userId) {
+        return jsonNoStore({ received: true });
+      }
 
       await supabaseAdmin
         .from("users")
@@ -216,25 +269,27 @@ export async function POST(req: Request) {
       });
     }
 
-    // -------------------------------------------------
-    // invoice.paid / invoice.payment_failed (recommended)
-    // NOTE: Your Stripe typings say invoice.subscription doesn't exist.
-    // We safely read it via (invoice as any).subscription to avoid TS errors.
-    // -------------------------------------------------
     if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
       const invoice = event.data.object as Stripe.Invoice;
 
       const customerId = asId(invoice.customer);
       const userId = await findUserIdByCustomerId(customerId);
-      if (!userId) return jsonNoStore({ received: true });
+      if (!userId) {
+        return jsonNoStore({ received: true });
+      }
 
-      // ✅ Avoid TS error: property doesn't exist in your installed typings
-      const subscriptionId = asId((invoice as any).subscription);
+      const invoiceLike = invoice as unknown as { subscription?: unknown };
+      const subscriptionId = asId(invoiceLike.subscription);
 
       if (subscriptionId) {
         try {
           const sub = await stripe.subscriptions.retrieve(subscriptionId);
-          await handleSubscription(sub, event.type === "invoice.paid" ? "STRIPE_INVOICE_PAID" : "STRIPE_INVOICE_FAILED");
+          await handleSubscription(
+            sub,
+            event.type === "invoice.paid"
+              ? "STRIPE_INVOICE_PAID"
+              : "STRIPE_INVOICE_FAILED"
+          );
         } catch {
           await audit(userId, "STRIPE_INVOICE_SUB_RETRIEVE_FAILED", {
             eventId: event.id,
@@ -253,9 +308,9 @@ export async function POST(req: Request) {
     }
 
     return jsonNoStore({ received: true });
-  } catch (err: any) {
-    console.error("❌ WEBHOOK HANDLER ERROR:", err?.message || err);
-    // Keep 200 to avoid infinite retries (your choice)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("WEBHOOK HANDLER ERROR:", message);
     return jsonNoStore({ received: true });
   }
 }

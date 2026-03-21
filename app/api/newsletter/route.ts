@@ -5,7 +5,11 @@ import { generateToken, sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-function jsonNoStore(data: any, init?: ResponseInit) {
+type NewsletterBody = {
+  email?: unknown;
+};
+
+function jsonNoStore(data: unknown, init?: ResponseInit) {
   const res = NextResponse.json(data, init);
   res.headers.set("Cache-Control", "no-store");
   return res;
@@ -30,8 +34,7 @@ function getUserAgent(req: Request) {
   return req.headers.get("user-agent") ?? null;
 }
 
-// Simple DB rate limiter (fail-open)
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   try {
     const now = Date.now();
     const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
@@ -63,17 +66,23 @@ async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
       .eq("window_start", windowStartIso)
       .eq("window_seconds", windowSeconds);
 
-    if (updErr) return true; // fail-open
+    if (updErr) return true;
     return next <= limit;
   } catch {
-    return true; // fail-open
+    return true;
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const emailRaw = body?.email;
+    let body: NewsletterBody = {};
+    try {
+      body = (await req.json()) as NewsletterBody;
+    } catch {
+      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+    }
+
+    const emailRaw = body.email;
 
     if (typeof emailRaw !== "string" || !emailRaw) {
       return jsonNoStore({ error: "Valid email is required" }, { status: 400 });
@@ -86,39 +95,45 @@ export async function POST(req: Request) {
 
     const ip = getClientIp(req) || "unknown";
 
-    // Rate limit (prevents newsletter spam)
-    const ipAllowed = await rateLimitHit(`ip:${ip}:newsletter`, 60, 10);
-    const emailAllowed = await rateLimitHit(`email:${email}:newsletter`, 300, 3);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:newsletter`, 60, 10);
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:newsletter`, 300, 3);
+
     if (!ipAllowed || !emailAllowed) {
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
 
     const appUrl = process.env.APP_URL;
-    if (!appUrl) return jsonNoStore({ error: "APP_URL is not set" }, { status: 500 });
+    if (!appUrl) {
+      return jsonNoStore({ error: "Server error" }, { status: 500 });
+    }
 
-    // Keep/Upsert subscriber row (don’t store token hash here anymore)
-    // If already confirmed, you can either:
-    // - return success without emailing again, or
-    // - allow resending. I’ll allow resending.
-    const { error: subErr } = await supabaseAdmin
+    const { data: existingSubscriber, error: existingErr } = await supabaseAdmin
       .from("newsletter_subscribers")
-      .upsert(
-        {
-          email,
-          // leave confirm_token_hash unused/nullable going forward
-          confirm_token_hash: null,
-          confirmed: false,
-          confirmed_at: null,
-        },
-        { onConflict: "email" }
-      );
+      .select("email,confirmed,confirmed_at")
+      .eq("email", email)
+      .maybeSingle();
 
-    if (subErr) {
-      console.error("NEWSLETTER upsert error:", subErr);
+    if (existingErr) {
+      console.error("NEWSLETTER existing subscriber lookup error:", existingErr);
       return jsonNoStore({ error: "Failed to save subscription" }, { status: 500 });
     }
 
-    // Ensure only one active newsletter token per email
+    if (!existingSubscriber) {
+      const { error: insertErr } = await supabaseAdmin
+        .from("newsletter_subscribers")
+        .insert({
+          email,
+          confirm_token_hash: null,
+          confirmed: false,
+          confirmed_at: null,
+        });
+
+      if (insertErr) {
+        console.error("NEWSLETTER insert error:", insertErr);
+        return jsonNoStore({ error: "Failed to save subscription" }, { status: 500 });
+      }
+    }
+
     try {
       await supabaseAdmin
         .from("auth_tokens")
@@ -130,7 +145,7 @@ export async function POST(req: Request) {
 
     const rawToken = generateToken(32);
     const tokenHash = sha256Hex(rawToken);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString();
 
     const { error: tokErr } = await supabaseAdmin.from("auth_tokens").insert({
       email,
@@ -151,29 +166,44 @@ export async function POST(req: Request) {
 
     const confirmUrl = `${appUrl}/confirm?type=newsletter&token=${encodeURIComponent(rawToken)}`;
 
-    await sendEmail({
-      to: email,
-      subject: "Confirm your ToneMender newsletter subscription",
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.4">
-          <p>Thanks for subscribing to the ToneMender newsletter!</p>
-          <p>Click the button below to confirm your subscription:</p>
-          <p>
-            <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
-              Confirm subscription
-            </a>
-          </p>
-          <p style="color:#6b7280;font-size:12px">
-            If the button doesn’t work, copy and paste this link:<br/>
-            <span>${confirmUrl}</span>
-          </p>
-          <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
-          <p>If you didn’t request this, you can safely ignore this email.</p>
-        </div>
-      `,
-    });
+    try {
+      await sendEmail({
+        to: email,
+        subject: "Confirm your ToneMender newsletter subscription",
+        html: `
+          <div style="font-family:Arial,sans-serif;line-height:1.4">
+            <p>Thanks for subscribing to the ToneMender newsletter!</p>
+            <p>Click the button below to confirm your subscription:</p>
+            <p>
+              <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
+                Confirm subscription
+              </a>
+            </p>
+            <p style="color:#6b7280;font-size:12px">
+              If the button doesn’t work, copy and paste this link:<br/>
+              <span>${confirmUrl}</span>
+            </p>
+            <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
+            <p>If you didn’t request this, you can safely ignore this email.</p>
+          </div>
+        `,
+      });
+    } catch (err) {
+      console.error("NEWSLETTER sendEmail error:", err);
 
-    return jsonNoStore({ success: true });
+      try {
+        await supabaseAdmin
+          .from("auth_tokens")
+          .delete()
+          .eq("token_hash", tokenHash)
+          .eq("purpose", "newsletter_confirm")
+          .is("consumed_at", null);
+      } catch {}
+
+      return jsonNoStore({ error: "Failed to send confirmation email" }, { status: 500 });
+    }
+
+    return jsonNoStore({ ok: true });
   } catch (err) {
     console.error("NEWSLETTER error:", err);
     return jsonNoStore({ error: "Internal server error" }, { status: 500 });

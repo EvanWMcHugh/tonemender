@@ -10,7 +10,8 @@ export const runtime = "nodejs";
 
 const SESSION_COOKIE = "tm_session";
 const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = "com.tonemender.app";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 const IOS_CLIENT_HEADER = "ios";
 
 function jsonNoStore(data: unknown, init?: ResponseInit) {
@@ -58,7 +59,7 @@ function isIosClient(req: Request) {
   return getClientPlatform(req) === IOS_CLIENT_HEADER;
 }
 
-async function rateLimitHit(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
   const now = Date.now();
   const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
@@ -133,8 +134,12 @@ export async function POST(req: Request) {
   try {
     const rawText = await req.text();
     const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    const body = rawText ? JSON.parse(rawText) : {};
-
+    let body: Record<string, unknown> = {};
+try {
+  body = rawText ? JSON.parse(rawText) : {};
+} catch {
+  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+}
     const turnstileToken = body?.turnstileToken;
     const integrityToken = body?.integrityToken;
     const integrityRequestHash = body?.integrityRequestHash;
@@ -143,7 +148,7 @@ export async function POST(req: Request) {
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await rateLimitHit(`ip:${ip}:delete_account`, 60, 10);
+    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:delete_account`, 60, 10);
     if (!ipAllowed) {
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
@@ -154,7 +159,7 @@ export async function POST(req: Request) {
       return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userAllowed = await rateLimitHit(`user:${authUser.id}:delete_account`, 300, 5);
+    const userAllowed = await isRateLimitAllowed(`user:${authUser.id}:delete_account`, 300, 5);
     if (!userAllowed) {
       return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
     }
