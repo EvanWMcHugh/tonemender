@@ -1,5 +1,4 @@
 // lib/auth/cookies.ts
-import "server-only";
 
 export const SESSION_COOKIE = "tm_session";
 
