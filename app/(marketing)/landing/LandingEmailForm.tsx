@@ -14,31 +14,33 @@ export default function LandingEmailForm() {
   const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
 
   async function joinWaitlist() {
-    if (!trimmedEmail || loading) return;
+  if (!trimmedEmail || loading) return;
 
-    setLoading(true);
-    setErr("");
+  setLoading(true);
+  setErr("");
 
-    try {
-      const res = await fetch("/api/newsletter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: trimmedEmail }),
-      });
+  try {
+    const res = await fetch("/api/newsletter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: trimmedEmail }),
+    });
 
-      setSubmitted(true);
-
-      if (res.ok) {
-        setEmail("");
-      }
-    } catch (error: unknown) {
-      console.warn("Newsletter request failed", error);
-      setSubmitted(true);
-      setErr("Something went wrong — try again in a moment.");
-    } finally {
-      setLoading(false);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      setErr(data?.error || "Something went wrong — try again in a moment.");
+      return;
     }
+
+    setSubmitted(true);
+    setEmail("");
+  } catch (error: unknown) {
+    console.warn("Newsletter request failed", error);
+    setErr("Something went wrong — try again in a moment.");
+  } finally {
+    setLoading(false);
   }
+}
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
