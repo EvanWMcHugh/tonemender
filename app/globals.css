@@ -11,30 +11,27 @@ body {
 }
 
 html {
-  /* Avoid iOS text size auto-adjust surprises */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
 
 body {
-  /* Improve text rendering consistency */
   text-rendering: optimizeLegibility;
-
-  /* Better font smoothing across platforms */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  /* Prevent weird short-page layouts */
   min-height: 100vh;
 }
 
-* {
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
 }
 
 /* Better default focus visibility (keyboard users) */
 :focus-visible {
-  outline: 2px solid rgb(59 130 246); /* tailwind blue-500 */
+  outline: 2px solid rgb(59 130 246);
   outline-offset: 2px;
   border-radius: 10px;
 }
@@ -67,7 +64,6 @@ body {
   }
 }
 
-/* Slightly faster variant for small UI elements */
 .fade-scale-in-fast {
   animation: fadeScaleInFast 0.25s ease-out forwards;
   opacity: 0;

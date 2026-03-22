@@ -1,95 +1,18 @@
-"use client";
-
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-import LogoutButton from "./components/LogoutButton";
+import LogoutButton from "@/components/LogoutButton";
+import { getCurrentUser } from "@/lib/auth/server-auth";
 
-type MeUser = {
-  id: string;
-  email: string;
-  isPro?: boolean;
-  planType?: string | null;
-  isReviewer?: boolean;
-  reviewerMode?: "free" | "pro" | null;
-};
+export default async function AppHomePage() {
+  const user = await getCurrentUser();
 
-type MeResponse = {
-  user: MeUser | null;
-};
-
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export default function AppHomePage() {
-  const router = useRouter();
-
-  const [authReady, setAuthReady] = useState(false);
-  const [user, setUser] = useState<MeUser | null>(null);
-
-  const mountedRef = useRef(true);
-  const brandInitial = useMemo(() => "T", []);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    const controller = new AbortController();
-
-    async function fetchMe() {
-      const response = await fetch("/api/user/me", {
-        method: "GET",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-
-      const json = (await response.json().catch(() => ({ user: null }))) as MeResponse;
-      return json?.user ?? null;
-    }
-
-    async function load() {
-      try {
-        let nextUser: MeUser | null = null;
-
-        for (let attempt = 0; attempt < 8; attempt++) {
-          nextUser = await fetchMe();
-
-          if (nextUser?.id) {
-            break;
-          }
-
-          await sleep(250);
-        }
-
-        if (!nextUser?.id) {
-          router.replace("/landing");
-          return;
-        }
-
-        if (!mountedRef.current) return;
-
-        setUser(nextUser);
-        setAuthReady(true);
-      } catch (err: unknown) {
-        if (err instanceof Error && err.name === "AbortError") {
-          return;
-        }
-
-        router.replace("/landing");
-      }
-    }
-
-    load();
-
-    return () => {
-      mountedRef.current = false;
-      controller.abort();
-    };
-  }, [router]);
-
-  if (!authReady || !user) return null;
+  if (!user?.id) {
+    redirect("/landing");
+  }
 
   const isPro = Boolean(user.isPro);
+
   const reviewerLabel =
     user.reviewerMode === "pro"
       ? "Reviewer Mode · Pro"
@@ -106,7 +29,7 @@ export default function AppHomePage() {
               className="flex h-9 w-9 items-center justify-center rounded-2xl bg-blue-600 text-lg font-bold text-white"
               aria-hidden="true"
             >
-              {brandInitial}
+              T
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">ToneMender</h1>
@@ -126,7 +49,7 @@ export default function AppHomePage() {
         )}
 
         <p className="text-sm leading-relaxed text-slate-700 sm:text-base">
-          Welcome back! Rewrite your messages into calm, clear, relationship-safe
+          Welcome back. Rewrite your messages into calm, clear, relationship-safe
           communication.
         </p>
 

@@ -10,42 +10,40 @@ const BLOG_POSTS = [
 ];
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const now = new Date();
-
   const staticPages: MetadataRoute.Sitemap = [
     {
       url: `${BASE_URL}/`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "daily",
       priority: 1,
     },
     {
       url: `${BASE_URL}/landing`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "weekly",
       priority: 0.9,
     },
     {
       url: `${BASE_URL}/relationship-message-rewriter`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "monthly",
       priority: 0.8,
     },
     {
       url: `${BASE_URL}/blog`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "weekly",
       priority: 0.7,
     },
     {
       url: `${BASE_URL}/privacy`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "yearly",
       priority: 0.3,
     },
     {
       url: `${BASE_URL}/terms`,
-      lastModified: now,
+      lastModified: "2026-03-21",
       changeFrequency: "yearly",
       priority: 0.3,
     },
@@ -53,7 +51,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const blogPages: MetadataRoute.Sitemap = BLOG_POSTS.map((slug) => ({
     url: `${BASE_URL}/blog/${slug}`,
-    lastModified: now,
+    lastModified: "2026-03-21",
     changeFrequency: "monthly",
     priority: 0.7,
   }));

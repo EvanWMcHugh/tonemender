@@ -8,7 +8,15 @@ const EDGE_START_PX = 30;
 const SWIPE_TRIGGER_PX = 90;
 const MAX_VERTICAL_DRIFT_PX = 60;
 
-export default function PageTransition({ children }: { children: ReactNode }) {
+type PageTransitionProps = {
+  children: ReactNode;
+  className?: string;
+};
+
+export default function PageTransition({
+  children,
+  className = "",
+}: PageTransitionProps) {
   const pathname = usePathname();
   const router = useRouter();
   const reduceMotion = useReducedMotion();
@@ -36,7 +44,9 @@ export default function PageTransition({ children }: { children: ReactNode }) {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) {
       try {
         navigator.vibrate(ms);
-      } catch {}
+      } catch {
+        // ignore vibration errors
+      }
     }
   }
 
@@ -101,7 +111,7 @@ export default function PageTransition({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className="min-h-screen overflow-hidden bg-slate-100 px-4 py-6"
+      className={`min-h-screen ${className}`}
       style={{ touchAction: "pan-y" }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
@@ -113,7 +123,6 @@ export default function PageTransition({ children }: { children: ReactNode }) {
         initial={initialAnimation}
         animate={animateState}
         transition={transition}
-        className="mx-auto max-w-xl"
       >
         {children}
       </motion.div>

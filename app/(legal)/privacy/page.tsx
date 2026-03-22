@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import BackButton from "../../components/BackButton";
+import BackButton from "@/components/BackButton";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy | ToneMender",
+  title: "Privacy Policy – ToneMender",
   description:
-    "Privacy Policy for ToneMender, the AI relationship and tone assistant.",
+    "Learn how ToneMender collects, uses, and protects your data when using our AI message rewriting service.",
 };
 
 export default function PrivacyPage() {
@@ -16,7 +15,7 @@ export default function PrivacyPage() {
 
         <header className="mb-10">
           <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-          <p className="text-sm text-gray-500">Last updated: December 2025</p>
+          <p className="text-sm text-gray-500">Last updated: March 2026</p>
           <p className="text-sm text-gray-500 mt-2">
             This policy describes how ToneMender collects, uses, and safeguards
             information when you use the service.
@@ -86,7 +85,8 @@ export default function PrivacyPage() {
           Messages you submit are processed using artificial intelligence
           services, including OpenAI, to generate rewrites and tone suggestions.
           We do not claim ownership of your content and do not sell personal
-          data.
+          data. Your messages are processed only to generate rewrites and improve
+          the service.
         </p>
         <p className="mt-4">
           If you choose to save drafts in the app, your messages and rewrites
@@ -124,7 +124,18 @@ export default function PrivacyPage() {
           within the app. If you need help, contact us and we’ll assist.
         </p>
 
-        <h2 className="text-xl font-semibold pt-8 border-t mt-10">7. Contact</h2>
+        <h2 className="text-xl font-semibold pt-8 border-t mt-10">
+          7. Data Retention
+        </h2>
+        <p className="mt-4">
+          We retain data only as long as necessary to provide the service and
+          comply with legal obligations. You can delete your account at any time,
+          which removes your associated data.
+        </p>
+
+        <h2 className="text-xl font-semibold pt-8 border-t mt-10">
+          8. Contact
+        </h2>
         <p className="mt-4">
           Email:{" "}
           <a
@@ -134,18 +145,6 @@ export default function PrivacyPage() {
             support@tonemender.com
           </a>
         </p>
-
-        <div className="mt-10 pt-8 border-t text-sm text-gray-500 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-          <p>© {new Date().getFullYear()} ToneMender</p>
-          <div className="flex gap-4">
-            <Link href="/terms" className="underline hover:opacity-80">
-              Terms
-            </Link>
-            <Link href="/landing" className="underline hover:opacity-80">
-              Back to Landing
-            </Link>
-          </div>
-        </div>
       </div>
     </main>
   );

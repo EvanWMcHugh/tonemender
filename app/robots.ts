@@ -7,16 +7,8 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: "*",
-        allow: [
-          "/",
-          "/landing",
-          "/blog",
-          "/blog/",
-          "/relationship-message-rewriter",
-          "/privacy",
-          "/terms",
-        ],
         disallow: [
+          "/api/",
           "/rewrite",
           "/drafts",
           "/account",
@@ -26,7 +18,6 @@ export default function robots(): MetadataRoute.Robots {
           "/check-email",
           "/reset-password",
           "/confirm",
-          "/api",
         ],
       },
     ],

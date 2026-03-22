@@ -7,42 +7,41 @@ type ToastProps = {
   duration?: number;
 };
 
+const EXIT_ANIMATION_MS = 180;
+
 export default function Toast({ text, duration = 1800 }: ToastProps) {
-  const [visible, setVisible] = useState(true);
+  const [mounted, setMounted] = useState(true);
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
-    setVisible(true);
+    setMounted(true);
     setExiting(false);
 
-    const hideTimer = setTimeout(() => {
+    const exitTimer = window.setTimeout(() => {
       setExiting(true);
     }, duration);
 
-    const removeTimer = setTimeout(() => {
-      setVisible(false);
-    }, duration + 180); // allow exit animation
+    const unmountTimer = window.setTimeout(() => {
+      setMounted(false);
+    }, duration + EXIT_ANIMATION_MS);
 
     return () => {
-      clearTimeout(hideTimer);
-      clearTimeout(removeTimer);
+      window.clearTimeout(exitTimer);
+      window.clearTimeout(unmountTimer);
     };
   }, [text, duration]);
 
-  if (!visible) return null;
+  if (!mounted) return null;
 
   return (
     <div
-      className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50
-        px-4 py-2 rounded-lg
-        bg-black/90 text-white shadow-lg backdrop-blur-sm
-        text-sm font-medium
-        pointer-events-none
-        transition-all duration-200
-        ${exiting ? "opacity-0 translate-y-1" : "opacity-100 translate-y-0"}`}
       role="status"
       aria-live="polite"
       aria-atomic="true"
+      className={[
+        "fixed bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-black/90 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur-sm pointer-events-none transition-all duration-200",
+        exiting ? "translate-y-1 opacity-0" : "translate-y-0 opacity-100",
+      ].join(" ")}
     >
       {text}
     </div>

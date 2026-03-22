@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import type { ReactNode, CSSProperties } from "react";
+import { useCallback, useRef, useState } from "react";
 
 type PullToRefreshProps = {
   onRefresh: () => void | Promise<void>;
@@ -12,26 +12,37 @@ const MAX_PULL = 120;
 const TRIGGER_PULL = 75;
 const MIN_SPINNER_MS = 500;
 
-export default function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
+export default function PullToRefresh({
+  onRefresh,
+  children,
+}: PullToRefreshProps) {
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
   const startYRef = useRef<number | null>(null);
   const pullingRef = useRef(false);
   const movedRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const livePullDistanceRef = useRef(0);
 
   function maybeVibrate(ms = 30) {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) {
       try {
         navigator.vibrate(ms);
-      } catch {}
+      } catch {
+        // ignore vibration errors
+      }
     }
   }
 
   function getScrollTop(): number {
     if (typeof window === "undefined") return 0;
-    return window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+    return (
+      window.scrollY ||
+      document.documentElement.scrollTop ||
+      document.body.scrollTop ||
+      0
+    );
   }
 
   function canStartPull() {
@@ -39,58 +50,63 @@ export default function PullToRefresh({ onRefresh, children }: PullToRefreshProp
     return getScrollTop() <= 0;
   }
 
-  async function runRefresh() {
+  const resetPull = useCallback(() => {
+    livePullDistanceRef.current = 0;
+    setPullDistance(0);
+  }, []);
+
+  const runRefresh = useCallback(async () => {
     const started = Date.now();
 
     try {
       await onRefresh();
-    } catch (err) {
-      console.error("PullToRefresh onRefresh error:", err);
+    } catch (error) {
+      console.error("PullToRefresh onRefresh error:", error);
     } finally {
       const elapsed = Date.now() - started;
       const remaining = Math.max(0, MIN_SPINNER_MS - elapsed);
 
-      // Keep the spinner visible at least a bit (feels responsive)
       window.setTimeout(() => {
         setRefreshing(false);
-        setPullDistance(0);
+        resetPull();
       }, remaining);
     }
-  }
+  }, [onRefresh, resetPull]);
 
   function handleTouchStart(e: React.TouchEvent<HTMLDivElement>) {
     if (!canStartPull()) return;
 
-    const t = e.touches?.[0];
-    if (!t) return;
+    const touch = e.touches?.[0];
+    if (!touch) return;
 
-    startYRef.current = t.clientY;
+    startYRef.current = touch.clientY;
     pullingRef.current = true;
     movedRef.current = false;
+    livePullDistanceRef.current = 0;
   }
 
   function handleTouchMove(e: React.TouchEvent<HTMLDivElement>) {
     if (!pullingRef.current || startYRef.current === null) return;
 
-    const t = e.touches?.[0];
-    if (!t) return;
+    const touch = e.touches?.[0];
+    if (!touch) return;
 
-    const delta = t.clientY - startYRef.current;
+    const delta = touch.clientY - startYRef.current;
 
-    // If user scrolls up or returns to neutral, reset.
     if (delta <= 0) {
-      setPullDistance(0);
+      resetPull();
       return;
     }
 
     movedRef.current = true;
 
-    // Resist + cap (easing)
     const eased = Math.min(MAX_PULL, delta * 0.85);
+    livePullDistanceRef.current = eased;
     setPullDistance(eased);
 
-    // Prevent browser bounce/scroll while pulling (only if we’re actually pulling down)
-    if (eased > 6) e.preventDefault();
+    if (eased > 6) {
+      e.preventDefault();
+    }
   }
 
   function finishGesture() {
@@ -100,46 +116,26 @@ export default function PullToRefresh({ onRefresh, children }: PullToRefreshProp
     startYRef.current = null;
 
     if (!movedRef.current) {
-      setPullDistance(0);
+      resetPull();
       return;
     }
 
-    if (pullDistance >= TRIGGER_PULL && !refreshing) {
+    if (livePullDistanceRef.current >= TRIGGER_PULL && !refreshing) {
       setRefreshing(true);
       maybeVibrate(40);
       void runRefresh();
     } else {
-      setPullDistance(0);
+      resetPull();
     }
   }
 
-  // iOS/Android sometimes cancel touches (incoming call, app switch, etc.)
-  function handleTouchEnd() {
-    finishGesture();
-  }
-  function handleTouchCancel() {
-    finishGesture();
-  }
-
-  // Slightly better default mobile behavior:
-  // allow vertical scrolling normally, but we’ll prevent it during active pull
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    // Ensure browser knows we intend to handle gestures nicely
-    el.style.touchAction = "pan-x pan-y";
-
-    return () => {};
-  }, []);
-
-  const indicatorStyle: React.CSSProperties = {
+  const indicatorStyle: CSSProperties = {
     transform: `translate(-50%, ${pullDistance / 2}px)`,
     opacity: pullDistance > 6 || refreshing ? 1 : 0,
     transition: "opacity 0.15s ease-out",
   };
 
-  const contentStyle: React.CSSProperties = {
+  const contentStyle: CSSProperties = {
     transform: `translateY(${pullDistance}px)`,
     transition:
       refreshing || pullDistance === 0 ? "transform 0.22s ease-out" : "none",
@@ -148,25 +144,29 @@ export default function PullToRefresh({ onRefresh, children }: PullToRefreshProp
 
   return (
     <div
-      ref={containerRef}
       className="relative w-full"
+      style={{ touchAction: "pan-x pan-y" }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchCancel}
+      onTouchEnd={finishGesture}
+      onTouchCancel={finishGesture}
     >
-      {/* Top pull indicator */}
       <div
         className="absolute left-1/2 top-0 flex items-center gap-2 text-[11px] text-slate-500"
         style={indicatorStyle}
         aria-live="polite"
         aria-busy={refreshing}
       >
-        <div className="h-3 w-3 rounded-full border border-slate-400 border-t-transparent animate-spin" />
-        <span>{refreshing ? "Refreshing…" : pullDistance >= TRIGGER_PULL ? "Release to refresh" : "Pull to refresh"}</span>
+        <div className="h-3 w-3 animate-spin rounded-full border border-slate-400 border-t-transparent" />
+        <span>
+          {refreshing
+            ? "Refreshing…"
+            : pullDistance >= TRIGGER_PULL
+            ? "Release to refresh"
+            : "Pull to refresh"}
+        </span>
       </div>
 
-      {/* Content that moves down while pulling */}
       <div style={contentStyle}>{children}</div>
     </div>
   );

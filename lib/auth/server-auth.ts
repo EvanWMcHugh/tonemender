@@ -1,3 +1,5 @@
+import { cookies } from "next/headers";
+
 import { getSessionCookie } from "@/lib/auth/cookies";
 import { isFreeReviewer, isProReviewer } from "@/lib/auth/reviewers";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
@@ -10,12 +12,13 @@ export type AuthUser = {
   email: string;
   isPro: boolean;
   planType: string | null;
+  isReviewer: boolean;
+  reviewerMode: "free" | "pro" | null;
 };
 
-export async function getAuthUserFromRequest(
-  req: Request
+async function getAuthUserFromSessionToken(
+  rawSessionToken: string | null
 ): Promise<AuthUser | null> {
-  const rawSessionToken = getSessionCookie(req);
   if (!rawSessionToken) return null;
 
   const sessionTokenHash = sha256Hex(rawSessionToken);
@@ -51,13 +54,16 @@ export async function getAuthUserFromRequest(
 
   let isPro = Boolean(user.is_pro);
   let planType = user.plan_type ?? null;
+  let reviewerMode: "free" | "pro" | null = null;
 
   if (isProReviewer(email)) {
     isPro = true;
     planType = "reviewer";
+    reviewerMode = "pro";
   } else if (isFreeReviewer(email)) {
     isPro = false;
     planType = null;
+    reviewerMode = "free";
   }
 
   const lastSeenAtMs = session.last_seen_at
@@ -87,5 +93,20 @@ export async function getAuthUserFromRequest(
     email,
     isPro,
     planType,
+    isReviewer: reviewerMode !== null,
+    reviewerMode,
   };
+}
+
+export async function getAuthUserFromRequest(
+  req: Request
+): Promise<AuthUser | null> {
+  const rawSessionToken = getSessionCookie(req);
+  return getAuthUserFromSessionToken(rawSessionToken);
+}
+
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  const cookieStore = await cookies();
+  const rawSessionToken = cookieStore.get("tm_session")?.value ?? null;
+  return getAuthUserFromSessionToken(rawSessionToken);
 }

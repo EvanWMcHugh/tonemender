@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import BackButton from "../../components/BackButton";
+import BackButton from "@/components/BackButton";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | ToneMender",
+  title: "Terms of Service – ToneMender",
   description:
-    "Terms of Service for ToneMender, the AI relationship and tone assistant.",
+    "Terms of Service for ToneMender, outlining usage rules, subscriptions, and limitations of liability.",
 };
 
 export default function TermsPage() {
@@ -15,7 +15,7 @@ export default function TermsPage() {
 
         <header className="mb-10">
           <h1 className="text-3xl font-bold mb-2">Terms of Service</h1>
-          <p className="text-sm text-gray-500">Last updated: December 2025</p>
+          <p className="text-sm text-gray-500">Last updated: March 2026</p>
         </header>
 
         <p>
@@ -54,8 +54,9 @@ export default function TermsPage() {
           </h2>
           <p className="mt-4">
             AI-generated messages may be inaccurate, incomplete, or
-            inappropriate for certain situations. You are solely responsible for
-            reviewing and deciding whether to use any AI-generated output.
+            inappropriate for certain situations. ToneMender does not guarantee
+            the accuracy or suitability of any output. You are solely responsible
+            for reviewing and deciding whether to use any AI-generated content.
           </p>
         </section>
 
@@ -64,9 +65,11 @@ export default function TermsPage() {
             4. Subscriptions &amp; Payments
           </h2>
           <p className="mt-4">
-            Paid plans and subscriptions are processed through Stripe. Fees are
-            billed in advance and are generally non-refundable except where
-            required by applicable law.
+            Paid plans and subscriptions are processed through Stripe or platform
+            billing providers (such as Apple or Google, where applicable). Fees
+            are billed in advance and are generally non-refundable except where
+            required by applicable law. You are responsible for managing your
+            subscription and cancellation through the appropriate platform.
           </p>
         </section>
 
@@ -104,11 +107,29 @@ export default function TermsPage() {
         </section>
 
         <section>
-          <h2 className="text-xl font-semibold pt-8 border-t mt-8">8. Contact</h2>
+          <h2 className="text-xl font-semibold pt-8 border-t mt-8">
+            8. Contact
+          </h2>
           <p className="mt-4">
             If you have questions about these Terms, you can contact us at:
           </p>
-          <p className="mt-2 font-medium">support@tonemender.com</p>
+          <a
+            href="mailto:support@tonemender.com"
+            className="mt-2 inline-block font-medium underline hover:opacity-80"
+          >
+            support@tonemender.com
+          </a>
+        </section>
+
+        <section>
+          <h2 className="text-xl font-semibold pt-8 border-t mt-8">
+            9. Changes to These Terms
+          </h2>
+          <p className="mt-4">
+            We may update these Terms from time to time. Continued use of
+            ToneMender after any changes constitutes acceptance of the updated
+            Terms.
+          </p>
         </section>
       </div>
     </main>

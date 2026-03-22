@@ -3,7 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export default function LogoutButton() {
+type LogoutButtonProps = {
+  className?: string;
+};
+
+export default function LogoutButton({ className = "" }: LogoutButtonProps) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
@@ -12,21 +16,20 @@ export default function LogoutButton() {
     setLoading(true);
 
     try {
-      // Invalidate server session + cookie
       await fetch("/api/auth/sign-out", {
         method: "POST",
         cache: "no-store",
         credentials: "include",
       });
     } catch {
-      // ignore — logout is best-effort
+      // best-effort logout
     }
 
-    // Cleanup any leftover Supabase artifacts from old builds
     if (typeof document !== "undefined") {
       document.cookie.split(";").forEach((cookie) => {
         const name = cookie.split("=")[0]?.trim();
-        if (name && name.startsWith("sb-")) {
+
+        if (name?.startsWith("sb-")) {
           document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
         }
       });
@@ -39,19 +42,22 @@ export default function LogoutButton() {
             localStorage.removeItem(key);
           }
         });
-      } catch {}
+      } catch {
+        // ignore localStorage cleanup failures
+      }
     }
 
-    // Redirect after logout
     router.replace("/sign-in");
+    router.refresh();
   }
 
   return (
     <button
+      type="button"
       onClick={handleLogout}
       disabled={loading}
       aria-busy={loading}
-      className="absolute top-4 right-4 text-sm bg-gray-200 px-3 py-1 rounded hover:bg-gray-300 disabled:opacity-50 transition"
+      className={`rounded-xl bg-slate-200 px-3 py-1.5 text-sm text-slate-800 transition hover:bg-slate-300 disabled:opacity-50 ${className}`}
     >
       {loading ? "Logging out…" : "Logout"}
     </button>

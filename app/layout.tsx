@@ -18,6 +18,14 @@ export const metadata: Metadata = {
     canonical: "/",
   },
 
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/icon.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: "/apple-icon.png",
+  },
+
   openGraph: {
     title: "ToneMender – AI Relationship Message Rewriter",
     description:
@@ -25,6 +33,14 @@ export const metadata: Metadata = {
     url: "https://tonemender.com",
     siteName: "ToneMender",
     type: "website",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "ToneMender",
+      },
+    ],
   },
 
   twitter: {
@@ -32,6 +48,7 @@ export const metadata: Metadata = {
     title: "ToneMender – AI Relationship Message Rewriter",
     description:
       "Fix the tone of your texts before you send. Prevent misunderstandings and arguments with AI rewrites.",
+    images: ["/og-image.png"],
   },
 };
 
