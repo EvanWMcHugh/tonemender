@@ -372,7 +372,7 @@ export async function verifyAndroidPlayIntegrity({
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    console.error("verifyAndroidPlayIntegrity error", { message });
+    console.error("PLAY_INTEGRITY_VERIFY_ERROR", { message });
 
     return {
       ok: false,

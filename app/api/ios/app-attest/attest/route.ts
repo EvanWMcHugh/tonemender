@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { badRequest, forbidden, jsonNoStore, serverError } from "@/lib/api/responses";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import {
   consumeAppAttestChallenge,
   verifyAndStoreAttestation,
@@ -12,36 +13,14 @@ type AttestBody = {
   challenge?: unknown;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function getPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
 export async function POST(req: Request) {
   try {
     let body: AttestBody = {};
+
     try {
       body = (await req.json()) as AttestBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
     const keyId = typeof body.keyId === "string" ? body.keyId.trim() : "";
@@ -51,19 +30,19 @@ export async function POST(req: Request) {
       typeof body.challenge === "string" ? body.challenge.trim() : "";
 
     if (!keyId) {
-      return jsonNoStore({ error: "Missing keyId" }, { status: 400 });
+      return badRequest("Missing keyId");
     }
 
     if (!attestation) {
-      return jsonNoStore({ error: "Missing attestation" }, { status: 400 });
+      return badRequest("Missing attestation");
     }
 
     if (!challenge) {
-      return jsonNoStore({ error: "Missing challenge" }, { status: 400 });
+      return badRequest("Missing challenge");
     }
 
-    if (getPlatform(req) !== "ios") {
-      return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
+    if (getClientPlatform(req) !== "ios") {
+      return forbidden("Invalid client platform");
     }
 
     const challengeResult = await consumeAppAttestChallenge({
@@ -72,7 +51,7 @@ export async function POST(req: Request) {
     });
 
     if (!challengeResult.ok) {
-      return jsonNoStore({ error: "Invalid challenge" }, { status: 403 });
+      return forbidden("Invalid challenge");
     }
 
     await verifyAndStoreAttestation({
@@ -85,7 +64,10 @@ export async function POST(req: Request) {
 
     return jsonNoStore({ ok: true });
   } catch (error) {
-    console.error("APP ATTEST ATTEST ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("APP_ATTEST_ATTEST_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

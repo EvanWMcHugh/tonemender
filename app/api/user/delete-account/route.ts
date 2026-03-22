@@ -1,36 +1,24 @@
-import { NextResponse } from "next/server";
-
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { badRequest, jsonNoStore, serverError, tooManyRequests, unauthorized } from "@/lib/api/responses";
+import { buildClearedSessionCookie } from "@/lib/auth/cookies";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
-import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
-const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME =
   process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
-const IOS_CLIENT_HEADER = "ios";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+type DeleteAccountBody = {
+  turnstileToken?: unknown;
+  integrityToken?: unknown;
+  integrityRequestHash?: unknown;
+};
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function getCookieDomain(req: Request) {
+function getCookieDomain(req: Request): string | undefined {
   const host = req.headers.get("host") || "";
 
   if (
@@ -44,24 +32,22 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+function isIosClient(req: Request): boolean {
+  return getClientPlatform(req) === "ios";
 }
 
-function isIosClient(req: Request) {
-  return getClientPlatform(req) === IOS_CLIENT_HEADER;
-}
-
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   const now = Date.now();
-  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartSeconds =
+    Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
   const { data: row } = await supabaseAdmin
@@ -73,28 +59,28 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
     .maybeSingle();
 
   if (!row) {
-    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
       key,
       window_start: windowStartIso,
       window_seconds: windowSeconds,
       count: 1,
     });
 
-    if (insErr) return true; // fail open
+    if (insertError) return true;
     return true;
   }
 
-  const next = (row.count ?? 0) + 1;
+  const nextCount = (row.count ?? 0) + 1;
 
-  const { error: updErr } = await supabaseAdmin
+  const { error: updateError } = await supabaseAdmin
     .from("rate_limits")
-    .update({ count: next })
+    .update({ count: nextCount })
     .eq("key", key)
     .eq("window_start", windowStartIso)
     .eq("window_seconds", windowSeconds);
 
-  if (updErr) return true; // fail open
-  return next <= limit;
+  if (updateError) return true;
+  return nextCount <= limit;
 }
 
 async function audit(
@@ -102,7 +88,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -114,35 +100,20 @@ async function audit(
   } catch {}
 }
 
-function clearSessionCookie(res: NextResponse, req: Request) {
-  const cookieDomain = getCookieDomain(req);
-  const clientPlatform = getClientPlatform(req);
-  const nativeClient =
-    clientPlatform === ANDROID_CLIENT_HEADER || clientPlatform === IOS_CLIENT_HEADER;
-
-  res.cookies.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 0,
-    ...(!nativeClient && cookieDomain ? { domain: cookieDomain } : {}),
-  });
-}
-
 export async function POST(req: Request) {
   try {
     const rawText = await req.text();
     const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    let body: Record<string, unknown> = {};
-try {
-  body = rawText ? JSON.parse(rawText) : {};
-} catch {
-  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
-}
-    const turnstileToken = body?.turnstileToken;
-    const integrityToken = body?.integrityToken;
-    const integrityRequestHash = body?.integrityRequestHash;
+
+    let body: DeleteAccountBody = {};
+
+    try {
+      body = rawText ? (JSON.parse(rawText) as DeleteAccountBody) : {};
+    } catch {
+      return badRequest("Invalid request body");
+    }
+
+    const { turnstileToken, integrityToken, integrityRequestHash } = body;
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
@@ -150,27 +121,35 @@ try {
 
     const ipAllowed = await isRateLimitAllowed(`ip:${ip}:delete_account`, 60, 10);
     if (!ipAllowed) {
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
-    const userAllowed = await isRateLimitAllowed(`user:${authUser.id}:delete_account`, 300, 5);
+    const userAllowed = await isRateLimitAllowed(
+      `user:${authUser.id}:delete_account`,
+      300,
+      5
+    );
+
     if (!userAllowed) {
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
     if (androidClient) {
-      if (!integrityToken || typeof integrityToken !== "string") {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      if (typeof integrityToken !== "string" || !integrityToken) {
+        return badRequest("Integrity verification required");
       }
 
-      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      if (
+        typeof integrityRequestHash !== "string" ||
+        !integrityRequestHash
+      ) {
+        return badRequest("Integrity request hash required");
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
@@ -187,6 +166,7 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
             payload:
@@ -203,7 +183,7 @@ try {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
       const integrity = await verifyIosAppAttestAssertion({
@@ -223,6 +203,7 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
             payload:
@@ -234,14 +215,15 @@ try {
         );
       }
     } else {
-      if (!turnstileToken || typeof turnstileToken !== "string") {
-        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+      if (typeof turnstileToken !== "string" || !turnstileToken) {
+        return badRequest("Missing captcha");
       }
 
-      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-      if (!okCaptcha) {
-        await audit("ACCOUNT_DELETE_CAPTCHA_FAILED", authUser.id, req, {});
-        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+      const captchaOk = await verifyTurnstile(turnstileToken, getClientIp(req));
+
+      if (!captchaOk) {
+        await audit("ACCOUNT_DELETE_CAPTCHA_FAILED", authUser.id, req);
+        return badRequest("Captcha failed");
       }
     }
 
@@ -252,7 +234,7 @@ try {
       .maybeSingle();
 
     if (userError || !userRow) {
-      return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
+      return serverError("User lookup failed");
     }
 
     await audit("ACCOUNT_DELETE_STARTED", authUser.id, req, {
@@ -269,8 +251,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (sessionsError) {
-      console.error("DELETE ACCOUNT: sessions delete failed:", sessionsError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_SESSIONS_DELETE_FAILED", {
+        message: sessionsError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: authTokensError } = await supabaseAdmin
@@ -279,8 +263,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (authTokensError) {
-      console.error("DELETE ACCOUNT: auth_tokens delete failed:", authTokensError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_AUTH_TOKENS_DELETE_FAILED", {
+        message: authTokensError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: messagesError } = await supabaseAdmin
@@ -289,8 +275,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (messagesError) {
-      console.error("DELETE ACCOUNT: messages delete failed:", messagesError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_MESSAGES_DELETE_FAILED", {
+        message: messagesError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: rewriteUsageError } = await supabaseAdmin
@@ -299,8 +287,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (rewriteUsageError) {
-      console.error("DELETE ACCOUNT: rewrite_usage delete failed:", rewriteUsageError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_REWRITE_USAGE_DELETE_FAILED", {
+        message: rewriteUsageError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: profilesError } = await supabaseAdmin
@@ -309,8 +299,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (profilesError) {
-      console.error("DELETE ACCOUNT: profiles delete failed:", profilesError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_PROFILES_DELETE_FAILED", {
+        message: profilesError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: auditNullError } = await supabaseAdmin
@@ -319,8 +311,10 @@ try {
       .eq("user_id", authUser.id);
 
     if (auditNullError) {
-      console.error("DELETE ACCOUNT: audit_log null-out failed:", auditNullError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_AUDIT_LOG_NULL_OUT_FAILED", {
+        message: auditNullError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     const { error: userDeleteError } = await supabaseAdmin
@@ -329,8 +323,10 @@ try {
       .eq("id", authUser.id);
 
     if (userDeleteError) {
-      console.error("DELETE ACCOUNT: users delete failed:", userDeleteError);
-      return jsonNoStore({ error: "Failed to delete account" }, { status: 500 });
+      console.error("DELETE_ACCOUNT_USER_DELETE_FAILED", {
+        message: userDeleteError.message,
+      });
+      return serverError("Failed to delete account");
     }
 
     await audit("ACCOUNT_DELETED", null, req, {
@@ -348,13 +344,25 @@ try {
       success: true,
     });
 
-    clearSessionCookie(res, req);
+    const cookieDomain =
+      androidClient || iosClient ? undefined : getCookieDomain(req);
+
+    res.headers.append(
+      "Set-Cookie",
+      buildClearedSessionCookie({
+        path: "/",
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        ...(cookieDomain ? { domain: cookieDomain } : {}),
+      })
+    );
+
     return res;
   } catch (error) {
-    console.error("DELETE ACCOUNT ROUTE ERROR:", error);
-    return jsonNoStore(
-      { error: "Server error while deleting account" },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("DELETE_ACCOUNT_ROUTE_ERROR", { message });
+
+    return serverError("Server error while deleting account");
   }
 }

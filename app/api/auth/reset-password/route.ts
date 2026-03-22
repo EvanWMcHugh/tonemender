@@ -1,29 +1,24 @@
-// app/api/auth/reset-password/route.ts
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { sha256Hex } from "@/lib/security/crypto";
-import { sendEmail } from "@/lib/email/sendEmail";
 import bcrypt from "bcryptjs";
+
+import { badRequest, jsonNoStore, forbidden, serverError } from "@/lib/api/responses";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { sendEmail } from "@/lib/email/send-email";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
+import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+type ResetPasswordBody = {
+  token?: unknown;
+  newPassword?: unknown;
+};
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-async function audit(event: string, userId: string | null, req: Request, meta: Record<string, unknown> = {}) {
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, unknown> = {}
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -37,38 +32,40 @@ async function audit(event: string, userId: string | null, req: Request, meta: R
 
 export async function POST(req: Request) {
   try {
-    let body: Record<string, unknown> = {};
-try {
-  body = await req.json();
-} catch {
-  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
-}
-    const token = body?.token;
-    const newPassword = body?.newPassword;
+    let body: ResetPasswordBody = {};
 
-    if (!token || typeof token !== "string") {
-      return jsonNoStore({ error: "Missing token" }, { status: 400 });
+    try {
+      body = (await req.json()) as ResetPasswordBody;
+    } catch {
+      return badRequest("Invalid request body");
     }
 
-    // Basic password rules (keep simple)
-    if (!newPassword || typeof newPassword !== "string") {
-      return jsonNoStore({ error: "Missing new password" }, { status: 400 });
+    const { token, newPassword } = body;
+
+    if (typeof token !== "string" || !token) {
+      return badRequest("Missing token");
     }
-    if (newPassword.length < 8) {
-      return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
+
+    if (typeof newPassword !== "string" || !newPassword) {
+      return badRequest("Missing new password");
     }
-    if (newPassword.length > 200) {
-      return jsonNoStore({ error: "Password is too long" }, { status: 400 });
-    }
+
     if (!newPassword.trim()) {
-  return jsonNoStore({ error: "Password cannot be blank" }, { status: 400 });
-}
+      return badRequest("Password cannot be blank");
+    }
+
+    if (newPassword.length < 8) {
+      return badRequest("Password must be at least 8 characters");
+    }
+
+    if (newPassword.length > 200) {
+      return badRequest("Password is too long");
+    }
 
     const tokenHash = sha256Hex(token);
     const nowIso = new Date().toISOString();
 
-    // 1) Atomically consume reset token (single-use) with guards
-    const { data: tok, error: consumeErr } = await supabaseAdmin
+    const { data: consumedToken, error: consumeError } = await supabaseAdmin
       .from("auth_tokens")
       .update({ consumed_at: nowIso })
       .eq("token_hash", tokenHash)
@@ -78,55 +75,60 @@ try {
       .select("id,user_id,email")
       .maybeSingle();
 
-    if (consumeErr) {
-      return jsonNoStore({ error: "Failed to validate token" }, { status: 500 });
-    }
-    if (!tok?.id || !tok.user_id) {
-      return jsonNoStore({ error: "Invalid or expired token" }, { status: 400 });
+    if (consumeError) {
+      return serverError("Failed to validate token");
     }
 
-    const userId = String(tok.user_id);
+    if (!consumedToken?.id || !consumedToken.user_id) {
+      return badRequest("Invalid or expired token");
+    }
 
-    const { data: user, error: userErr } = await supabaseAdmin
+    const userId = String(consumedToken.user_id);
+
+    const { data: user, error: userError } = await supabaseAdmin
       .from("users")
       .select("email,disabled_at,deleted_at")
       .eq("id", userId)
       .maybeSingle();
 
-    if (userErr || !user) {
-      return jsonNoStore({ error: "Failed to update password" }, { status: 500 });
-    }
-    if (user.disabled_at || user.deleted_at) {
-      return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
+    if (userError || !user) {
+      return serverError("Failed to update password");
     }
 
-    // 2) Update password
+    if (user.disabled_at || user.deleted_at) {
+      return forbidden("Account unavailable");
+    }
+
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
-    const { error: updErr } = await supabaseAdmin
+    const { error: updateError } = await supabaseAdmin
       .from("users")
       .update({ password_hash: passwordHash })
       .eq("id", userId);
 
-    if (updErr) {
-      // Token is already consumed; safest is to require a new reset request.
-      return jsonNoStore({ error: "Failed to update password. Please request a new reset link." }, { status: 500 });
+    if (updateError) {
+      return serverError(
+        "Failed to update password. Please request a new reset link."
+      );
     }
 
-    // 3) Security: revoke all sessions
-    try {
-      await supabaseAdmin
-        .from("sessions")
-        .update({ revoked_at: nowIso })
-        .eq("user_id", userId)
-        .is("revoked_at", null);
-    } catch {}
+    const { error: revokeError } = await supabaseAdmin
+      .from("sessions")
+      .update({ revoked_at: nowIso })
+      .eq("user_id", userId)
+      .is("revoked_at", null);
 
-    await audit("PASSWORD_RESET_COMPLETED", userId, req, {});
+    if (revokeError) {
+      console.warn("PASSWORD_RESET_REVOKE_SESSIONS_FAILED", {
+        message: revokeError.message,
+      });
+    }
 
-    // 4) Notify (best effort) - use user.email (source of truth)
+    await audit("PASSWORD_RESET_COMPLETED", userId, req);
+
     try {
-      const to = String(user.email || tok.email || "");
+      const to = String(user.email || consumedToken.email || "").trim().toLowerCase();
+
       if (to) {
         await sendEmail({
           to,
@@ -144,7 +146,10 @@ try {
 
     return jsonNoStore({ ok: true });
   } catch (err) {
-    console.error("RESET PASSWORD ERROR:", err);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("RESET_PASSWORD_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

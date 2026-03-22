@@ -45,7 +45,7 @@ export default function ConfirmPage() {
 
       try {
         // ✅ Single endpoint for all confirmations (auth_tokens-compatible)
-        const res = await fetch("/api/confirm", {
+        const res = await fetch("/api/auth/confirm", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           cache: "no-store",

@@ -25,7 +25,12 @@ export function getUserAgent(req: Request): string | null {
 }
 
 export function getClientPlatform(req: Request): ClientPlatform {
-  const raw = (req.headers.get("x-client-platform") || "").trim().toLowerCase();
+  const raw =
+    (req.headers.get("x-client-platform") ||
+      req.headers.get("x-tonemender-client") ||
+      "")
+      .trim()
+      .toLowerCase();
 
   if (raw === "web" || raw === "android" || raw === "ios") {
     return raw;

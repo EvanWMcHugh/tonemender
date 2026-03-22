@@ -1,53 +1,41 @@
-import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
 
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { jsonNoStore, badRequest, forbidden, serverError, tooManyRequests, unauthorized } from "@/lib/api/responses";
+import { SESSION_COOKIE } from "@/lib/auth/cookies";
 import {
   getReviewerMode,
   isFreeReviewer,
   isProReviewer,
   isReviewerEmail,
 } from "@/lib/auth/reviewers";
-import { sha256Hex } from "@/lib/security/crypto";
-import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
-const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME =
   process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
-const IOS_CLIENT_HEADER = "ios";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+type SignInBody = {
+  email?: unknown;
+  password?: unknown;
+  captchaToken?: unknown;
+  integrityToken?: unknown;
+  integrityRequestHash?: unknown;
+  deviceName?: unknown;
+};
 
-function normalizeEmail(email: string) {
+function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function cryptoRandomHex(bytes: number) {
-  return crypto.randomBytes(bytes).toString("hex");
-}
-
-function getCookieDomain(req: Request) {
+function getCookieDomain(req: Request): string | undefined {
   const host = req.headers.get("host") || "";
+
   if (
     host === "tonemender.com" ||
     host === "www.tonemender.com" ||
@@ -55,27 +43,26 @@ function getCookieDomain(req: Request) {
   ) {
     return ".tonemender.com";
   }
+
   return undefined;
 }
 
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+function isIosClient(req: Request): boolean {
+  return getClientPlatform(req) === "ios";
 }
 
-function isIosClient(req: Request) {
-  return getClientPlatform(req) === IOS_CLIENT_HEADER;
-}
-
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   const now = Date.now();
-  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartSeconds =
+    Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
   const { data: row } = await supabaseAdmin
@@ -108,6 +95,7 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
     .eq("window_seconds", windowSeconds);
 
   if (updateError) return true;
+
   return nextCount <= limit;
 }
 
@@ -116,7 +104,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -130,29 +118,30 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-   const rawText = await req.text();
-const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const rawText = await req.text();
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
 
-let body: Record<string, unknown> = {};
-try {
-  body = rawText ? JSON.parse(rawText) : {};
-} catch {
-  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
-}
+    let body: SignInBody = {};
 
-    const emailRaw = body?.email;
-    const password = body?.password;
-    const captchaToken = body?.captchaToken;
-    const integrityToken = body?.integrityToken;
-    const integrityRequestHash = body?.integrityRequestHash;
-    const deviceName = body?.deviceName;
-
-    if (!emailRaw || typeof emailRaw !== "string") {
-      return jsonNoStore({ error: "Missing email" }, { status: 400 });
+    try {
+      body = rawText ? (JSON.parse(rawText) as SignInBody) : {};
+    } catch {
+      return badRequest("Invalid request body");
     }
 
-    if (!password || typeof password !== "string") {
-      return jsonNoStore({ error: "Missing password" }, { status: 400 });
+    const emailRaw = body.email;
+    const password = body.password;
+    const captchaToken = body.captchaToken;
+    const integrityToken = body.integrityToken;
+    const integrityRequestHash = body.integrityRequestHash;
+    const deviceName = body.deviceName;
+
+    if (typeof emailRaw !== "string" || !emailRaw.trim()) {
+      return badRequest("Missing email");
+    }
+
+    if (typeof password !== "string" || !password) {
+      return badRequest("Missing password");
     }
 
     const email = normalizeEmail(emailRaw);
@@ -172,16 +161,19 @@ try {
         isReviewer,
       });
 
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
     if (androidClient && !isReviewer) {
-      if (!integrityToken || typeof integrityToken !== "string") {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      if (typeof integrityToken !== "string" || !integrityToken) {
+        return badRequest("Integrity verification required");
       }
 
-      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      if (
+        typeof integrityRequestHash !== "string" ||
+        !integrityRequestHash
+      ) {
+        return badRequest("Integrity request hash required");
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
@@ -199,9 +191,13 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
@@ -212,7 +208,7 @@ try {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
       const integrity = await verifyIosAppAttestAssertion({
@@ -233,33 +229,40 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
       }
     } else if (!isReviewer) {
-      if (!captchaToken || typeof captchaToken !== "string") {
-        return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+      if (typeof captchaToken !== "string" || !captchaToken) {
+        return badRequest("Captcha verification required");
       }
 
       const captchaOk = await verifyTurnstile(captchaToken, getClientIp(req));
+
       if (!captchaOk) {
         await audit("SIGN_IN_CAPTCHA_FAILED", null, req, { email });
-        return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+        return forbidden("Captcha verification failed");
       }
     }
 
     const { data: user, error } = await supabaseAdmin
       .from("users")
-      .select("id,email,password_hash,email_verified_at,is_pro,plan_type,disabled_at,deleted_at")
+      .select(
+        "id,email,password_hash,email_verified_at,is_pro,plan_type,disabled_at,deleted_at"
+      )
       .eq("email", email)
       .maybeSingle();
 
     if (error) {
-      return jsonNoStore({ error: "Server error" }, { status: 500 });
+      return serverError("Server error");
     }
 
     if (!user) {
@@ -269,7 +272,8 @@ try {
         iosClient,
         isReviewer,
       });
-      return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
+
+      return unauthorized("Invalid email or password");
     }
 
     if (user.disabled_at || user.deleted_at) {
@@ -278,35 +282,50 @@ try {
         iosClient,
         isReviewer,
       });
-      return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
+
+      return forbidden("Account unavailable");
     }
 
     if (!user.email_verified_at) {
-  await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
-    androidClient,
-    iosClient,
-    isReviewer,
-  });
+      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
+        androidClient,
+        iosClient,
+        isReviewer,
+      });
 
-  return jsonNoStore(
-    {
-      error: "EMAIL_NOT_VERIFIED",
-      message: "Email not confirmed",
-    },
-    { status: 403 }
-  );
-}
+      return jsonNoStore(
+        {
+          ok: false,
+          error: "EMAIL_NOT_VERIFIED",
+          message: "Email not confirmed",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!user.password_hash || typeof user.password_hash !== "string") {
-  await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
-    androidClient,
-    iosClient,
-    isReviewer,
-  });
-  return jsonNoStore({ error: "Invalid email or password" }, { status: 401 });
-}
+      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
+        androidClient,
+        iosClient,
+        isReviewer,
+      });
 
-    const rawSessionToken = cryptoRandomHex(32);
+      return unauthorized("Invalid email or password");
+    }
+
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
+
+    if (!passwordOk) {
+      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
+        androidClient,
+        iosClient,
+        isReviewer,
+      });
+
+      return unauthorized("Invalid email or password");
+    }
+
+    const rawSessionToken = generateToken(32);
     const sessionTokenHash = sha256Hex(rawSessionToken);
 
     const maxAgeSeconds = 60 * 60 * 24 * 30;
@@ -320,15 +339,19 @@ try {
       last_seen_at: nowIso,
       ip: getClientIp(req),
       user_agent: getUserAgent(req),
-      device_name: typeof deviceName === "string" ? deviceName.slice(0, 200) : null,
+      device_name:
+        typeof deviceName === "string" ? deviceName.slice(0, 200) : null,
     });
 
     if (sessionError) {
-      return jsonNoStore({ error: "Failed to create session" }, { status: 500 });
+      return serverError("Failed to create session");
     }
 
     try {
-      await supabaseAdmin.from("users").update({ last_login_at: nowIso }).eq("id", user.id);
+      await supabaseAdmin
+        .from("users")
+        .update({ last_login_at: nowIso })
+        .eq("id", user.id);
     } catch {}
 
     await audit("SIGN_IN_OK", String(user.id), req, {
@@ -373,7 +396,10 @@ try {
 
     return res;
   } catch (err) {
-  console.error("SIGN IN ERROR:", err);
-  return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("SIGN_IN_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

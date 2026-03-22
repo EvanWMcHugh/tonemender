@@ -4,7 +4,12 @@ import { NextResponse } from "next/server";
 
 export function jsonNoStore(data: unknown, init?: ResponseInit): NextResponse {
   const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
+  res.headers.set(
+  "Cache-Control",
+  "no-store, no-cache, must-revalidate, proxy-revalidate"
+);
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
   return res;
 }
 
@@ -26,6 +31,14 @@ export function forbidden(error = "Forbidden"): NextResponse {
 
 export function notFound(error = "Not found"): NextResponse {
   return jsonNoStore({ ok: false, error }, { status: 404 });
+}
+
+export function conflict(error = "Conflict"): NextResponse {
+  return jsonNoStore({ ok: false, error }, { status: 409 });
+}
+
+export function unprocessable(error = "Unprocessable entity"): NextResponse {
+  return jsonNoStore({ ok: false, error }, { status: 422 });
 }
 
 export function tooManyRequests(error = "Too many requests"): NextResponse {

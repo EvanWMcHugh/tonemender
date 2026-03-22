@@ -87,7 +87,7 @@ export default function UpgradePage() {
     setCheckoutLoading(type);
 
     try {
-      const res = await fetch("/api/billing/checkout", {
+      const res = await fetch("/api/billing/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",

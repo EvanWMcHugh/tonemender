@@ -1,33 +1,18 @@
-import { NextResponse } from "next/server";
-
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { jsonNoStore, serverError } from "@/lib/api/responses";
+import { buildClearedSessionCookie, getSessionCookie } from "@/lib/auth/cookies";
 import {
   getReviewerMode,
   isFreeReviewer,
   isProReviewer,
   isReviewerEmail,
 } from "@/lib/auth/reviewers";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientPlatform } from "@/lib/request/client-meta";
 import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
-
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  res.headers.set("Pragma", "no-cache");
-  res.headers.set("Expires", "0");
-  return res;
-}
-
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function getCookieDomain(req: Request) {
+function getCookieDomain(req: Request): string | undefined {
   const host = req.headers.get("host") || "";
 
   if (
@@ -41,33 +26,28 @@ function getCookieDomain(req: Request) {
   return undefined;
 }
 
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
-function isNativeClient(req: Request) {
+function isNativeClient(req: Request): boolean {
   const platform = getClientPlatform(req);
   return platform === "android" || platform === "ios";
 }
 
-function clearSessionCookie(req: Request, res: NextResponse) {
+function appendClearedSessionCookie(req: Request, res: Response): void {
   const cookieDomain = isNativeClient(req) ? undefined : getCookieDomain(req);
-  res.cookies.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 0,
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
-  });
+
+  res.headers.append(
+    "Set-Cookie",
+    buildClearedSessionCookie({
+      path: "/",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      ...(cookieDomain ? { domain: cookieDomain } : {}),
+    })
+  );
 }
 
 export async function GET(req: Request) {
   try {
-    const rawSessionToken = readCookie(req, SESSION_COOKIE);
+    const rawSessionToken = getSessionCookie(req);
 
     if (!rawSessionToken) {
       return jsonNoStore({ user: null });
@@ -84,27 +64,33 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (sessionError) {
-      return jsonNoStore({ user: null }, { status: 503 });
+      return serverError("Server error");
     }
 
     if (!session?.user_id) {
       const res = jsonNoStore({ user: null });
-      clearSessionCookie(req, res);
+      appendClearedSessionCookie(req, res);
       return res;
     }
 
-    const expiresMs = session.expires_at ? new Date(session.expires_at).getTime() : 0;
+    const expiresMs = session.expires_at
+      ? new Date(session.expires_at).getTime()
+      : 0;
 
     if (session.revoked_at || !session.expires_at || expiresMs <= nowMs) {
-      try {
-        await supabaseAdmin
-          .from("sessions")
-          .update({ revoked_at: session.revoked_at ?? nowIso })
-          .eq("session_token_hash", sessionTokenHash);
-      } catch {}
+      const { error: revokeError } = await supabaseAdmin
+        .from("sessions")
+        .update({ revoked_at: session.revoked_at ?? nowIso })
+        .eq("session_token_hash", sessionTokenHash);
+
+      if (revokeError) {
+        console.warn("USER_ME_REVOKE_SESSION_FAILED", {
+          message: revokeError.message,
+        });
+      }
 
       const res = jsonNoStore({ user: null });
-      clearSessionCookie(req, res);
+      appendClearedSessionCookie(req, res);
       return res;
     }
 
@@ -115,24 +101,28 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (userError) {
-      return jsonNoStore({ user: null }, { status: 503 });
+      return serverError("Server error");
     }
 
     if (!user || user.disabled_at || user.deleted_at) {
       const res = jsonNoStore({ user: null });
-      clearSessionCookie(req, res);
+      appendClearedSessionCookie(req, res);
       return res;
     }
 
-    try {
-      await supabaseAdmin
-        .from("sessions")
-        .update({ last_seen_at: nowIso })
-        .eq("session_token_hash", sessionTokenHash)
-        .is("revoked_at", null);
-    } catch {}
+    const { error: updateError } = await supabaseAdmin
+      .from("sessions")
+      .update({ last_seen_at: nowIso })
+      .eq("session_token_hash", sessionTokenHash)
+      .is("revoked_at", null);
 
-    const email = String(user.email);
+    if (updateError) {
+      console.warn("USER_ME_LAST_SEEN_UPDATE_FAILED", {
+        message: updateError.message,
+      });
+    }
+
+    const email = String(user.email).trim().toLowerCase();
     const reviewerMode = getReviewerMode(email);
     const isReviewer = isReviewerEmail(email);
 
@@ -148,6 +138,7 @@ export async function GET(req: Request) {
     }
 
     return jsonNoStore({
+      ok: true,
       user: {
         id: String(user.id),
         email,
@@ -158,7 +149,10 @@ export async function GET(req: Request) {
       },
     });
   } catch (err) {
-  console.error("USER ME ERROR:", err);
-  return jsonNoStore({ user: null }, { status: 500 });
-}
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("USER_ME_ERROR", { message });
+
+    return serverError("Server error");
+  }
 }

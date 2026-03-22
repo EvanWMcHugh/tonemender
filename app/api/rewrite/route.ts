@@ -1,8 +1,15 @@
-import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  tooManyRequests,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 
 export const runtime = "nodejs";
 
@@ -10,6 +17,7 @@ const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
   throw new Error("Missing OPENAI_API_KEY");
 }
+
 const openai = new OpenAI({ apiKey });
 
 const TIMEZONE = "America/Los_Angeles";
@@ -25,27 +33,11 @@ type RewriteRequestBody = {
   tone?: unknown;
 };
 
-function normalizeEmail(email: string) {
+function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function formatLA_YYYY_MM_DD(date = new Date()) {
+function formatLA_YYYY_MM_DD(date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: TIMEZONE,
     year: "numeric",
@@ -54,35 +46,42 @@ function formatLA_YYYY_MM_DD(date = new Date()) {
   }).format(date);
 }
 
-function getTzOffsetMinutes(timeZone: string, date: Date) {
+function getTzOffsetMinutes(timeZone: string, date: Date): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     timeZoneName: "shortOffset",
   }).formatToParts(date);
 
-  const tzName = parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
-  const match = tzName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
+  const tzName =
+    parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
 
+  const match = tzName.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/i);
   if (!match) return 0;
 
   const sign = match[1] === "-" ? -1 : 1;
-  const hours = parseInt(match[2], 10);
-  const minutes = match[3] ? parseInt(match[3], 10) : 0;
+  const hours = Number.parseInt(match[2], 10);
+  const minutes = match[3] ? Number.parseInt(match[3], 10) : 0;
 
   return sign * (hours * 60 + minutes);
 }
 
-function laDayBoundsUtcIso(date = new Date()) {
+function laDayBoundsUtcIso(date = new Date()): readonly [string, string] {
   const ymd = formatLA_YYYY_MM_DD(date);
-  const [year, month, day] = ymd.split("-").map((value) => parseInt(value, 10));
+  const [year, month, day] = ymd
+    .split("-")
+    .map((value) => Number.parseInt(value, 10));
 
   const startLocalAsUtc = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
   const startOffsetMinutes = getTzOffsetMinutes(TIMEZONE, startLocalAsUtc);
-  const startUtc = new Date(startLocalAsUtc.getTime() - startOffsetMinutes * 60_000);
+  const startUtc = new Date(
+    startLocalAsUtc.getTime() - startOffsetMinutes * 60_000
+  );
 
   const endLocalAsUtc = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
   const endOffsetMinutes = getTzOffsetMinutes(TIMEZONE, endLocalAsUtc);
-  const endUtc = new Date(endLocalAsUtc.getTime() - endOffsetMinutes * 60_000);
+  const endUtc = new Date(
+    endLocalAsUtc.getTime() - endOffsetMinutes * 60_000
+  );
 
   return [startUtc.toISOString(), endUtc.toISOString()] as const;
 }
@@ -92,14 +91,21 @@ function extractBlock(raw: string, label: string): string {
     `(^|\\n)${label}:\\s*([\\s\\S]*?)(?=\\n[A-Z][A-Z_]+\\s*:|$)`,
     "i"
   );
+
   const match = raw.match(regex);
   return match ? match[2].trim() : "";
 }
 
 function parseRecipient(value: unknown): RewriteRecipient {
-  if (value === "partner" || value === "friend" || value === "family" || value === "coworker") {
+  if (
+    value === "partner" ||
+    value === "friend" ||
+    value === "family" ||
+    value === "coworker"
+  ) {
     return value;
   }
+
   return null;
 }
 
@@ -107,10 +113,11 @@ function parseTone(value: unknown): RewriteTone {
   if (value === "soft" || value === "calm" || value === "clear") {
     return value;
   }
+
   return null;
 }
 
-function recipientDescription(recipient: RewriteRecipient) {
+function recipientDescription(recipient: RewriteRecipient): string {
   switch (recipient) {
     case "partner":
       return "a romantic partner you care about and want to keep a healthy, vulnerable connection with";
@@ -125,16 +132,19 @@ function recipientDescription(recipient: RewriteRecipient) {
   }
 }
 
-function toneHint(tone: RewriteTone) {
+function toneHint(tone: RewriteTone): string {
   if (tone === "soft") {
     return "The user's preferred tone is SOFT — extra gentle and emotionally safe.";
   }
+
   if (tone === "calm") {
     return "The user's preferred tone is CALM — neutral and grounded.";
   }
+
   if (tone === "clear") {
     return "The user's preferred tone is CLEAR — direct but respectful.";
   }
+
   return "";
 }
 
@@ -143,7 +153,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -155,10 +165,15 @@ async function audit(
   } catch {}
 }
 
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   try {
     const now = Date.now();
-    const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+    const windowStartSeconds =
+      Math.floor(now / 1000 / windowSeconds) * windowSeconds;
     const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
     const { data: row } = await supabaseAdmin
@@ -190,13 +205,14 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
       .eq("window_seconds", windowSeconds);
 
     if (updateError) return true;
+
     return nextCount <= limit;
   } catch {
     return true;
   }
 }
 
-async function getUsedToday(userId: string) {
+async function getUsedToday(userId: string): Promise<number> {
   const [startIso, endIso] = laDayBoundsUtcIso(new Date());
 
   const { count, error } = await supabaseAdmin
@@ -213,15 +229,20 @@ async function getUsedToday(userId: string) {
   return count ?? 0;
 }
 
-async function recordUsage(userId: string) {
-  const { error } = await supabaseAdmin.from("rewrite_usage").insert({ user_id: userId });
+async function recordUsage(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("rewrite_usage")
+    .insert({ user_id: userId });
 
   if (error) {
     throw new Error("Failed to record rewrite usage");
   }
 }
 
-async function getFreeDailyUsedByEmail(email: string, date = new Date()) {
+async function getFreeDailyUsedByEmail(
+  email: string,
+  date = new Date()
+): Promise<number> {
   const normalizedEmail = normalizeEmail(email);
   const day = formatLA_YYYY_MM_DD(date);
 
@@ -239,7 +260,10 @@ async function getFreeDailyUsedByEmail(email: string, date = new Date()) {
   return data?.rewrite_count ?? 0;
 }
 
-async function incrementFreeDailyUsageByEmail(email: string, date = new Date()) {
+async function incrementFreeDailyUsageByEmail(
+  email: string,
+  date = new Date()
+): Promise<void> {
   const normalizedEmail = normalizeEmail(email);
   const day = formatLA_YYYY_MM_DD(date);
 
@@ -258,41 +282,46 @@ export async function POST(req: Request) {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     const ip = getClientIp(req) || "unknown";
-    const okUserRate = await isRateLimitAllowed(`user:${authUser.id}:rewrite`, 60, 30);
+    const okUserRate = await isRateLimitAllowed(
+      `user:${authUser.id}:rewrite`,
+      60,
+      30
+    );
     const okIpRate = await isRateLimitAllowed(`ip:${ip}:rewrite`, 60, 60);
 
     if (!okUserRate || !okIpRate) {
-      return jsonNoStore({ error: "Too many requests" }, { status: 429 });
+      return tooManyRequests("Too many requests");
     }
 
     let body: RewriteRequestBody = {};
-try {
-  body = (await req.json()) as RewriteRequestBody;
-} catch {
-  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
-}
+
+    try {
+      body = (await req.json()) as RewriteRequestBody;
+    } catch {
+      return badRequest("Invalid request body");
+    }
 
     const messageRaw = body.message;
     const recipient = parseRecipient(body.recipient);
     const tone = parseTone(body.tone);
 
     if (typeof messageRaw !== "string") {
-      return jsonNoStore({ error: "Message is required" }, { status: 400 });
+      return badRequest("Message is required");
     }
 
     const trimmedMessage = messageRaw.trim();
 
     if (!trimmedMessage) {
-      return jsonNoStore({ error: "Message is required" }, { status: 400 });
+      return badRequest("Message is required");
     }
 
     if (trimmedMessage.length > MAX_MESSAGE_CHARS) {
       return jsonNoStore(
-        { error: `Message is too long (max ${MAX_MESSAGE_CHARS} characters)` },
+        { ok: false, error: `Message is too long (max ${MAX_MESSAGE_CHARS} characters)` },
         { status: 413 }
       );
     }
@@ -300,30 +329,29 @@ try {
     const normalizedEmail = normalizeEmail(authUser.email ?? "");
 
     if (!normalizedEmail) {
-      return jsonNoStore({ error: "Missing user email" }, { status: 400 });
+      return badRequest("Missing user email");
     }
 
     if (!authUser.isPro) {
-  const usedToday = await getUsedToday(authUser.id);
-  const emailUsedToday = await getFreeDailyUsedByEmail(normalizedEmail);
+      const usedToday = await getUsedToday(authUser.id);
+      const emailUsedToday = await getFreeDailyUsedByEmail(normalizedEmail);
 
-  if (usedToday >= DAILY_FREE_LIMIT || emailUsedToday >= DAILY_FREE_LIMIT) {
-    await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
-      usedToday,
-      emailUsedToday,
-      limit: DAILY_FREE_LIMIT,
-      normalized_email: normalizedEmail,
-    });
+      if (
+        usedToday >= DAILY_FREE_LIMIT ||
+        emailUsedToday >= DAILY_FREE_LIMIT
+      ) {
+        await audit("REWRITE_LIMIT_BLOCKED", authUser.id, req, {
+          usedToday,
+          emailUsedToday,
+          limit: DAILY_FREE_LIMIT,
+          normalized_email: normalizedEmail,
+        });
 
-    return jsonNoStore(
-      {
-        error: "You’ve used all 3 free rewrites for today. Upgrade to Pro for unlimited rewrites.",
-        code: "FREE_LIMIT_REACHED",
-      },
-      { status: 429 }
-    );
-  }
-}
+        return tooManyRequests(
+          "You’ve used all 3 free rewrites for today. Upgrade to Pro for unlimited rewrites."
+        );
+      }
+    }
 
     const prompt = `
 You are an expert communication and relationship coach. Rewrite the user's message into healthier versions and analyze emotional tone.
@@ -371,7 +399,7 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
 
     if (!raw) {
       return jsonNoStore(
-        { error: "AI response was empty. Please try again." },
+        { ok: false, error: "AI response was empty. Please try again." },
         { status: 502 }
       );
     }
@@ -379,12 +407,14 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const soft = extractBlock(raw, "SOFT");
     const calm = extractBlock(raw, "CALM");
     const clear = extractBlock(raw, "CLEAR");
+
     if (!soft || !calm || !clear) {
-  return jsonNoStore(
-    { error: "AI response format was invalid. Please try again." },
-    { status: 502 }
-  );
-}
+      return jsonNoStore(
+        { ok: false, error: "AI response format was invalid. Please try again." },
+        { status: 502 }
+      );
+    }
+
     const toneScoreRaw = extractBlock(raw, "TONE_SCORE");
     const emotionImpact = extractBlock(raw, "EMOTION_IMPACT");
 
@@ -395,8 +425,8 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     await recordUsage(authUser.id);
 
     if (!authUser.isPro) {
-    await incrementFreeDailyUsageByEmail(normalizedEmail);
-}
+      await incrementFreeDailyUsageByEmail(normalizedEmail);
+    }
 
     await audit("REWRITE_OK", authUser.id, req, {
       is_pro: authUser.isPro,
@@ -406,6 +436,7 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const usedTodayAfter = authUser.isPro ? null : await getUsedToday(authUser.id);
 
     return jsonNoStore({
+      ok: true,
       soft,
       calm,
       clear,
@@ -417,22 +448,21 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
       free_limit: DAILY_FREE_LIMIT,
       rewrites_today: usedTodayAfter,
     });
-  } catch (err: unknown) {
+  } catch (err) {
     const message =
       err instanceof Error ? err.message : "Server error while rewriting message";
 
     if (
-  message === "Usage check failed" ||
-  message === "Daily email usage check failed" ||
-  message === "Failed to record rewrite usage" ||
-  message === "Failed to record daily email usage"
-) {
-      return jsonNoStore({ error: message }, { status: 500 });
+      message === "Usage check failed" ||
+      message === "Daily email usage check failed" ||
+      message === "Failed to record rewrite usage" ||
+      message === "Failed to record daily email usage"
+    ) {
+      return serverError(message);
     }
 
-    return jsonNoStore(
-      { error: "Server error while rewriting message" },
-      { status: 500 }
-    );
+    console.error("REWRITE_ERROR", { message });
+
+    return serverError("Server error while rewriting message");
   }
 }

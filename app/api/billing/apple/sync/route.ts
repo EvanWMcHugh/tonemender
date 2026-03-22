@@ -1,11 +1,17 @@
-import { NextResponse } from "next/server";
 import {
   Environment,
   SignedDataVerifier,
 } from "@apple/app-store-server-library";
 
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 
 export const runtime = "nodejs";
 
@@ -25,26 +31,11 @@ type SyncBody = {
   signedTransaction?: unknown;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function requireEnv(name: string, value: string | undefined) {
+function requireEnv(name: string, value: string | undefined): string {
   if (!value) {
     throw new Error(`Missing required env var: ${name}`);
   }
+
   return value;
 }
 
@@ -69,7 +60,7 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
       const data = await fs.readFile(fullPath);
       buffers.push(data);
     } catch {
-      // ignore missing optional cert files
+      // Ignore missing optional cert files.
     }
   }
 
@@ -80,7 +71,7 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
   return buffers;
 }
 
-async function makeVerifier() {
+async function makeVerifier(): Promise<SignedDataVerifier> {
   const resolvedBundleId = requireEnv("APPLE_BUNDLE_ID", bundleId);
   const roots = await loadAppleRootCertificates();
 
@@ -98,7 +89,9 @@ async function makeVerifier() {
   );
 }
 
-function resolvePlanType(productId?: string | null): "monthly" | "yearly" | null {
+function resolvePlanType(
+  productId?: string | null
+): "monthly" | "yearly" | null {
   if (productId === MONTHLY_PRODUCT_ID) return "monthly";
   if (productId === YEARLY_PRODUCT_ID) return "yearly";
   return null;
@@ -109,14 +102,15 @@ export async function POST(req: Request) {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     let body: SyncBody = {};
+
     try {
       body = (await req.json()) as SyncBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
     const signedTransaction =
@@ -125,27 +119,33 @@ export async function POST(req: Request) {
         : "";
 
     if (!signedTransaction) {
-      return jsonNoStore({ error: "Missing signedTransaction" }, { status: 400 });
+      return badRequest("Missing signedTransaction");
     }
 
     const verifier = await makeVerifier();
     const decoded = await verifier.verifyAndDecodeTransaction(signedTransaction);
 
-    const productId = typeof decoded.productId === "string" ? decoded.productId : null;
+    const productId =
+      typeof decoded.productId === "string" ? decoded.productId : null;
+
     const transactionId =
       decoded.transactionId != null ? String(decoded.transactionId) : null;
+
     const originalTransactionId =
       decoded.originalTransactionId != null
         ? String(decoded.originalTransactionId)
         : null;
+
     const purchaseDate =
       decoded.purchaseDate != null
         ? new Date(Number(decoded.purchaseDate)).toISOString()
         : null;
+
     const expiresDate =
       decoded.expiresDate != null
         ? new Date(Number(decoded.expiresDate)).toISOString()
         : null;
+
     const revocationDate =
       decoded.revocationDate != null
         ? new Date(Number(decoded.revocationDate)).toISOString()
@@ -154,10 +154,7 @@ export async function POST(req: Request) {
     const planType = resolvePlanType(productId);
 
     if (!productId || !planType) {
-      return jsonNoStore(
-        { error: "Unknown subscription product.", productId },
-        { status: 400 }
-      );
+      return badRequest("Unknown subscription product.");
     }
 
     const active =
@@ -187,8 +184,10 @@ export async function POST(req: Request) {
       );
 
     if (upsertError) {
-      console.error("IOS BILLING SYNC UPSERT ERROR:", upsertError);
-      return jsonNoStore({ error: "Failed to save transaction" }, { status: 500 });
+      console.error("APPLE_SYNC_TRANSACTION_UPSERT_FAILED", {
+        message: upsertError.message,
+      });
+      return serverError("Failed to save transaction");
     }
 
     const { error: userUpdateError } = await supabaseAdmin
@@ -200,8 +199,10 @@ export async function POST(req: Request) {
       .eq("id", authUser.id);
 
     if (userUpdateError) {
-      console.error("IOS BILLING USER UPDATE ERROR:", userUpdateError);
-      return jsonNoStore({ error: "Failed to update user plan" }, { status: 500 });
+      console.error("APPLE_SYNC_USER_UPDATE_FAILED", {
+        message: userUpdateError.message,
+      });
+      return serverError("Failed to update user plan");
     }
 
     return jsonNoStore({
@@ -213,7 +214,10 @@ export async function POST(req: Request) {
       expires_date: expiresDate,
     });
   } catch (error) {
-    console.error("IOS BILLING SYNC ERROR:", error);
-    return jsonNoStore({ error: "Billing sync failed" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("APPLE_SYNC_ERROR", { message });
+
+    return serverError("Billing sync failed");
   }
 }

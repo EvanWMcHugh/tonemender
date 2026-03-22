@@ -1,6 +1,11 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 export const runtime = "nodejs";
 
@@ -8,53 +13,62 @@ type DeleteDraftBody = {
   draftId?: unknown;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     let body: DeleteDraftBody = {};
+
     try {
       body = (await req.json()) as DeleteDraftBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
-    const draftId = body.draftId;
+    const draftId =
+      typeof body.draftId === "string" ? body.draftId.trim() : "";
 
-    if (typeof draftId !== "string" || !draftId.trim()) {
-      return jsonNoStore({ error: "Missing draftId" }, { status: 400 });
+    if (!draftId) {
+      return badRequest("Missing draftId");
     }
 
     const { data, error } = await supabaseAdmin
       .from("messages")
       .delete()
-      .eq("id", draftId.trim())
+      .eq("id", draftId)
       .eq("user_id", authUser.id)
       .select("id")
       .maybeSingle();
 
     if (error) {
-      console.error("DELETE DRAFT ERROR:", error);
-      return jsonNoStore({ error: "Failed to delete draft" }, { status: 500 });
+      console.error("MESSAGES_DELETE_FAILED", {
+        message: error.message,
+        draftId,
+        userId: authUser.id,
+      });
+      return serverError("Failed to delete draft");
     }
 
     if (!data) {
-      return jsonNoStore({ error: "Draft not found" }, { status: 404 });
+      return jsonNoStore(
+        { ok: false, error: "Draft not found" },
+        { status: 404 }
+      );
     }
 
-    return jsonNoStore({ ok: true, deletedId: String(data.id) });
+    return jsonNoStore({
+      ok: true,
+      deletedId: String(data.id),
+    });
   } catch (error) {
-    console.error("DELETE DRAFT ROUTE ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("MESSAGES_DELETE_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

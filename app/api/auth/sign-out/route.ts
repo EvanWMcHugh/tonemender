@@ -1,48 +1,18 @@
-import { NextResponse } from "next/server";
+import { jsonNoStore } from "@/lib/api/responses";
+import { SESSION_COOKIE, buildClearedSessionCookie, getSessionCookie } from "@/lib/auth/cookies";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
-const ANDROID_CLIENT_HEADER = "android";
-
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
-}
-
-// Share cookie across tonemender.com + www.tonemender.com for web only
-function getCookieDomain(req: Request) {
+function getCookieDomain(req: Request): string | undefined {
   const host = req.headers.get("host") || "";
+
   if (
     host === "tonemender.com" ||
     host === "www.tonemender.com" ||
@@ -50,10 +20,15 @@ function getCookieDomain(req: Request) {
   ) {
     return ".tonemender.com";
   }
+
   return undefined;
 }
 
-async function audit(event: string, req: Request, meta: Record<string, unknown> = {}) {
+async function audit(
+  event: string,
+  req: Request,
+  meta: Record<string, unknown> = {}
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: null,
@@ -69,41 +44,52 @@ export async function POST(req: Request) {
   const nowIso = new Date().toISOString();
 
   try {
-    const raw = readCookie(req, SESSION_COOKIE);
+    const rawSessionToken = getSessionCookie(req);
 
-    if (raw) {
-      const hash = sha256Hex(raw);
+    if (rawSessionToken) {
+      const sessionTokenHash = sha256Hex(rawSessionToken);
 
-      try {
-        await supabaseAdmin
+      const { error: revokeError } = await supabaseAdmin
+        .from("sessions")
+        .update({ revoked_at: nowIso })
+        .eq("session_token_hash", sessionTokenHash)
+        .is("revoked_at", null);
+
+      if (revokeError) {
+        const { error: deleteError } = await supabaseAdmin
           .from("sessions")
-          .update({ revoked_at: nowIso })
-          .eq("session_token_hash", hash)
-          .is("revoked_at", null);
-      } catch {
-        try {
-          await supabaseAdmin.from("sessions").delete().eq("session_token_hash", hash);
-        } catch {}
+          .delete()
+          .eq("session_token_hash", sessionTokenHash);
+
+        if (deleteError) {
+          console.warn("SIGN_OUT_SESSION_CLEANUP_FAILED", {
+            revokeMessage: revokeError.message,
+            deleteMessage: deleteError.message,
+          });
+        }
       }
     }
 
-    await audit("SIGN_OUT_OK", req, {});
+    await audit("SIGN_OUT_OK", req);
   } catch (err) {
-    console.warn("SIGN OUT CLEANUP WARNING:", err);
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.warn("SIGN_OUT_CLEANUP_WARNING", { message });
   }
 
   const res = jsonNoStore({ ok: true });
 
   const cookieDomain = isAndroidClient(req) ? undefined : getCookieDomain(req);
 
-  res.cookies.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 0,
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
-  });
+  res.headers.append(
+    "Set-Cookie",
+    buildClearedSessionCookie({
+      path: "/",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      ...(cookieDomain ? { domain: cookieDomain } : {}),
+    })
+  );
 
   return res;
 }

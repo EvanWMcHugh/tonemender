@@ -1,41 +1,34 @@
-// lib/auth/reviewers.ts
+const REVIEWER_EMAILS = {
+  free: "free@tonemender.com",
+  pro: "pro@tonemender.com",
+} as const;
 
-/**
- * Internal reviewer accounts used for controlled review/testing flows.
- *
- * These accounts may be used for:
- * - App Store / Play review access
- * - CAPTCHA bypass
- * - controlled free/pro reviewer experiences
- *
- * Keep this list extremely small and explicit.
- */
-
-const FREE_REVIEWER_EMAIL = "free@tonemender.com";
-const PRO_REVIEWER_EMAIL = "pro@tonemender.com";
+type ReviewerMode = keyof typeof REVIEWER_EMAILS;
 
 function normalizeEmail(email?: string | null): string {
   return (email ?? "").trim().toLowerCase();
 }
 
-export function isFreeReviewer(email?: string | null): boolean {
-  return normalizeEmail(email) === FREE_REVIEWER_EMAIL;
-}
+export function getReviewerMode(email?: string | null): ReviewerMode | null {
+  const normalized = normalizeEmail(email);
 
-export function isProReviewer(email?: string | null): boolean {
-  return normalizeEmail(email) === PRO_REVIEWER_EMAIL;
+  for (const [mode, value] of Object.entries(REVIEWER_EMAILS)) {
+    if (normalized === value) {
+      return mode as ReviewerMode;
+    }
+  }
+
+  return null;
 }
 
 export function isReviewerEmail(email?: string | null): boolean {
-  const normalized = normalizeEmail(email);
-  return normalized === FREE_REVIEWER_EMAIL || normalized === PRO_REVIEWER_EMAIL;
+  return getReviewerMode(email) !== null;
 }
 
-export function getReviewerMode(email?: string | null): "free" | "pro" | null {
-  const normalized = normalizeEmail(email);
+export function isFreeReviewer(email?: string | null): boolean {
+  return getReviewerMode(email) === "free";
+}
 
-  if (normalized === FREE_REVIEWER_EMAIL) return "free";
-  if (normalized === PRO_REVIEWER_EMAIL) return "pro";
-
-  return null;
+export function isProReviewer(email?: string | null): boolean {
+  return getReviewerMode(email) === "pro";
 }

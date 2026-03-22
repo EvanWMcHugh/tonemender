@@ -1,10 +1,15 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import {
   getGooglePlayPackageName,
   getGooglePlaySubscription,
 } from "@/lib/billing/google-play";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 export const runtime = "nodejs";
 
@@ -31,19 +36,15 @@ type GoogleSubscriptionResponse = {
   lineItems?: GoogleLineItem[] | null;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function normalizePlanType(basePlanId: string) {
+function normalizePlanType(
+  basePlanId: string
+): "monthly" | "yearly" | null {
   if (basePlanId === MONTHLY_BASE_PLAN_ID) return "monthly";
   if (basePlanId === YEARLY_BASE_PLAN_ID) return "yearly";
   return null;
 }
 
-function isActiveSubscriptionState(state?: string | null) {
+function isActiveSubscriptionState(state?: string | null): boolean {
   return (
     state === "SUBSCRIPTION_STATE_ACTIVE" ||
     state === "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"
@@ -53,15 +54,17 @@ function isActiveSubscriptionState(state?: string | null) {
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
+
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     let body: VerifyBody = {};
+
     try {
       body = (await req.json()) as VerifyBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
     const purchaseToken =
@@ -72,39 +75,44 @@ export async function POST(req: Request) {
       typeof body.basePlanId === "string" ? body.basePlanId.trim() : "";
 
     if (!purchaseToken) {
-      return jsonNoStore({ error: "Missing purchaseToken" }, { status: 400 });
+      return badRequest("Missing purchaseToken");
     }
 
     if (!productId) {
-      return jsonNoStore({ error: "Missing productId" }, { status: 400 });
+      return badRequest("Missing productId");
     }
 
     if (!basePlanId) {
-      return jsonNoStore({ error: "Missing basePlanId" }, { status: 400 });
+      return badRequest("Missing basePlanId");
     }
 
     if (productId !== PRODUCT_ID) {
-      return jsonNoStore({ error: "Invalid productId" }, { status: 400 });
+      return badRequest("Invalid productId");
     }
 
     const planType = normalizePlanType(basePlanId);
+
     if (!planType) {
-      return jsonNoStore({ error: "Invalid basePlanId" }, { status: 400 });
+      return badRequest("Invalid basePlanId");
     }
 
     const packageName = getGooglePlayPackageName();
 
-    const sub = (await getGooglePlaySubscription({
+    const subscription = (await getGooglePlaySubscription({
       packageName,
       purchaseToken,
     })) as GoogleSubscriptionResponse;
 
     const subscriptionState =
-      typeof sub?.subscriptionState === "string" ? sub.subscriptionState : null;
+      typeof subscription?.subscriptionState === "string"
+        ? subscription.subscriptionState
+        : null;
 
-    const lineItems = Array.isArray(sub?.lineItems) ? sub.lineItems : [];
+    const lineItems = Array.isArray(subscription?.lineItems)
+      ? subscription.lineItems
+      : [];
 
-    const matchingLineItem = lineItems.find((item: GoogleLineItem) => {
+    const matchingLineItem = lineItems.find((item) => {
       return (
         item?.productId === PRODUCT_ID &&
         item?.offerDetails?.basePlanId === basePlanId
@@ -112,15 +120,13 @@ export async function POST(req: Request) {
     });
 
     if (!matchingLineItem) {
-      return jsonNoStore(
-        { error: "Purchase does not match requested product/base plan" },
-        { status: 400 }
-      );
+      return badRequest("Purchase does not match requested product/base plan");
     }
 
     if (!isActiveSubscriptionState(subscriptionState)) {
       return jsonNoStore(
         {
+          ok: false,
           error: "Subscription is not active",
           subscriptionState,
         },
@@ -128,9 +134,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Optional but strongly recommended:
-    // also persist google purchase linkage columns if your schema has them.
-    const { error: updateErr } = await supabaseAdmin
+    const { error: updateError } = await supabaseAdmin
       .from("users")
       .update({
         is_pro: true,
@@ -142,9 +146,11 @@ export async function POST(req: Request) {
       })
       .eq("id", authUser.id);
 
-    if (updateErr) {
-      console.error("GOOGLE VERIFY: user update error:", updateErr);
-      return jsonNoStore({ error: "Failed to update user" }, { status: 500 });
+    if (updateError) {
+      console.error("GOOGLE_VERIFY_USER_UPDATE_FAILED", {
+        message: updateError.message,
+      });
+      return serverError("Failed to update user");
     }
 
     return jsonNoStore({
@@ -152,10 +158,13 @@ export async function POST(req: Request) {
       message: "Purchase verified",
       planType,
       subscriptionState,
-      expiryTime: matchingLineItem?.expiryTime ?? null,
+      expiryTime: matchingLineItem.expiryTime ?? null,
     });
-  } catch (e: unknown) {
-    console.error("GOOGLE VERIFY ERROR:", e);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("GOOGLE_VERIFY_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

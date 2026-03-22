@@ -35,15 +35,12 @@ export function generateToken(bytes: number = DEFAULT_TOKEN_BYTES): string {
  * This helper does not normalize or transform input.
  */
 export function sha256Hex(input: string | Buffer): string {
-  if (
-    (typeof input === "string" && input.length === 0) ||
-    (Buffer.isBuffer(input) && input.length === 0)
-  ) {
-    throw new Error("sha256Hex: input must be non-empty");
-  }
-
   if (typeof input !== "string" && !Buffer.isBuffer(input)) {
     throw new Error("sha256Hex: input must be a string or Buffer");
+  }
+
+  if (input.length === 0) {
+    throw new Error("sha256Hex: input must be non-empty");
   }
 
   return crypto.createHash("sha256").update(input).digest("hex");

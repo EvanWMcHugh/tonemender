@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
+import { jsonNoStore, notFound } from "@/lib/api/responses";
+import { getSessionCookie } from "@/lib/auth/cookies";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp } from "@/lib/request/client-meta";
 import { sha256Hex } from "@/lib/security/crypto";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
 const DEBUG_KEY = process.env.DEBUG_KEY || "";
 const ENABLE_DEBUG_ROUTES = process.env.ENABLE_DEBUG_ROUTES === "true";
 const DEBUG_IP_ALLOWLIST = (process.env.DEBUG_IP_ALLOWLIST || "")
@@ -12,60 +13,46 @@ const DEBUG_IP_ALLOWLIST = (process.env.DEBUG_IP_ALLOWLIST || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function isDev() {
+function isDev(): boolean {
   return process.env.NODE_ENV === "development";
 }
 
 function deny() {
-  return jsonNoStore({ error: "Not found" }, { status: 404 });
+  return notFound("Not found");
 }
 
-function requireDebugKey(req: Request) {
+function hasValidDebugKey(req: Request): boolean {
   if (!DEBUG_KEY) return true;
-  const k = req.headers.get("x-debug-key") || "";
-  return k === DEBUG_KEY;
+
+  const key = req.headers.get("x-debug-key") || "";
+  return key === DEBUG_KEY;
 }
 
-function requireIpAllowlist(req: Request) {
+function isIpAllowed(req: Request): boolean {
   if (DEBUG_IP_ALLOWLIST.length === 0) return true;
+
   const ip = getClientIp(req);
   if (!ip) return false;
+
   return DEBUG_IP_ALLOWLIST.includes(ip);
 }
 
-function isExpired(expiresAt: string | null | undefined) {
+function isExpired(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return true;
-  const t = new Date(expiresAt).getTime();
-  return Number.isNaN(t) || t <= Date.now();
+
+  const timestamp = new Date(expiresAt).getTime();
+  return Number.isNaN(timestamp) || timestamp <= Date.now();
 }
 
 export async function GET(req: Request) {
   if (!isDev() || !ENABLE_DEBUG_ROUTES) return deny();
-  if (!requireDebugKey(req)) return deny();
-  if (!requireIpAllowlist(req)) return deny();
+  if (!hasValidDebugKey(req)) return deny();
+  if (!isIpAllowed(req)) return deny();
 
-  const raw = readCookie(req, SESSION_COOKIE);
-  const sessionExists = Boolean(raw);
+  const rawSessionToken = getSessionCookie(req);
+  const sessionExists = Boolean(rawSessionToken);
 
-  if (!raw) {
+  if (!rawSessionToken) {
     return jsonNoStore({
       ok: true,
       env: "development",
@@ -76,15 +63,15 @@ export async function GET(req: Request) {
     });
   }
 
-  const hash = sha256Hex(raw);
+  const sessionTokenHash = sha256Hex(rawSessionToken);
 
-  const { data: session, error: sErr } = await supabaseAdmin
+  const { data: session, error: sessionError } = await supabaseAdmin
     .from("sessions")
     .select("id,user_id,expires_at,last_seen_at,revoked_at,ip,user_agent,device_name")
-    .eq("session_token_hash", hash)
+    .eq("session_token_hash", sessionTokenHash)
     .maybeSingle();
 
-  if (sErr || !session?.user_id) {
+  if (sessionError || !session?.user_id) {
     return jsonNoStore({
       ok: true,
       env: "development",
@@ -107,9 +94,16 @@ export async function GET(req: Request) {
   }
 
   if (isExpired(session.expires_at)) {
-    try {
-      await supabaseAdmin.from("sessions").delete().eq("id", session.id);
-    } catch {}
+    const { error: deleteError } = await supabaseAdmin
+      .from("sessions")
+      .delete()
+      .eq("id", session.id);
+
+    if (deleteError) {
+      console.warn("DEBUG_SESSION_EXPIRED_DELETE_FAILED", {
+        message: deleteError.message,
+      });
+    }
 
     return jsonNoStore({
       ok: true,
@@ -121,18 +115,28 @@ export async function GET(req: Request) {
     });
   }
 
-  const { data: user } = await supabaseAdmin
+  const { data: user, error: userError } = await supabaseAdmin
     .from("users")
     .select("id,email,is_pro,plan_type,disabled_at,deleted_at,last_login_at")
     .eq("id", session.user_id)
     .maybeSingle();
 
-  try {
-    await supabaseAdmin
-      .from("sessions")
-      .update({ last_seen_at: new Date().toISOString() })
-      .eq("id", session.id);
-  } catch {}
+  const { error: updateError } = await supabaseAdmin
+    .from("sessions")
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq("id", session.id);
+
+  if (updateError) {
+    console.warn("DEBUG_SESSION_LAST_SEEN_UPDATE_FAILED", {
+      message: updateError.message,
+    });
+  }
+
+  if (userError) {
+    console.warn("DEBUG_SESSION_USER_LOOKUP_FAILED", {
+      message: userError.message,
+    });
+  }
 
   return jsonNoStore({
     ok: true,

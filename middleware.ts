@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const SESSION_COOKIE = "tm_session";
+import { SESSION_COOKIE } from "@/lib/auth/cookies";
 
-function isPublicPath(pathname: string) {
+function isPublicPath(pathname: string): boolean {
   if (
     pathname === "/landing" ||
     pathname === "/sign-in" ||
@@ -18,12 +18,10 @@ function isPublicPath(pathname: string) {
     return true;
   }
 
-  if (pathname === "/blog" || pathname.startsWith("/blog/")) return true;
-
-  return false;
+  return pathname === "/blog" || pathname.startsWith("/blog/");
 }
 
-function isAlwaysAllowed(pathname: string) {
+function isAlwaysAllowed(pathname: string): boolean {
   return (
     pathname.startsWith("/api") ||
     pathname.startsWith("/_next") ||
@@ -38,8 +36,9 @@ function isAlwaysAllowed(pathname: string) {
 export function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
-  if (isAlwaysAllowed(pathname)) return NextResponse.next();
-  if (isPublicPath(pathname)) return NextResponse.next();
+  if (isAlwaysAllowed(pathname) || isPublicPath(pathname)) {
+    return NextResponse.next();
+  }
 
   const session = req.cookies.get(SESSION_COOKIE)?.value ?? null;
 

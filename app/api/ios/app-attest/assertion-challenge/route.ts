@@ -1,27 +1,13 @@
-import { NextResponse } from "next/server";
+import { forbidden, jsonNoStore, serverError } from "@/lib/api/responses";
+import { getClientPlatform } from "@/lib/request/client-meta";
 import { createAppAttestChallenge } from "@/lib/security/app-attest";
 
 export const runtime = "nodejs";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function getPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
 export async function POST(req: Request) {
   try {
-    const platform = getPlatform(req);
-
-    if (platform !== "ios") {
-      return jsonNoStore({ error: "Invalid client platform" }, { status: 403 });
+    if (getClientPlatform(req) !== "ios") {
+      return forbidden("Invalid client platform");
     }
 
     const result = await createAppAttestChallenge({
@@ -29,11 +15,15 @@ export async function POST(req: Request) {
     });
 
     return jsonNoStore({
+      ok: true,
       challengeId: result.challengeId,
       challenge: result.challenge,
     });
   } catch (error) {
-    console.error("APP ATTEST ASSERTION CHALLENGE ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("APP_ATTEST_ASSERTION_CHALLENGE_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

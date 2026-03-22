@@ -1,16 +1,9 @@
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getSessionCookie } from "@/lib/auth/cookies";
 import { isFreeReviewer, isProReviewer } from "@/lib/auth/reviewers";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sha256Hex } from "@/lib/security/crypto";
 
-const SESSION_COOKIE = "tm_session";
 const LAST_SEEN_UPDATE_INTERVAL_MS = 5 * 60 * 1000;
-
-function readCookie(req: Request, name: string): string | null {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-
-  return match ? decodeURIComponent(match[1]) : null;
-}
 
 export type AuthUser = {
   id: string;
@@ -22,7 +15,7 @@ export type AuthUser = {
 export async function getAuthUserFromRequest(
   req: Request
 ): Promise<AuthUser | null> {
-  const rawSessionToken = readCookie(req, SESSION_COOKIE);
+  const rawSessionToken = getSessionCookie(req);
   if (!rawSessionToken) return null;
 
   const sessionTokenHash = sha256Hex(rawSessionToken);
@@ -55,6 +48,7 @@ export async function getAuthUserFromRequest(
   }
 
   const email = String(user.email).trim().toLowerCase();
+
   let isPro = Boolean(user.is_pro);
   let planType = user.plan_type ?? null;
 
@@ -70,7 +64,10 @@ export async function getAuthUserFromRequest(
     ? new Date(session.last_seen_at).getTime()
     : 0;
 
-  if (!lastSeenAtMs || Date.now() - lastSeenAtMs >= LAST_SEEN_UPDATE_INTERVAL_MS) {
+  if (
+    !lastSeenAtMs ||
+    Date.now() - lastSeenAtMs >= LAST_SEEN_UPDATE_INTERVAL_MS
+  ) {
     const { error: updateError } = await supabaseAdmin
       .from("sessions")
       .update({ last_seen_at: new Date().toISOString() })
@@ -78,7 +75,7 @@ export async function getAuthUserFromRequest(
       .is("revoked_at", null);
 
     if (updateError) {
-      console.error("Failed to update session last_seen_at", {
+      console.error("AUTH_SESSION_LAST_SEEN_UPDATE_FAILED", {
         code: updateError.code,
         message: updateError.message,
       });

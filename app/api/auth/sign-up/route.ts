@@ -1,58 +1,42 @@
-import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 
+import { badRequest, forbidden, jsonNoStore, serverError, tooManyRequests } from "@/lib/api/responses";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { sendEmail } from "@/lib/email/sendEmail";
-import { generateToken, sha256Hex } from "@/lib/security/crypto";
-import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { sendEmail } from "@/lib/email/send-email";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
-const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME =
   process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
-const IOS_CLIENT_HEADER = "ios";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+type SignUpBody = {
+  email?: unknown;
+  password?: unknown;
+  captchaToken?: unknown;
+  integrityToken?: unknown;
+  integrityRequestHash?: unknown;
+};
 
-function normalizeEmail(email: string) {
+function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
+function isIosClient(req: Request): boolean {
+  return getClientPlatform(req) === "ios";
 }
 
-function isIosClient(req: Request) {
-  return getClientPlatform(req) === IOS_CLIENT_HEADER;
-}
-
-function isValidEmail(email: string) {
+function isValidEmail(email: string): boolean {
   if (email.length > 254) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
 }
 
 async function audit(
@@ -60,7 +44,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -72,9 +56,14 @@ async function audit(
   } catch {}
 }
 
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   const now = Date.now();
-  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartSeconds =
+    Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
   const { data: row } = await supabaseAdmin
@@ -86,54 +75,57 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
     .maybeSingle();
 
   if (!row) {
-    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
       key,
       window_start: windowStartIso,
       window_seconds: windowSeconds,
       count: 1,
     });
 
-    if (insErr) return true;
+    if (insertError) return true;
     return true;
   }
 
-  const next = (row.count ?? 0) + 1;
+  const nextCount = (row.count ?? 0) + 1;
 
-  const { error: updErr } = await supabaseAdmin
+  const { error: updateError } = await supabaseAdmin
     .from("rate_limits")
-    .update({ count: next })
+    .update({ count: nextCount })
     .eq("key", key)
     .eq("window_start", windowStartIso)
     .eq("window_seconds", windowSeconds);
 
-  if (updErr) return true;
-  return next <= limit;
+  if (updateError) return true;
+  return nextCount <= limit;
 }
 
 export async function POST(req: Request) {
   try {
     const rawText = await req.text();
-const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
 
-let body: Record<string, unknown> = {};
-try {
-  body = rawText ? JSON.parse(rawText) : {};
-} catch {
-  return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
-}
+    let body: SignUpBody = {};
 
-    const emailRaw = body?.email;
-    const password = body?.password;
-    const captchaToken = body?.captchaToken;
-    const integrityToken = body?.integrityToken;
-    const integrityRequestHash = body?.integrityRequestHash;
+    try {
+      body = rawText ? (JSON.parse(rawText) as SignUpBody) : {};
+    } catch {
+      return badRequest("Invalid request body");
+    }
 
-    if (typeof emailRaw !== "string" || !emailRaw) {
-      return jsonNoStore({ error: "Missing email" }, { status: 400 });
+    const {
+      email: emailRaw,
+      password,
+      captchaToken,
+      integrityToken,
+      integrityRequestHash,
+    } = body;
+
+    if (typeof emailRaw !== "string" || !emailRaw.trim()) {
+      return badRequest("Missing email");
     }
 
     if (typeof password !== "string" || !password) {
-      return jsonNoStore({ error: "Missing password" }, { status: 400 });
+      return badRequest("Missing password");
     }
 
     const email = normalizeEmail(emailRaw);
@@ -142,7 +134,11 @@ try {
     const iosClient = isIosClient(req);
 
     const ipAllowed = await isRateLimitAllowed(`ip:${ip}:sign_up`, 60, 10);
-    const emailAllowed = await isRateLimitAllowed(`email:${email}:sign_up`, 300, 5);
+    const emailAllowed = await isRateLimitAllowed(
+      `email:${email}:sign_up`,
+      300,
+      5
+    );
 
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_UP_RATE_LIMITED", null, req, {
@@ -151,28 +147,31 @@ try {
         iosClient,
       });
 
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
     if (!isValidEmail(email)) {
-      return jsonNoStore({ error: "Invalid email" }, { status: 400 });
+      return badRequest("Invalid email");
     }
 
     if (password.length < 8) {
-      return jsonNoStore({ error: "Password must be at least 8 characters" }, { status: 400 });
+      return badRequest("Password must be at least 8 characters");
     }
 
     if (password.length > 200) {
-      return jsonNoStore({ error: "Password is too long" }, { status: 400 });
+      return badRequest("Password is too long");
     }
 
     if (androidClient) {
       if (typeof integrityToken !== "string" || !integrityToken) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
-      if (typeof integrityRequestHash !== "string" || !integrityRequestHash) {
-        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      if (
+        typeof integrityRequestHash !== "string" ||
+        !integrityRequestHash
+      ) {
+        return badRequest("Integrity request hash required");
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
@@ -190,10 +189,13 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
             payload:
-              process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
@@ -204,7 +206,7 @@ try {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
       const integrity = await verifyIosAppAttestAssertion({
@@ -225,44 +227,50 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
             payload:
-              process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
       }
     } else {
       if (typeof captchaToken !== "string" || !captchaToken) {
-        return jsonNoStore({ error: "Captcha verification required" }, { status: 400 });
+        return badRequest("Captcha verification required");
       }
 
-      const okCaptcha = await verifyTurnstile(captchaToken, getClientIp(req));
-      if (!okCaptcha) {
+      const captchaOk = await verifyTurnstile(captchaToken, getClientIp(req));
+
+      if (!captchaOk) {
         await audit("SIGN_UP_CAPTCHA_FAILED", null, req, { email });
-        return jsonNoStore({ error: "Captcha verification failed" }, { status: 403 });
+        return forbidden("Captcha verification failed");
       }
     }
 
-    const { data: existing, error: existErr } = await supabaseAdmin
+    const { data: existing, error: existingError } = await supabaseAdmin
       .from("users")
       .select("id")
       .eq("email", email)
       .maybeSingle();
 
-    if (existErr) {
-      console.error("SIGN UP: exist check error:", existErr);
-      return jsonNoStore({ error: "Server error" }, { status: 500 });
+    if (existingError) {
+      console.error("SIGN_UP_EXIST_CHECK_FAILED", {
+        message: existingError.message,
+      });
+      return serverError("Server error");
     }
 
     if (existing) {
-      return jsonNoStore({ error: "Email already in use" }, { status: 409 });
+      return jsonNoStore({ ok: false, error: "Email already in use" }, { status: 409 });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const { data: user, error: insertErr } = await supabaseAdmin
+    const { data: user, error: insertError } = await supabaseAdmin
       .from("users")
       .insert({
         email,
@@ -272,27 +280,33 @@ try {
       .select("id,email")
       .single();
 
-    if (insertErr || !user?.id) {
-      console.error("SIGN UP: user insert error:", insertErr);
-      return jsonNoStore({ error: "Sign up failed" }, { status: 400 });
+    if (insertError || !user?.id) {
+      console.error("SIGN_UP_USER_INSERT_FAILED", {
+        message: insertError?.message ?? "Missing user after insert",
+      });
+      return badRequest("Sign up failed");
     }
 
     const userId = String(user.id);
 
-    try {
-      await supabaseAdmin
-        .from("auth_tokens")
-        .delete()
-        .eq("user_id", userId)
-        .eq("purpose", "email_verify")
-        .is("consumed_at", null);
-    } catch {}
+    const { error: deleteError } = await supabaseAdmin
+      .from("auth_tokens")
+      .delete()
+      .eq("user_id", userId)
+      .eq("purpose", "email_verify")
+      .is("consumed_at", null);
+
+    if (deleteError) {
+      console.warn("SIGN_UP_DELETE_OLD_VERIFY_TOKENS_FAILED", {
+        message: deleteError.message,
+      });
+    }
 
     const rawToken = generateToken(32);
     const tokenHash = sha256Hex(rawToken);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 60).toISOString();
+    const expiresAtIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
-    const { error: tokenErr } = await supabaseAdmin.from("auth_tokens").insert({
+    const { error: tokenError } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
       email,
       token_hash: tokenHash,
@@ -303,54 +317,63 @@ try {
       data: {},
     });
 
-    if (tokenErr) {
-      console.error("SIGN UP: token insert error:", tokenErr);
+    if (tokenError) {
+      console.error("SIGN_UP_VERIFY_TOKEN_INSERT_FAILED", {
+        message: tokenError.message,
+      });
 
-      try {
-        await supabaseAdmin.from("users").delete().eq("id", userId);
-      } catch (rollbackErr) {
-        console.error("SIGN UP: rollback delete user failed:", rollbackErr);
+      const { error: rollbackError } = await supabaseAdmin
+        .from("users")
+        .delete()
+        .eq("id", userId);
+
+      if (rollbackError) {
+        console.error("SIGN_UP_ROLLBACK_DELETE_USER_FAILED", {
+          message: rollbackError.message,
+        });
       }
 
-      return jsonNoStore({ error: "Could not create verification link" }, { status: 500 });
+      return serverError("Could not create verification link");
     }
 
     const appUrl = process.env.APP_URL;
     if (!appUrl) {
-      console.error("SIGN UP: Missing APP_URL");
-      return jsonNoStore({ error: "Server error" }, { status: 500 });
+      console.error("SIGN_UP_MISSING_APP_URL");
+      return serverError("Server error");
     }
 
-    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(rawToken)}`;
+    const confirmUrl = `${appUrl}/confirm?type=email-verify&token=${encodeURIComponent(
+      rawToken
+    )}`;
 
-    try {
-      await sendEmail({
-        to: email,
-        subject: "Confirm your ToneMender email",
-        html: `
-          <div style="font-family:Arial,sans-serif;line-height:1.4">
-            <h2>Confirm your email</h2>
-            <p>Tap to confirm your email and activate your ToneMender account:</p>
-            <p>
-              <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
-                Confirm email
-              </a>
-            </p>
-            <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
-            <p style="color:#666;font-size:12px">If you didn’t request this, you can ignore this email.</p>
-          </div>
-        `,
-      });
-    } catch (emailErr) {
-      console.error("SIGN UP: sendEmail failed:", emailErr);
+    const emailSent = await sendEmail({
+      to: email,
+      subject: "Confirm your ToneMender email",
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.4">
+          <h2>Confirm your email</h2>
+          <p>Tap to confirm your email and activate your ToneMender account:</p>
+          <p>
+            <a href="${confirmUrl}" style="display:inline-block;padding:10px 14px;border-radius:8px;background:#111;color:#fff;text-decoration:none">
+              Confirm email
+            </a>
+          </p>
+          <p style="color:#666;font-size:12px">This link expires in 1 hour.</p>
+          <p style="color:#666;font-size:12px">If you didn’t request this, you can ignore this email.</p>
+        </div>
+      `,
+    });
+
+    if (!emailSent) {
       await audit("SIGN_UP_EMAIL_SEND_FAILED", userId, req, {
-  email,
-  androidClient,
-  iosClient,
-});
+        email,
+        androidClient,
+        iosClient,
+      });
 
       return jsonNoStore(
         {
+          ok: false,
           error:
             "Account created, but we couldn't send the confirmation email. Please try again or use “Resend confirmation.”",
         },
@@ -364,9 +387,12 @@ try {
       iosClient,
     });
 
-    return jsonNoStore({ success: true });
-  } catch (e) {
-    console.error("SIGN UP ERROR:", e);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    return jsonNoStore({ ok: true, success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("SIGN_UP_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

@@ -1,21 +1,15 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { jsonNoStore, serverError, unauthorized } from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 export const runtime = "nodejs";
-
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
 
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     const { error } = await supabaseAdmin
@@ -24,13 +18,19 @@ export async function POST(req: Request) {
       .eq("user_id", authUser.id);
 
     if (error) {
-      console.error("DELETE ALL DRAFTS ERROR:", error);
-      return jsonNoStore({ error: "Failed to delete drafts" }, { status: 500 });
+      console.error("MESSAGES_DELETE_ALL_FAILED", {
+        message: error.message,
+        userId: authUser.id,
+      });
+      return serverError("Failed to delete drafts");
     }
 
     return jsonNoStore({ ok: true });
   } catch (error) {
-    console.error("DELETE ALL DRAFTS ROUTE ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("MESSAGES_DELETE_ALL_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

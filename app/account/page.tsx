@@ -208,7 +208,7 @@ const resetDeleteCaptchaState = useCallback(() => {
   }
 
   async function openBillingPortal() {
-    const res = await fetch("/api/billing/portal", {
+    const res = await fetch("/api/billing/stripe/portal", {
       method: "POST",
       cache: "no-store",
     });

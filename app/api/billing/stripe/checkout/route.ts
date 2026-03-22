@@ -1,7 +1,15 @@
-import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+
+import {
+  badRequest,
+  forbidden,
+  jsonNoStore,
+  serverError,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 
 export const runtime = "nodejs";
 
@@ -16,20 +24,9 @@ type CheckoutBody = {
   type?: unknown;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
-}
-
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
+function parsePlanType(value: unknown): "monthly" | "yearly" | null {
+  if (value === "monthly" || value === "yearly") return value;
+  return null;
 }
 
 async function audit(
@@ -37,7 +34,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -49,59 +46,57 @@ async function audit(
   } catch {}
 }
 
-function parsePlanType(value: unknown): "monthly" | "yearly" | null {
-  if (value === "monthly" || value === "yearly") return value;
-  return null;
-}
-
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
+
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     let body: CheckoutBody = {};
+
     try {
       body = (await req.json()) as CheckoutBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
     const planType = parsePlanType(body.type);
+
     if (!planType) {
-      return jsonNoStore({ error: "Invalid plan type" }, { status: 400 });
+      return badRequest("Invalid plan type");
     }
 
-    const PRICE_MONTHLY = process.env.STRIPE_PRICE_MONTHLY;
-    const PRICE_YEARLY = process.env.STRIPE_PRICE_YEARLY;
-    const priceId = planType === "yearly" ? PRICE_YEARLY : PRICE_MONTHLY;
+    const priceMonthly = process.env.STRIPE_PRICE_MONTHLY;
+    const priceYearly = process.env.STRIPE_PRICE_YEARLY;
+    const priceId = planType === "yearly" ? priceYearly : priceMonthly;
 
     if (!priceId) {
-      return jsonNoStore({ error: "Missing Stripe price ID" }, { status: 500 });
+      return serverError("Missing Stripe price ID");
     }
 
     const appUrl = process.env.APP_URL;
     if (!appUrl) {
-      return jsonNoStore({ error: "Server misconfigured" }, { status: 500 });
+      return serverError("Server misconfigured");
     }
 
-    const { data: user, error: userErr } = await supabaseAdmin
+    const { data: user, error: userError } = await supabaseAdmin
       .from("users")
       .select("email,stripe_customer_id,disabled_at,deleted_at,is_pro,plan_type")
       .eq("id", authUser.id)
       .maybeSingle();
 
-    if (userErr || !user) {
-      return jsonNoStore({ error: "User lookup failed" }, { status: 500 });
+    if (userError || !user) {
+      return serverError("User lookup failed");
     }
 
     if (user.disabled_at || user.deleted_at) {
-      return jsonNoStore({ error: "Account unavailable" }, { status: 403 });
+      return forbidden("Account unavailable");
     }
 
     if (user.is_pro) {
-      return jsonNoStore({ error: "Already subscribed" }, { status: 409 });
+      return jsonNoStore({ ok: false, error: "Already subscribed" }, { status: 409 });
     }
 
     let customerId: string | null = user.stripe_customer_id ?? null;
@@ -116,12 +111,12 @@ export async function POST(req: Request) {
       customerId = customer.id;
       createdCustomerId = customer.id;
 
-      const { error: updErr } = await supabaseAdmin
+      const { error: updateError } = await supabaseAdmin
         .from("users")
         .update({ stripe_customer_id: customerId })
         .eq("id", authUser.id);
 
-      if (updErr) {
+      if (updateError) {
         await audit("STRIPE_CUSTOMER_SAVE_FAILED", authUser.id, req, {
           createdCustomerId,
           planType,
@@ -129,11 +124,16 @@ export async function POST(req: Request) {
 
         try {
           await stripe.customers.del(customerId);
-        } catch (cleanupErr) {
-          console.error("CHECKOUT customer cleanup failed:", cleanupErr);
+        } catch (cleanupError) {
+          const message =
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError);
+
+          console.error("STRIPE_CHECKOUT_CUSTOMER_CLEANUP_FAILED", { message });
         }
 
-        return jsonNoStore({ error: "Failed to initialize billing" }, { status: 500 });
+        return serverError("Failed to initialize billing");
       }
     }
 
@@ -144,11 +144,17 @@ export async function POST(req: Request) {
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${appUrl}/account?success=true`,
       cancel_url: `${appUrl}/upgrade?canceled=true`,
-      metadata: { userId: authUser.id, planType },
+      metadata: {
+        userId: authUser.id,
+        planType,
+      },
     });
 
     if (!session.url) {
-      return jsonNoStore({ error: "Failed to create checkout session" }, { status: 502 });
+      return jsonNoStore(
+        { ok: false, error: "Failed to create checkout session" },
+        { status: 502 }
+      );
     }
 
     await audit("STRIPE_CHECKOUT_CREATED", authUser.id, req, {
@@ -156,9 +162,15 @@ export async function POST(req: Request) {
       customerId,
     });
 
-    return jsonNoStore({ url: session.url });
+    return jsonNoStore({
+      ok: true,
+      url: session.url,
+    });
   } catch (err) {
-    console.error("CHECKOUT ERROR:", err);
-    return jsonNoStore({ error: "Server error while creating checkout session" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("STRIPE_CHECKOUT_ERROR", { message });
+
+    return serverError("Server error while creating checkout session");
   }
 }

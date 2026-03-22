@@ -10,6 +10,7 @@ export type SessionCookieOptions = {
   secure?: boolean;
   sameSite?: "lax" | "strict" | "none";
   path?: string;
+  domain?: string;
 };
 
 function encodeCookieValue(value: string): string {
@@ -21,7 +22,9 @@ export function readCookie(req: Request, name: string): string | null {
   if (!cookieHeader) return null;
 
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = cookieHeader.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]+)`));
+  const match = cookieHeader.match(
+    new RegExp(`(?:^|;\\s*)${escapedName}=([^;]+)`)
+  );
 
   return match ? decodeURIComponent(match[1]) : null;
 }
@@ -38,6 +41,7 @@ export function buildSetCookieHeader(
     secure = process.env.NODE_ENV === "production",
     sameSite = "lax",
     path = "/",
+    domain,
   }: SessionCookieOptions = {}
 ): string {
   const parts = [
@@ -48,6 +52,10 @@ export function buildSetCookieHeader(
     `Max-Age=${maxAgeSeconds}`,
   ];
 
+  if (domain) {
+    parts.push(`Domain=${domain}`);
+  }
+
   if (secure) {
     parts.push("Secure");
   }
@@ -55,7 +63,10 @@ export function buildSetCookieHeader(
   return parts.join("; ");
 }
 
-export function buildSessionCookie(value: string, options?: SessionCookieOptions): string {
+export function buildSessionCookie(
+  value: string,
+  options?: SessionCookieOptions
+): string {
   return buildSetCookieHeader(SESSION_COOKIE, value, options);
 }
 
@@ -65,6 +76,7 @@ export function buildClearCookieHeader(
     secure = process.env.NODE_ENV === "production",
     sameSite = "lax",
     path = "/",
+    domain,
   }: Omit<SessionCookieOptions, "maxAgeSeconds"> = {}
 ): string {
   const parts = [
@@ -75,6 +87,10 @@ export function buildClearCookieHeader(
     "Max-Age=0",
     "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
   ];
+
+  if (domain) {
+    parts.push(`Domain=${domain}`);
+  }
 
   if (secure) {
     parts.push("Secure");

@@ -1,4 +1,4 @@
-// lib/email/sendEmail.ts
+// lib/email/send-email.ts
 import "server-only";
 import { Resend } from "resend";
 
@@ -9,11 +9,12 @@ type SendEmailOpts = {
 };
 
 const DEFAULT_FROM = "ToneMender <no-reply@tonemender.com>";
-const FROM = sanitizeFromAddress(process.env.EMAIL_FROM || DEFAULT_FROM);
+const FROM = sanitizeHeaderValue(process.env.EMAIL_FROM || DEFAULT_FROM);
 
 const MAX_EMAIL_LENGTH = 320;
 const MAX_SUBJECT_LENGTH = 200;
 const MAX_HTML_LENGTH = 2_000_000;
+const EMAIL_TIMEOUT_MS = 10_000;
 
 let resend: Resend | null = null;
 
@@ -35,12 +36,29 @@ function isProbablyEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function sanitizeSubject(subject: string): string {
-  return String(subject || "").replace(/[\r\n]/g, "").trim();
+function sanitizeHeaderValue(value: string): string {
+  return String(value || "").replace(/[\r\n]/g, "").trim();
 }
 
-function sanitizeFromAddress(value: string): string {
-  return String(value || "").replace(/[\r\n]/g, "").trim();
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = EMAIL_TIMEOUT_MS
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error("Email request timed out"));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 export async function sendEmail({
@@ -57,12 +75,12 @@ export async function sendEmail({
   }
 
   const safeTo = normalizeEmail(to);
-  const safeSubject = sanitizeSubject(subject);
+  const safeSubject = sanitizeHeaderValue(subject);
   const safeHtml = String(html || "").trim();
   const safeFrom = FROM;
 
   if (!safeTo || !safeSubject || !safeHtml || !safeFrom) {
-    console.warn("sendEmail called with missing fields", {
+    console.warn("EMAIL_SEND_INVALID_INPUT", {
       hasTo: Boolean(safeTo),
       hasSubject: Boolean(safeSubject),
       hasHtml: Boolean(safeHtml),
@@ -76,7 +94,7 @@ export async function sendEmail({
     safeSubject.length > MAX_SUBJECT_LENGTH ||
     safeHtml.length > MAX_HTML_LENGTH
   ) {
-    console.warn("sendEmail rejected due to size limits", {
+    console.warn("EMAIL_SEND_REJECTED_SIZE_LIMIT", {
       toLen: safeTo.length,
       subjectLen: safeSubject.length,
       htmlLen: safeHtml.length,
@@ -85,24 +103,26 @@ export async function sendEmail({
   }
 
   if (!isProbablyEmail(safeTo) || /[\r\n,]/.test(safeTo)) {
-    console.warn("sendEmail rejected invalid recipient", {
+    console.warn("EMAIL_SEND_REJECTED_INVALID_RECIPIENT", {
       to: safeTo,
     });
     return false;
   }
 
   if (/[\r\n]/.test(safeFrom)) {
-    console.warn("sendEmail rejected invalid from address");
+    console.warn("EMAIL_SEND_REJECTED_INVALID_FROM");
     return false;
   }
 
   try {
-    const { error } = await client.emails.send({
-      from: safeFrom,
-      to: safeTo,
-      subject: safeSubject,
-      html: safeHtml,
-    });
+    const { error } = await withTimeout(
+      client.emails.send({
+        from: safeFrom,
+        to: safeTo,
+        subject: safeSubject,
+        html: safeHtml,
+      })
+    );
 
     if (error) {
       console.error("EMAIL_SEND_FAILED_PROVIDER_ERROR", {

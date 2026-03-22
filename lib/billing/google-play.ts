@@ -16,6 +16,19 @@ type GoogleAccessTokenResponse = {
   token_type?: string;
 };
 
+export type GooglePlaySubscriptionLineItem = {
+  productId?: string;
+  expiryTime?: string | null;
+  offerDetails?: {
+    basePlanId?: string;
+  } | null;
+};
+
+export type GooglePlaySubscriptionResponse = {
+  subscriptionState?: string | null;
+  lineItems?: GooglePlaySubscriptionLineItem[] | null;
+};
+
 let cachedAccessToken: string | null = null;
 let cachedAccessTokenExpiresAt = 0;
 
@@ -163,7 +176,7 @@ export async function getGooglePlaySubscription({
 }: {
   packageName: string;
   purchaseToken: string;
-}): Promise<unknown> {
+}): Promise<GooglePlaySubscriptionResponse> {
   if (!isNonEmptyString(packageName)) {
     throw new Error("packageName is required");
   }
@@ -196,7 +209,8 @@ export async function getGooglePlaySubscription({
     );
   }
 
-  const json = await safeReadJson<unknown>(res);
+  const json = await safeReadJson<GooglePlaySubscriptionResponse>(res);
+
   if (!json) {
     throw new Error("Google Play subscription lookup returned invalid JSON");
   }

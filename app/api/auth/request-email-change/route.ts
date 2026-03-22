@@ -1,62 +1,50 @@
-import { NextResponse } from "next/server";
+import { badRequest, jsonNoStore, serverError, tooManyRequests, unauthorized } from "@/lib/api/responses";
+import { getSessionCookie } from "@/lib/auth/cookies";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { generateToken, sha256Hex } from "@/lib/security/crypto";
-import { sendEmail } from "@/lib/email/sendEmail";
-import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { sendEmail } from "@/lib/email/send-email";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
-const SESSION_COOKIE = "tm_session";
-const ANDROID_CLIENT_HEADER = "android";
-const ANDROID_PACKAGE_NAME = process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
-const IOS_CLIENT_HEADER = "ios";
+const ANDROID_PACKAGE_NAME =
+  process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
+type RequestEmailChangeBody = {
+  newEmail?: unknown;
+  turnstileToken?: unknown;
+  integrityToken?: unknown;
+  integrityRequestHash?: unknown;
+};
 
-function normalizeEmail(email: string) {
+type SessionUser = {
+  id: string;
+  email: string;
+};
+
+function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function readCookie(req: Request, name: string) {
-  const cookie = req.headers.get("cookie") || "";
-  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return match ? decodeURIComponent(match[1]) : null;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+function isIosClient(req: Request): boolean {
+  return getClientPlatform(req) === "ios";
 }
 
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
-}
-
-function isIosClient(req: Request) {
-  return getClientPlatform(req) === IOS_CLIENT_HEADER;
-}
-
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   const now = Date.now();
-  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartSeconds =
+    Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
   const { data: existing } = await supabaseAdmin
@@ -68,26 +56,34 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
     .maybeSingle();
 
   if (!existing) {
-    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
       key,
       window_start: windowStartIso,
       window_seconds: windowSeconds,
       count: 1,
     });
-    if (insErr) return true;
+
+    if (insertError) {
+      return true;
+    }
+
     return true;
   }
 
-  const next = (existing.count ?? 0) + 1;
-  const { error: updErr } = await supabaseAdmin
+  const nextCount = (existing.count ?? 0) + 1;
+
+  const { error: updateError } = await supabaseAdmin
     .from("rate_limits")
-    .update({ count: next })
+    .update({ count: nextCount })
     .eq("key", key)
     .eq("window_start", windowStartIso)
     .eq("window_seconds", windowSeconds);
 
-  if (updErr) return true;
-  return next <= limit;
+  if (updateError) {
+    return true;
+  }
+
+  return nextCount <= limit;
 }
 
 async function audit(
@@ -95,7 +91,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -107,103 +103,123 @@ async function audit(
   } catch {}
 }
 
-async function getUserFromSession(req: Request) {
-  const raw = readCookie(req, SESSION_COOKIE);
-  if (!raw) return null;
+async function getUserFromSession(req: Request): Promise<SessionUser | null> {
+  const rawSessionToken = getSessionCookie(req);
+  if (!rawSessionToken) return null;
 
-  const hash = sha256Hex(raw);
+  const sessionTokenHash = sha256Hex(rawSessionToken);
   const nowIso = new Date().toISOString();
 
-  const { data: session, error } = await supabaseAdmin
+  const { data: session, error: sessionError } = await supabaseAdmin
     .from("sessions")
-    .select("user_id,expires_at,revoked_at")
-    .eq("session_token_hash", hash)
+    .select("user_id, expires_at, revoked_at")
+    .eq("session_token_hash", sessionTokenHash)
     .maybeSingle();
 
-  if (error || !session?.user_id) return null;
+  if (sessionError || !session?.user_id) return null;
   if (session.revoked_at) return null;
   if (!session.expires_at || session.expires_at <= nowIso) return null;
 
-  const { data: user } = await supabaseAdmin
+  const { data: user, error: userError } = await supabaseAdmin
     .from("users")
-    .select("id,email,disabled_at,deleted_at")
+    .select("id, email, disabled_at, deleted_at")
     .eq("id", session.user_id)
     .maybeSingle();
 
-  if (!user?.id || !user.email) return null;
+  if (userError || !user?.id || !user.email) return null;
   if (user.disabled_at || user.deleted_at) return null;
 
-  try {
-    await supabaseAdmin
-      .from("sessions")
-      .update({ last_seen_at: nowIso })
-      .eq("session_token_hash", hash)
-      .is("revoked_at", null);
-  } catch {}
+  const { error: updateError } = await supabaseAdmin
+    .from("sessions")
+    .update({ last_seen_at: nowIso })
+    .eq("session_token_hash", sessionTokenHash)
+    .is("revoked_at", null);
 
-  return { id: user.id as string, email: String(user.email) };
+  if (updateError) {
+    console.error("Failed to update session last_seen_at", {
+      message: updateError.message,
+    });
+  }
+
+  return {
+    id: String(user.id),
+    email: String(user.email),
+  };
 }
 
 export async function POST(req: Request) {
   try {
     const rawText = await req.text();
-const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    let body: any = {};
-try {
-  body = rawText ? JSON.parse(rawText) : {};
-} catch {
-  return jsonNoStore({ error: "Invalid JSON body" }, { status: 400 });
-}
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
 
-    const newEmailRaw = body?.newEmail;
-    const turnstileToken = body?.turnstileToken;
-    const integrityToken = body?.integrityToken;
-    const integrityRequestHash = body?.integrityRequestHash;
+    let body: RequestEmailChangeBody = {};
 
-    if (!newEmailRaw || typeof newEmailRaw !== "string") {
-      return jsonNoStore({ error: "Missing newEmail" }, { status: 400 });
+    try {
+      body = rawText ? (JSON.parse(rawText) as RequestEmailChangeBody) : {};
+    } catch {
+      return badRequest("Invalid JSON body");
+    }
+
+    const { newEmail, turnstileToken, integrityToken, integrityRequestHash } = body;
+
+    if (typeof newEmail !== "string" || !newEmail.trim()) {
+      return badRequest("Missing newEmail");
     }
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:email_change_request`, 60, 10);
+    const ipAllowed = await isRateLimitAllowed(
+      `ip:${ip}:email_change_request`,
+      60,
+      10
+    );
+
     if (!ipAllowed) {
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
     const me = await getUserFromSession(req);
+
     if (!me) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     const userId = me.id;
     const oldEmail = normalizeEmail(me.email);
+    const nextEmail = normalizeEmail(newEmail);
 
-    const userAllowed = await isRateLimitAllowed(`user:${userId}:email_change_request`, 300, 5);
+    const userAllowed = await isRateLimitAllowed(
+      `user:${userId}:email_change_request`,
+      300,
+      5
+    );
+
     if (!userAllowed) {
-      return jsonNoStore({ error: "Too many attempts. Try again soon." }, { status: 429 });
+      return tooManyRequests("Too many attempts. Try again soon.");
     }
 
-    const nextEmail = normalizeEmail(newEmailRaw);
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
     if (!emailRegex.test(nextEmail)) {
-      return jsonNoStore({ error: "Invalid email" }, { status: 400 });
+      return badRequest("Invalid email");
     }
 
     if (oldEmail === nextEmail) {
-      return jsonNoStore({ error: "New email must be different" }, { status: 400 });
+      return badRequest("New email must be different");
     }
 
     if (androidClient) {
-      if (!integrityToken || typeof integrityToken !== "string") {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      if (typeof integrityToken !== "string" || !integrityToken) {
+        return badRequest("Integrity verification required");
       }
 
-      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      if (
+        typeof integrityRequestHash !== "string" ||
+        !integrityRequestHash
+      ) {
+        return badRequest("Integrity request hash required");
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
@@ -221,9 +237,13 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
@@ -234,7 +254,7 @@ try {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
       const integrity = await verifyIosAppAttestAssertion({
@@ -255,71 +275,83 @@ try {
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
       }
     } else {
-      if (!turnstileToken || typeof turnstileToken !== "string") {
-        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+      if (typeof turnstileToken !== "string" || !turnstileToken) {
+        return badRequest("Missing captcha");
       }
 
       const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
+
       if (!okCaptcha) {
         await audit("EMAIL_CHANGE_REQUEST_CAPTCHA_FAILED", userId, req, {
           next_email: nextEmail,
         });
-        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+
+        return badRequest("Captcha failed");
       }
     }
 
-    const { data: existing, error: existErr } = await supabaseAdmin
+    const { data: existing, error: existingError } = await supabaseAdmin
       .from("users")
       .select("id")
       .eq("email", nextEmail)
       .maybeSingle();
 
-    if (existErr) {
-      return jsonNoStore({ error: "Could not validate email" }, { status: 500 });
+    if (existingError) {
+      return serverError("Could not validate email");
     }
 
     if (existing && existing.id !== userId) {
-      return jsonNoStore({ error: "Unable to use that email address." }, { status: 400 });
+      return badRequest("Unable to use that email address.");
     }
 
-    try {
-      await supabaseAdmin
-        .from("auth_tokens")
-        .delete()
-        .eq("user_id", userId)
-        .eq("purpose", "email_change")
-        .is("consumed_at", null);
-    } catch {}
+    await supabaseAdmin
+      .from("auth_tokens")
+      .delete()
+      .eq("user_id", userId)
+      .eq("purpose", "email_change")
+      .is("consumed_at", null);
 
-    const raw = generateToken(32);
-    const tokenHash = sha256Hex(raw);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString();
+    const rawToken = generateToken(32);
+    const tokenHash = sha256Hex(rawToken);
+    const expiresAtIso = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
-    const { error: insErr } = await supabaseAdmin.from("auth_tokens").insert({
+    const { error: insertError } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
       token_hash: tokenHash,
       purpose: "email_change",
       expires_at: expiresAtIso,
       created_ip: getClientIp(req),
       created_ua: getUserAgent(req),
-      data: { new_email: nextEmail, old_email: oldEmail },
+      data: {
+        new_email: nextEmail,
+        old_email: oldEmail,
+      },
     });
 
-    if (insErr) {
-      return jsonNoStore({ error: "Could not create request" }, { status: 500 });
+    if (insertError) {
+      return serverError("Could not create request");
     }
 
     const appUrl = process.env.APP_URL;
-if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
-    const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(raw)}`;
+    if (!appUrl) {
+      return serverError("Missing APP_URL");
+    }
+
+    const confirmUrl = `${appUrl}/confirm?type=email-change&token=${encodeURIComponent(
+      rawToken
+    )}`;
 
     await sendEmail({
       to: nextEmail,
@@ -347,7 +379,10 @@ if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
     return jsonNoStore({ ok: true });
   } catch (err) {
-    console.error("REQUEST EMAIL CHANGE ERROR:", err);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("REQUEST_EMAIL_CHANGE_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

@@ -1,6 +1,11 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  unauthorized,
+} from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
+import { supabaseAdmin } from "@/lib/db/supabase-admin";
 
 export const runtime = "nodejs";
 
@@ -29,12 +34,6 @@ type SaveMessageBody = {
   clearRewrite?: unknown;
 };
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
-}
-
 function normalizeOptionalString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -51,18 +50,19 @@ function enforceMaxLength(value: string | null, fieldName: string) {
   }
 }
 
+/* ------------------ GET ------------------ */
+
 export async function GET(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     const { data, error } = await supabaseAdmin
       .from("messages")
-      .select(
-        `
+      .select(`
         id,
         created_at,
         original,
@@ -70,14 +70,15 @@ export async function GET(req: Request) {
         soft_rewrite,
         calm_rewrite,
         clear_rewrite
-      `
-      )
+      `)
       .eq("user_id", authUser.id)
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("GET MESSAGES ERROR:", error);
-      return jsonNoStore({ error: "Could not load drafts" }, { status: 500 });
+      console.error("MESSAGES_GET_FAILED", {
+        message: error.message,
+      });
+      return serverError("Could not load drafts");
     }
 
     const drafts = ((data ?? []) as MessageRow[]).map((row) => ({
@@ -90,26 +91,32 @@ export async function GET(req: Request) {
       clear_rewrite: row.clear_rewrite ?? null,
     }));
 
-    return jsonNoStore({ drafts });
+    return jsonNoStore({ ok: true, drafts });
   } catch (error) {
-    console.error("GET MESSAGES ROUTE ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("MESSAGES_GET_ERROR", { message });
+
+    return serverError("Server error");
   }
 }
+
+/* ------------------ POST ------------------ */
 
 export async function POST(req: Request) {
   try {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
-      return jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+      return unauthorized("Unauthorized");
     }
 
     let body: SaveMessageBody = {};
+
     try {
       body = (await req.json()) as SaveMessageBody;
     } catch {
-      return jsonNoStore({ error: "Invalid request body" }, { status: 400 });
+      return badRequest("Invalid request body");
     }
 
     const original =
@@ -134,7 +141,7 @@ export async function POST(req: Request) {
       normalizeOptionalString(body.clearRewrite);
 
     if (!original) {
-      return jsonNoStore({ error: "Missing original message" }, { status: 400 });
+      return badRequest("Missing original message");
     }
 
     enforceMaxLength(original, "Original message");
@@ -156,8 +163,10 @@ export async function POST(req: Request) {
       .single();
 
     if (error) {
-      console.error("SAVE MESSAGE ERROR:", error);
-      return jsonNoStore({ error: "Failed to save draft" }, { status: 500 });
+      console.error("MESSAGES_SAVE_FAILED", {
+        message: error.message,
+      });
+      return serverError("Failed to save draft");
     }
 
     return jsonNoStore({
@@ -174,10 +183,13 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     if (error instanceof Error && error.message.endsWith("is too long")) {
-      return jsonNoStore({ error: error.message }, { status: 400 });
+      return badRequest(error.message);
     }
 
-    console.error("SAVE MESSAGE ROUTE ERROR:", error);
-    return jsonNoStore({ error: "Server error" }, { status: 500 });
+    const message = error instanceof Error ? error.message : String(error);
+
+    console.error("MESSAGES_SAVE_ERROR", { message });
+
+    return serverError("Server error");
   }
 }

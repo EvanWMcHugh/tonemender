@@ -116,7 +116,7 @@ export default function DebugPage() {
       const debugKey = process.env.NEXT_PUBLIC_DEBUG_KEY;
       if (debugKey) headers["x-debug-key"] = debugKey;
 
-      const res = await fetch("/api/debug/session", {
+      const res = await fetch("/api/dev/debug/session", {
         method: "GET",
         cache: "no-store",
         headers,

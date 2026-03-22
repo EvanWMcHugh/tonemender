@@ -1,56 +1,44 @@
-import { NextResponse } from "next/server";
+import { badRequest, jsonNoStore, serverError } from "@/lib/api/responses";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { generateToken, sha256Hex } from "@/lib/security/crypto";
-import { sendEmail } from "@/lib/email/sendEmail";
-import { verifyTurnstile } from "@/lib/security/turnstile";
-import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { sendEmail } from "@/lib/email/send-email";
+import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
+import { generateToken, sha256Hex } from "@/lib/security/crypto";
+import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
+import { verifyTurnstile } from "@/lib/security/turnstile";
 
 export const runtime = "nodejs";
 
-const ANDROID_CLIENT_HEADER = "android";
 const ANDROID_PACKAGE_NAME =
   process.env.GOOGLE_PLAY_PACKAGE_NAME || "com.tonemender.app";
-const IOS_CLIENT_HEADER = "ios";
 
-function normalizeEmail(email: string) {
+type RequestPasswordResetBody = {
+  email?: unknown;
+  turnstileToken?: unknown;
+  integrityToken?: unknown;
+  integrityRequestHash?: unknown;
+};
+
+function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function jsonNoStore(data: unknown, init?: ResponseInit) {
-  const res = NextResponse.json(data, init);
-  res.headers.set("Cache-Control", "no-store");
-  return res;
+function isAndroidClient(req: Request): boolean {
+  return getClientPlatform(req) === "android";
 }
 
-function getClientIp(req: Request) {
-  const cfIp = req.headers.get("cf-connecting-ip");
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  return (cfIp ?? forwardedFor)?.split(",")[0]?.trim() ?? null;
+function isIosClient(req: Request): boolean {
+  return getClientPlatform(req) === "ios";
 }
 
-function getUserAgent(req: Request) {
-  return req.headers.get("user-agent") ?? null;
-}
-
-function getClientPlatform(req: Request) {
-  return (
-    req.headers.get("x-client-platform") ??
-    req.headers.get("x-tonemender-client")
-  )?.trim().toLowerCase() ?? null;
-}
-
-function isAndroidClient(req: Request) {
-  return getClientPlatform(req) === ANDROID_CLIENT_HEADER;
-}
-
-function isIosClient(req: Request) {
-  return getClientPlatform(req) === IOS_CLIENT_HEADER;
-}
-
-async function isRateLimitAllowed(key: string, windowSeconds: number, limit: number) {
+async function isRateLimitAllowed(
+  key: string,
+  windowSeconds: number,
+  limit: number
+): Promise<boolean> {
   const now = Date.now();
-  const windowStartSeconds = Math.floor(now / 1000 / windowSeconds) * windowSeconds;
+  const windowStartSeconds =
+    Math.floor(now / 1000 / windowSeconds) * windowSeconds;
   const windowStartIso = new Date(windowStartSeconds * 1000).toISOString();
 
   const { data: row } = await supabaseAdmin
@@ -62,26 +50,28 @@ async function isRateLimitAllowed(key: string, windowSeconds: number, limit: num
     .maybeSingle();
 
   if (!row) {
-    const { error: insErr } = await supabaseAdmin.from("rate_limits").insert({
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
       key,
       window_start: windowStartIso,
       window_seconds: windowSeconds,
       count: 1,
     });
-    if (insErr) return true;
+
+    if (insertError) return true;
     return true;
   }
 
-  const next = (row.count ?? 0) + 1;
-  const { error: updErr } = await supabaseAdmin
+  const nextCount = (row.count ?? 0) + 1;
+
+  const { error: updateError } = await supabaseAdmin
     .from("rate_limits")
-    .update({ count: next })
+    .update({ count: nextCount })
     .eq("key", key)
     .eq("window_start", windowStartIso)
     .eq("window_seconds", windowSeconds);
 
-  if (updErr) return true;
-  return next <= limit;
+  if (updateError) return true;
+  return nextCount <= limit;
 }
 
 async function audit(
@@ -89,7 +79,7 @@ async function audit(
   userId: string | null,
   req: Request,
   meta: Record<string, unknown> = {}
-) {
+): Promise<void> {
   try {
     await supabaseAdmin.from("audit_log").insert({
       user_id: userId,
@@ -107,40 +97,51 @@ export async function POST(req: Request) {
   try {
     const rawText = await req.text();
     const rawBodyBuffer = Buffer.from(rawText, "utf8");
-    let body: Record<string, unknown> = {};
-try {
-  body = rawText ? JSON.parse(rawText) : {};
-} catch {
-  return jsonNoStore({ ok: true });
-}
 
-    const emailRaw = body?.email;
-    const turnstileToken = body?.turnstileToken;
-    const integrityToken = body?.integrityToken;
-    const integrityRequestHash = body?.integrityRequestHash;
+    let body: RequestPasswordResetBody = {};
 
-    if (!emailRaw || typeof emailRaw !== "string") {
+    try {
+      body = rawText ? (JSON.parse(rawText) as RequestPasswordResetBody) : {};
+    } catch {
       return jsonNoStore({ ok: true });
     }
 
-    const email = normalizeEmail(emailRaw);
+    const { email, turnstileToken, integrityToken, integrityRequestHash } = body;
+
+    if (typeof email !== "string" || !email.trim()) {
+      return jsonNoStore({ ok: true });
+    }
+
+    const normalizedEmail = normalizeEmail(email);
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
 
-    const ipAllowed = await isRateLimitAllowed(`ip:${ip}:pw_reset_request`, 60, 10);
-    const emailAllowed = await isRateLimitAllowed(`email:${email}:pw_reset_request`, 300, 5);
+    const ipAllowed = await isRateLimitAllowed(
+      `ip:${ip}:pw_reset_request`,
+      60,
+      10
+    );
+    const emailAllowed = await isRateLimitAllowed(
+      `email:${normalizedEmail}:pw_reset_request`,
+      300,
+      5
+    );
+
     if (!ipAllowed || !emailAllowed) {
       return jsonNoStore({ ok: true });
     }
 
     if (androidClient) {
-      if (!integrityToken || typeof integrityToken !== "string") {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+      if (typeof integrityToken !== "string" || !integrityToken) {
+        return badRequest("Integrity verification required");
       }
 
-      if (!integrityRequestHash || typeof integrityRequestHash !== "string") {
-        return jsonNoStore({ error: "Integrity request hash required" }, { status: 400 });
+      if (
+        typeof integrityRequestHash !== "string" ||
+        !integrityRequestHash
+      ) {
+        return badRequest("Integrity request hash required");
       }
 
       const integrity = await verifyAndroidPlayIntegrity({
@@ -151,16 +152,20 @@ try {
 
       if (!integrity.ok) {
         await audit("PASSWORD_RESET_INTEGRITY_FAILED", null, req, {
-          email,
+          email: normalizedEmail,
           reason: integrity.reason,
           payload: integrity.payload ?? null,
         });
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
@@ -171,7 +176,7 @@ try {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        return jsonNoStore({ error: "Integrity verification required" }, { status: 400 });
+        return badRequest("Integrity verification required");
       }
 
       const integrity = await verifyIosAppAttestAssertion({
@@ -185,59 +190,70 @@ try {
 
       if (!integrity.ok) {
         await audit("PASSWORD_RESET_IOS_APP_ATTEST_FAILED", null, req, {
-          email,
+          email: normalizedEmail,
           reason: integrity.reason,
           payload: integrity.payload ?? null,
         });
 
         return jsonNoStore(
           {
+            ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload: process.env.NODE_ENV === "development" ? integrity.payload ?? null : undefined,
+            payload:
+              process.env.NODE_ENV === "development"
+                ? integrity.payload ?? null
+                : undefined,
           },
           { status: 403 }
         );
       }
     } else {
-      if (!turnstileToken || typeof turnstileToken !== "string") {
-        return jsonNoStore({ error: "Missing captcha" }, { status: 400 });
+      if (typeof turnstileToken !== "string" || !turnstileToken) {
+        return badRequest("Missing captcha");
       }
 
-      const okCaptcha = await verifyTurnstile(turnstileToken, getClientIp(req));
-      if (!okCaptcha) {
-        await audit("PASSWORD_RESET_CAPTCHA_FAILED", null, req, { email });
-        return jsonNoStore({ error: "Captcha failed" }, { status: 400 });
+      const captchaOk = await verifyTurnstile(turnstileToken, getClientIp(req));
+
+      if (!captchaOk) {
+        await audit("PASSWORD_RESET_CAPTCHA_FAILED", null, req, {
+          email: normalizedEmail,
+        });
+
+        return badRequest("Captcha failed");
       }
     }
 
-    const { data: user, error: userErr } = await supabaseAdmin
+    const { data: user, error: userError } = await supabaseAdmin
       .from("users")
       .select("id,email,disabled_at,deleted_at")
-      .eq("email", email)
+      .eq("email", normalizedEmail)
       .maybeSingle();
 
-    if (userErr || !user?.id) return jsonNoStore({ ok: true });
-    if (user.disabled_at || user.deleted_at) return jsonNoStore({ ok: true });
+    if (userError || !user?.id) {
+      return jsonNoStore({ ok: true });
+    }
+
+    if (user.disabled_at || user.deleted_at) {
+      return jsonNoStore({ ok: true });
+    }
 
     const userId = String(user.id);
 
-    try {
-      await supabaseAdmin
-        .from("auth_tokens")
-        .delete()
-        .eq("user_id", userId)
-        .eq("purpose", "password_reset")
-        .is("consumed_at", null);
-    } catch {}
+    await supabaseAdmin
+      .from("auth_tokens")
+      .delete()
+      .eq("user_id", userId)
+      .eq("purpose", "password_reset")
+      .is("consumed_at", null);
 
-    const raw = generateToken(32);
-    const tokenHash = sha256Hex(raw);
-    const expiresAtIso = new Date(Date.now() + 1000 * 60 * 30).toISOString();
+    const rawToken = generateToken(32);
+    const tokenHash = sha256Hex(rawToken);
+    const expiresAtIso = new Date(Date.now() + 30 * 60 * 1000).toISOString();
 
-    const { error: insErr } = await supabaseAdmin.from("auth_tokens").insert({
+    const { error: insertError } = await supabaseAdmin.from("auth_tokens").insert({
       user_id: userId,
-      email,
+      email: normalizedEmail,
       token_hash: tokenHash,
       purpose: "password_reset",
       expires_at: expiresAtIso,
@@ -246,14 +262,21 @@ try {
       data: {},
     });
 
-    if (insErr) return jsonNoStore({ ok: true });
+    if (insertError) {
+      return jsonNoStore({ ok: true });
+    }
 
     const appUrl = process.env.APP_URL;
-if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
-    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(raw)}`;
+    if (!appUrl) {
+      return serverError("Missing APP_URL");
+    }
+
+    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(
+      rawToken
+    )}`;
 
     await sendEmail({
-      to: email,
+      to: normalizedEmail,
       subject: "Reset your ToneMender password",
       html: `
         <div style="font-family:Arial,sans-serif;line-height:1.4">
@@ -281,7 +304,10 @@ if (!appUrl) return jsonNoStore({ error: "Missing APP_URL" }, { status: 500 });
 
     return jsonNoStore({ ok: true });
   } catch (err) {
-    console.error("REQUEST PASSWORD RESET ERROR:", err);
+    const message = err instanceof Error ? err.message : String(err);
+
+    console.error("REQUEST_PASSWORD_RESET_ERROR", { message });
+
     return jsonNoStore({ ok: true });
   }
 }
