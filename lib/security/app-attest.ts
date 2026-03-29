@@ -319,13 +319,23 @@ export async function verifyIosAppAttestAssertion(
       teamIdentifier: APPLE_TEAM_ID,
       allowDevelopmentEnvironment: allowDevelopmentEnvironment(),
     });
-  } catch {
-    return {
-      ok: false,
-      reason: "assertion_invalid",
-      publicMessage: "Integrity verification failed.",
-    };
-  }
+  } catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  console.error("APP_ATTEST_VERIFY_ASSERTION_FAILED", {
+    message,
+    keyId: args.keyId,
+    challengeId: args.challengeId,
+    method: args.method,
+    path: args.path,
+  });
+
+  return {
+    ok: false,
+    reason: "assertion_invalid",
+    publicMessage: "Integrity verification failed.",
+  };
+}
 
   await supabaseAdmin
     .from("app_attest_keys")
