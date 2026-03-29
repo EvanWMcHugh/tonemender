@@ -89,7 +89,9 @@ function buildAssertionPayload(args: {
   ]);
 }
 
-async function consumeChallengeRowAtomically(row: AppAttestChallengeRow): Promise<boolean> {
+async function consumeChallengeRowAtomically(
+  row: AppAttestChallengeRow
+): Promise<boolean> {
   const { data, error } = await supabaseAdmin
     .from("app_attest_challenges")
     .update({ consumed_at: new Date().toISOString() })
@@ -147,7 +149,9 @@ export async function consumeAppAttestChallengeById(params: {
 }): Promise<AppAttestChallengeResult> {
   const { data: row, error } = await supabaseAdmin
     .from("app_attest_challenges")
-    .select("id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at")
+    .select(
+      "id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at"
+    )
     .eq("id", params.challengeId)
     .eq("purpose", params.purpose)
     .is("consumed_at", null)
@@ -182,7 +186,9 @@ export async function consumeAppAttestChallenge(params: {
 
   const { data: row, error } = await supabaseAdmin
     .from("app_attest_challenges")
-    .select("id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at")
+    .select(
+      "id, challenge, challenge_hash, purpose, key_id, expires_at, consumed_at"
+    )
     .eq("challenge_hash", challengeHash)
     .eq("purpose", params.purpose)
     .is("consumed_at", null)
@@ -308,34 +314,32 @@ export async function verifyIosAppAttestAssertion(
     requestBody: args.requestBody,
   });
 
-  const clientDataHash = crypto.createHash("sha256").update(payload).digest();
-
   try {
     await verifyAssertion({
       assertion: Buffer.from(args.assertion, "base64"),
       publicKey: keyRow.public_key_pem,
-      clientDataHash,
+      payload,
       bundleIdentifier: APPLE_BUNDLE_ID,
       teamIdentifier: APPLE_TEAM_ID,
       allowDevelopmentEnvironment: allowDevelopmentEnvironment(),
     });
   } catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
 
-  console.error("APP_ATTEST_VERIFY_ASSERTION_FAILED", {
-    message,
-    keyId: args.keyId,
-    challengeId: args.challengeId,
-    method: args.method,
-    path: args.path,
-  });
+    console.error("APP_ATTEST_VERIFY_ASSERTION_FAILED", {
+      message,
+      keyId: args.keyId,
+      challengeId: args.challengeId,
+      method: args.method,
+      path: args.path,
+    });
 
-  return {
-    ok: false,
-    reason: "assertion_invalid",
-    publicMessage: "Integrity verification failed.",
-  };
-}
+    return {
+      ok: false,
+      reason: "assertion_invalid",
+      publicMessage: "Integrity verification failed.",
+    };
+  }
 
   await supabaseAdmin
     .from("app_attest_keys")
