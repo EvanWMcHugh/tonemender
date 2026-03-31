@@ -214,19 +214,10 @@ export default function RewriteClient({ user }: { user: MeUser }) {
       setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
       setEmotion(String(json.emotion_prediction ?? "").trim());
 
-      if (!isPro) {
-        if (typeof json.rewrites_left === "number") {
-          setRewritesLeft(Math.max(json.rewrites_left, 0));
-          setLimitReached(json.rewrites_left <= 0);
-        } else if (
-          typeof json.free_limit === "number" &&
-          typeof json.rewrites_today === "number"
-        ) {
-          const left = Math.max(json.free_limit - json.rewrites_today, 0);
-          setRewritesLeft(left);
-          setLimitReached(left <= 0);
-        }
-      }
+      if (!isPro && typeof json.rewrites_left === "number") {
+  setRewritesLeft(json.rewrites_left);
+  setLimitReached(json.rewrites_left <= 0);
+}
 
       const chosenToneKey: ToneKey = isPro
         ? ((finalTone === "default" ? "soft" : finalTone) as ToneKey)
