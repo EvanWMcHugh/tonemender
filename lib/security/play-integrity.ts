@@ -354,14 +354,22 @@ export async function verifyAndroidPlayIntegrity({
       ? deviceIntegrity.deviceRecognitionVerdict
       : [];
 
-    if (deviceRecognitionVerdict.length === 0) {
+    if (!deviceRecognitionVerdict.includes("MEETS_DEVICE_INTEGRITY")) {
       return {
         ok: false,
-        reason: "device_not_recognized",
+        reason: "device_not_secure",
         publicMessage: "Device integrity check failed.",
         payload,
       };
     }
+
+    console.log("PLAY_INTEGRITY_RESULT", {
+      packageName: payload.requestDetails?.requestPackageName,
+      requestHash: payload.requestDetails?.requestHash,
+      appVerdict: payload.appIntegrity?.appRecognitionVerdict,
+      deviceVerdicts: payload.deviceIntegrity?.deviceRecognitionVerdict,
+      accountDetails: payload.accountDetails,
+    });
 
     return {
       ok: true,
