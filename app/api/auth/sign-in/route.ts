@@ -70,37 +70,11 @@ function sanitizeJsonText(raw: string): string {
   return raw.replace(/^\uFEFF/, "").trim();
 }
 
-async function parseJsonBody<T>(req: Request): Promise<{
-  ok: true;
-  body: T;
-  rawText: string;
-  rawBodyBuffer: Buffer;
-} | {
-  ok: false;
-}> {
-  const rawText = await req.text();
-  const normalized = sanitizeJsonText(rawText);
-  const rawBodyBuffer = Buffer.from(normalized, "utf8");
-
-  if (!normalized) {
-    return {
-      ok: true,
-      body: {} as T,
-      rawText: normalized,
-      rawBodyBuffer,
-    };
-  }
-
-  try {
-    return {
-      ok: true,
-      body: JSON.parse(normalized) as T,
-      rawText: normalized,
-      rawBodyBuffer,
-    };
-  } catch {
-    return { ok: false };
-  }
+function debugBadRequest(reason: string, extra: Record<string, unknown> = {}) {
+  console.log("SIGN_IN_BAD_REQUEST_REASON", {
+    reason,
+    ...extra,
+  });
 }
 
 async function isRateLimitAllowed(
@@ -122,14 +96,12 @@ async function isRateLimitAllowed(
     .maybeSingle();
 
   if (!row) {
-    const { error: insertError } = await supabaseAdmin
-      .from("rate_limits")
-      .insert({
-        key,
-        window_start: windowStartIso,
-        window_seconds: windowSeconds,
-        count: 1,
-      });
+    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
+      key,
+      window_start: windowStartIso,
+      window_seconds: windowSeconds,
+      count: 1,
+    });
 
     if (insertError) return true;
     return true;
@@ -168,13 +140,23 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-    const parsed = await parseJsonBody<SignInBody>(req);
+    const rawTextOriginal = await req.text();
+    const rawText = sanitizeJsonText(rawTextOriginal);
+    const rawBodyBuffer = Buffer.from(rawText, "utf8");
 
-    if (!parsed.ok) {
+    let body: SignInBody = {};
+
+    try {
+      body = rawText ? (JSON.parse(rawText) as SignInBody) : {};
+    } catch {
+      debugBadRequest("Invalid request body", {
+        contentType: req.headers.get("content-type"),
+        clientPlatform: req.headers.get("x-client-platform"),
+        rawLength: rawText.length,
+        rawText,
+      });
       return badRequest("Invalid request body");
     }
-
-    const { body, rawText, rawBodyBuffer } = parsed;
 
     const emailRaw = body.email;
     const password = body.password;
@@ -183,24 +165,40 @@ export async function POST(req: Request) {
     const integrityRequestHash = body.integrityRequestHash;
     const deviceName = body.deviceName;
 
-    if (process.env.NODE_ENV === "development") {
-      console.log("SIGN_IN_REQUEST_DEBUG", {
-        contentType: req.headers.get("content-type"),
-        rawBodyLength: rawText.length,
-        bodyKeys:
-          body && typeof body === "object" ? Object.keys(body) : [],
-        hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
-        hasPassword: typeof password === "string" && password.length > 0,
-        androidClient: isAndroidClient(req),
-        iosClient: isIosClient(req),
-      });
-    }
+    console.log("SIGN_IN_DEBUG_HEADERS", {
+      contentType: req.headers.get("content-type"),
+      clientPlatform: req.headers.get("x-client-platform"),
+      legacyClientPlatform: req.headers.get("x-tonemender-client"),
+    });
+
+    console.log("SIGN_IN_DEBUG_RAW", {
+      rawText,
+      rawLength: rawText.length,
+    });
+
+    console.log("SIGN_IN_DEBUG_BODY", {
+      bodyKeys: Object.keys(body),
+      emailType: typeof emailRaw,
+      hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
+      passwordType: typeof password,
+      hasPassword: typeof password === "string" && password.length > 0,
+      hasCaptchaToken:
+        typeof captchaToken === "string" && captchaToken.length > 0,
+      hasIntegrityToken:
+        typeof integrityToken === "string" && integrityToken.length > 0,
+      hasIntegrityRequestHash:
+        typeof integrityRequestHash === "string" &&
+        integrityRequestHash.length > 0,
+      deviceNameType: typeof deviceName,
+    });
 
     if (typeof emailRaw !== "string" || !emailRaw.trim()) {
+      debugBadRequest("Missing email", { body });
       return badRequest("Missing email");
     }
 
     if (typeof password !== "string" || !password) {
+      debugBadRequest("Missing password", { body });
       return badRequest("Missing password");
     }
 
@@ -211,11 +209,7 @@ export async function POST(req: Request) {
     const isReviewer = isReviewerEmail(email);
 
     const ipAllowed = await isRateLimitAllowed(`ip:${ip}:sign_in`, 60, 20);
-    const emailAllowed = await isRateLimitAllowed(
-      `email:${email}:sign_in`,
-      300,
-      10
-    );
+    const emailAllowed = await isRateLimitAllowed(`email:${email}:sign_in`, 300, 10);
 
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_IN_RATE_LIMITED", null, req, {
@@ -230,6 +224,10 @@ export async function POST(req: Request) {
 
     if (androidClient && !isReviewer) {
       if (typeof integrityToken !== "string" || !integrityToken) {
+        debugBadRequest("Integrity verification required", {
+          body,
+          androidClient,
+        });
         return badRequest("Integrity verification required");
       }
 
@@ -237,6 +235,10 @@ export async function POST(req: Request) {
         typeof integrityRequestHash !== "string" ||
         !integrityRequestHash
       ) {
+        debugBadRequest("Integrity request hash required", {
+          body,
+          androidClient,
+        });
         return badRequest("Integrity request hash required");
       }
 
@@ -272,6 +274,12 @@ export async function POST(req: Request) {
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
+        debugBadRequest("Integrity verification required", {
+          iosClient,
+          hasKeyId: Boolean(keyId),
+          hasAssertion: Boolean(assertion),
+          hasChallengeId: Boolean(challengeId),
+        });
         return badRequest("Integrity verification required");
       }
 
@@ -306,6 +314,7 @@ export async function POST(req: Request) {
       }
     } else if (!isReviewer) {
       if (typeof captchaToken !== "string" || !captchaToken) {
+        debugBadRequest("Captcha verification required", { body });
         return badRequest("Captcha verification required");
       }
 
