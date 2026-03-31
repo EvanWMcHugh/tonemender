@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import html2canvas from "html2canvas";
 
@@ -24,7 +24,12 @@ type RewriteResponse = {
   clear?: string;
   tone_score?: number;
   emotion_prediction?: string;
+  rewrites_left?: number | null;
   error?: string;
+};
+
+type UsageResponse = {
+  rewrites_left?: number | null;
 };
 
 function vibrate(ms = 20) {
@@ -50,8 +55,10 @@ export default function RewriteClient({ user }: { user: MeUser }) {
 
   const [toneScore, setToneScore] = useState<number | null>(null);
   const [emotion, setEmotion] = useState("");
+  const [rewritesLeft, setRewritesLeft] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(false);
+  const [loadingUsage, setLoadingUsage] = useState(false);
   const [error, setError] = useState("");
   const [limitReached, setLimitReached] = useState(false);
   const [toast, setToast] = useState("");
@@ -83,6 +90,41 @@ export default function RewriteClient({ user }: { user: MeUser }) {
     },
     [originalMessageSnapshot]
   );
+
+  useEffect(() => {
+  if (isPro) return;
+
+  let cancelled = false;
+
+  async function loadUsage() {
+    try {
+      const res = await fetch("/api/usage", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      let json: UsageResponse = {};
+      try {
+        json = (await res.json()) as UsageResponse;
+      } catch {
+        json = {};
+      }
+
+      if (!res.ok || cancelled) return;
+
+      if (typeof json.rewrites_left === "number") {
+        setRewritesLeft(json.rewrites_left);
+        setLimitReached(json.rewrites_left <= 0);
+      }
+    } catch {}
+  }
+
+  void loadUsage();
+
+  return () => {
+    cancelled = true;
+  };
+}, [isPro]);
 
   const displayKey: ToneKey = useMemo(() => {
     return (isPro ? tone || "soft" : "soft") as ToneKey;
@@ -153,6 +195,7 @@ export default function RewriteClient({ user }: { user: MeUser }) {
 
       if (res.status === 429) {
         setLimitReached(true);
+        setRewritesLeft(0);
         return;
       }
 
@@ -170,6 +213,20 @@ export default function RewriteClient({ user }: { user: MeUser }) {
       setResults(newResults);
       setToneScore(typeof json.tone_score === "number" ? json.tone_score : null);
       setEmotion(String(json.emotion_prediction ?? "").trim());
+
+      if (!isPro) {
+        if (typeof json.rewrites_left === "number") {
+          setRewritesLeft(Math.max(json.rewrites_left, 0));
+          setLimitReached(json.rewrites_left <= 0);
+        } else if (
+          typeof json.free_limit === "number" &&
+          typeof json.rewrites_today === "number"
+        ) {
+          const left = Math.max(json.free_limit - json.rewrites_today, 0);
+          setRewritesLeft(left);
+          setLimitReached(left <= 0);
+        }
+      }
 
       const chosenToneKey: ToneKey = isPro
         ? ((finalTone === "default" ? "soft" : finalTone) as ToneKey)
@@ -416,6 +473,26 @@ export default function RewriteClient({ user }: { user: MeUser }) {
               <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                 {reviewerLabel}
               </div>
+            </div>
+          )}
+
+          {!isPro && rewritesLeft !== null && !limitReached && (
+            <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+              <p className="mb-1 font-semibold text-slate-800">
+                {rewritesLeft > 1 && `${rewritesLeft} free rewrites left today`}
+                {rewritesLeft === 1 && "⚠️ 1 free rewrite left today"}
+                {rewritesLeft === 0 && "No free rewrites left today"}
+              </p>
+              <p className="mb-2 text-xs text-slate-600">
+                Upgrade to ToneMender Pro for unlimited rewrites, tone control,
+                and relationship types.
+              </p>
+              <a
+                href="/upgrade"
+                className="inline-flex items-center justify-center rounded-full bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+              >
+                Upgrade to Pro
+              </a>
             </div>
           )}
 

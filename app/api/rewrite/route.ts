@@ -435,19 +435,25 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
 
     const usedTodayAfter = authUser.isPro ? null : await getUsedToday(authUser.id);
 
-    return jsonNoStore({
-      ok: true,
-      soft,
-      calm,
-      clear,
-      tone_score: toneScore,
-      emotion_prediction: emotionImpact,
-      is_pro: authUser.isPro,
-      plan_type: authUser.planType,
-      day: formatLA_YYYY_MM_DD(new Date()),
-      free_limit: DAILY_FREE_LIMIT,
-      rewrites_today: usedTodayAfter,
-    });
+    const rewritesLeft =
+  authUser.isPro || usedTodayAfter === null
+    ? null
+    : Math.max(DAILY_FREE_LIMIT - usedTodayAfter, 0);
+
+return jsonNoStore({
+  ok: true,
+  soft,
+  calm,
+  clear,
+  tone_score: toneScore,
+  emotion_prediction: emotionImpact,
+  is_pro: authUser.isPro,
+  plan_type: authUser.planType,
+  day: formatLA_YYYY_MM_DD(new Date()),
+  free_limit: DAILY_FREE_LIMIT,
+  rewrites_today: usedTodayAfter,
+  rewrites_left: rewritesLeft, // ✅ NEW
+});
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Server error while rewriting message";
