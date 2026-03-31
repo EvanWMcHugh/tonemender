@@ -1,9 +1,19 @@
 import bcrypt from "bcryptjs";
 
-import { badRequest, forbidden, jsonNoStore, serverError, tooManyRequests } from "@/lib/api/responses";
+import {
+  badRequest,
+  forbidden,
+  jsonNoStore,
+  serverError,
+  tooManyRequests,
+} from "@/lib/api/responses";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sendEmail } from "@/lib/email/send-email";
-import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
+import {
+  getClientIp,
+  getClientPlatform,
+  getUserAgent,
+} from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
@@ -37,6 +47,48 @@ function isIosClient(req: Request): boolean {
 function isValidEmail(email: string): boolean {
   if (email.length > 254) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function sanitizeJsonText(raw: string): string {
+  return raw.replace(/^\uFEFF/, "").trim();
+}
+
+async function parseJsonBody<T>(
+  req: Request
+): Promise<
+  | {
+      ok: true;
+      body: T;
+      rawText: string;
+      rawBodyBuffer: Buffer;
+    }
+  | {
+      ok: false;
+    }
+> {
+  const rawText = await req.text();
+  const normalized = sanitizeJsonText(rawText);
+  const rawBodyBuffer = Buffer.from(normalized, "utf8");
+
+  if (!normalized) {
+    return {
+      ok: true,
+      body: {} as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      body: JSON.parse(normalized) as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 async function audit(
@@ -75,12 +127,14 @@ async function isRateLimitAllowed(
     .maybeSingle();
 
   if (!row) {
-    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
-      key,
-      window_start: windowStartIso,
-      window_seconds: windowSeconds,
-      count: 1,
-    });
+    const { error: insertError } = await supabaseAdmin
+      .from("rate_limits")
+      .insert({
+        key,
+        window_start: windowStartIso,
+        window_seconds: windowSeconds,
+        count: 1,
+      });
 
     if (insertError) return true;
     return true;
@@ -101,16 +155,13 @@ async function isRateLimitAllowed(
 
 export async function POST(req: Request) {
   try {
-    const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const parsed = await parseJsonBody<SignUpBody>(req);
 
-    let body: SignUpBody = {};
-
-    try {
-      body = rawText ? (JSON.parse(rawText) as SignUpBody) : {};
-    } catch {
+    if (!parsed.ok) {
       return badRequest("Invalid request body");
     }
+
+    const { body, rawText, rawBodyBuffer } = parsed;
 
     const {
       email: emailRaw,
@@ -119,6 +170,19 @@ export async function POST(req: Request) {
       integrityToken,
       integrityRequestHash,
     } = body;
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("SIGN_UP_REQUEST_DEBUG", {
+        contentType: req.headers.get("content-type"),
+        rawBodyLength: rawText.length,
+        bodyKeys:
+          body && typeof body === "object" ? Object.keys(body) : [],
+        hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
+        hasPassword: typeof password === "string" && password.length > 0,
+        androidClient: isAndroidClient(req),
+        iosClient: isIosClient(req),
+      });
+    }
 
     if (typeof emailRaw !== "string" || !emailRaw.trim()) {
       return badRequest("Missing email");
@@ -265,7 +329,10 @@ export async function POST(req: Request) {
     }
 
     if (existing) {
-      return jsonNoStore({ ok: false, error: "Email already in use" }, { status: 409 });
+      return jsonNoStore(
+        { ok: false, error: "Email already in use" },
+        { status: 409 }
+      );
     }
 
     const passwordHash = await bcrypt.hash(password, 12);

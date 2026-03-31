@@ -1,7 +1,11 @@
 import { badRequest, jsonNoStore, serverError } from "@/lib/api/responses";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
 import { sendEmail } from "@/lib/email/send-email";
-import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
+import {
+  getClientIp,
+  getClientPlatform,
+  getUserAgent,
+} from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
@@ -31,6 +35,48 @@ function isIosClient(req: Request): boolean {
   return getClientPlatform(req) === "ios";
 }
 
+function sanitizeJsonText(raw: string): string {
+  return raw.replace(/^\uFEFF/, "").trim();
+}
+
+async function parseJsonBody<T>(
+  req: Request
+): Promise<
+  | {
+      ok: true;
+      body: T;
+      rawText: string;
+      rawBodyBuffer: Buffer;
+    }
+  | {
+      ok: false;
+    }
+> {
+  const rawText = await req.text();
+  const normalized = sanitizeJsonText(rawText);
+  const rawBodyBuffer = Buffer.from(normalized, "utf8");
+
+  if (!normalized) {
+    return {
+      ok: true,
+      body: {} as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      body: JSON.parse(normalized) as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function isRateLimitAllowed(
   key: string,
   windowSeconds: number,
@@ -50,12 +96,14 @@ async function isRateLimitAllowed(
     .maybeSingle();
 
   if (!row) {
-    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
-      key,
-      window_start: windowStartIso,
-      window_seconds: windowSeconds,
-      count: 1,
-    });
+    const { error: insertError } = await supabaseAdmin
+      .from("rate_limits")
+      .insert({
+        key,
+        window_start: windowStartIso,
+        window_seconds: windowSeconds,
+        count: 1,
+      });
 
     if (insertError) return true;
     return true;
@@ -95,18 +143,34 @@ async function audit(
 // Return { ok: true } unless the request itself is malformed or protection fails.
 export async function POST(req: Request) {
   try {
-    const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const parsed = await parseJsonBody<RequestPasswordResetBody>(req);
 
-    let body: RequestPasswordResetBody = {};
-
-    try {
-      body = rawText ? (JSON.parse(rawText) as RequestPasswordResetBody) : {};
-    } catch {
+    if (!parsed.ok) {
       return jsonNoStore({ ok: true });
     }
 
+    const { body, rawText, rawBodyBuffer } = parsed;
+
     const { email, turnstileToken, integrityToken, integrityRequestHash } = body;
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("PASSWORD_RESET_REQUEST_DEBUG", {
+        contentType: req.headers.get("content-type"),
+        rawBodyLength: rawText.length,
+        bodyKeys:
+          body && typeof body === "object" ? Object.keys(body) : [],
+        hasEmail: typeof email === "string" && email.trim().length > 0,
+        hasTurnstileToken:
+          typeof turnstileToken === "string" && turnstileToken.length > 0,
+        hasIntegrityToken:
+          typeof integrityToken === "string" && integrityToken.length > 0,
+        hasIntegrityRequestHash:
+          typeof integrityRequestHash === "string" &&
+          integrityRequestHash.length > 0,
+        androidClient: isAndroidClient(req),
+        iosClient: isIosClient(req),
+      });
+    }
 
     if (typeof email !== "string" || !email.trim()) {
       return jsonNoStore({ ok: true });

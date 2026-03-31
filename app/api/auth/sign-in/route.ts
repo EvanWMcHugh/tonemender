@@ -1,6 +1,13 @@
 import bcrypt from "bcryptjs";
 
-import { jsonNoStore, badRequest, forbidden, serverError, tooManyRequests, unauthorized } from "@/lib/api/responses";
+import {
+  jsonNoStore,
+  badRequest,
+  forbidden,
+  serverError,
+  tooManyRequests,
+  unauthorized,
+} from "@/lib/api/responses";
 import { SESSION_COOKIE } from "@/lib/auth/cookies";
 import {
   getReviewerMode,
@@ -9,7 +16,11 @@ import {
   isReviewerEmail,
 } from "@/lib/auth/reviewers";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
+import {
+  getClientIp,
+  getClientPlatform,
+  getUserAgent,
+} from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
@@ -55,6 +66,43 @@ function isIosClient(req: Request): boolean {
   return getClientPlatform(req) === "ios";
 }
 
+function sanitizeJsonText(raw: string): string {
+  return raw.replace(/^\uFEFF/, "").trim();
+}
+
+async function parseJsonBody<T>(req: Request): Promise<{
+  ok: true;
+  body: T;
+  rawText: string;
+  rawBodyBuffer: Buffer;
+} | {
+  ok: false;
+}> {
+  const rawText = await req.text();
+  const normalized = sanitizeJsonText(rawText);
+  const rawBodyBuffer = Buffer.from(normalized, "utf8");
+
+  if (!normalized) {
+    return {
+      ok: true,
+      body: {} as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      body: JSON.parse(normalized) as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function isRateLimitAllowed(
   key: string,
   windowSeconds: number,
@@ -74,12 +122,14 @@ async function isRateLimitAllowed(
     .maybeSingle();
 
   if (!row) {
-    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
-      key,
-      window_start: windowStartIso,
-      window_seconds: windowSeconds,
-      count: 1,
-    });
+    const { error: insertError } = await supabaseAdmin
+      .from("rate_limits")
+      .insert({
+        key,
+        window_start: windowStartIso,
+        window_seconds: windowSeconds,
+        count: 1,
+      });
 
     if (insertError) return true;
     return true;
@@ -118,16 +168,13 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-    const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const parsed = await parseJsonBody<SignInBody>(req);
 
-    let body: SignInBody = {};
-
-    try {
-      body = rawText ? (JSON.parse(rawText) as SignInBody) : {};
-    } catch {
+    if (!parsed.ok) {
       return badRequest("Invalid request body");
     }
+
+    const { body, rawText, rawBodyBuffer } = parsed;
 
     const emailRaw = body.email;
     const password = body.password;
@@ -135,6 +182,19 @@ export async function POST(req: Request) {
     const integrityToken = body.integrityToken;
     const integrityRequestHash = body.integrityRequestHash;
     const deviceName = body.deviceName;
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("SIGN_IN_REQUEST_DEBUG", {
+        contentType: req.headers.get("content-type"),
+        rawBodyLength: rawText.length,
+        bodyKeys:
+          body && typeof body === "object" ? Object.keys(body) : [],
+        hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
+        hasPassword: typeof password === "string" && password.length > 0,
+        androidClient: isAndroidClient(req),
+        iosClient: isIosClient(req),
+      });
+    }
 
     if (typeof emailRaw !== "string" || !emailRaw.trim()) {
       return badRequest("Missing email");
@@ -151,7 +211,11 @@ export async function POST(req: Request) {
     const isReviewer = isReviewerEmail(email);
 
     const ipAllowed = await isRateLimitAllowed(`ip:${ip}:sign_in`, 60, 20);
-    const emailAllowed = await isRateLimitAllowed(`email:${email}:sign_in`, 300, 10);
+    const emailAllowed = await isRateLimitAllowed(
+      `email:${email}:sign_in`,
+      300,
+      10
+    );
 
     if (!ipAllowed || !emailAllowed) {
       await audit("SIGN_IN_RATE_LIMITED", null, req, {
@@ -383,7 +447,8 @@ export async function POST(req: Request) {
       },
     });
 
-    const cookieDomain = androidClient || iosClient ? undefined : getCookieDomain(req);
+    const cookieDomain =
+      androidClient || iosClient ? undefined : getCookieDomain(req);
 
     res.cookies.set(SESSION_COOKIE, rawSessionToken, {
       httpOnly: true,

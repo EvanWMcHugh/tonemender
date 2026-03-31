@@ -1,8 +1,18 @@
-import { badRequest, jsonNoStore, serverError, tooManyRequests, unauthorized } from "@/lib/api/responses";
+import {
+  badRequest,
+  jsonNoStore,
+  serverError,
+  tooManyRequests,
+  unauthorized,
+} from "@/lib/api/responses";
 import { buildClearedSessionCookie } from "@/lib/auth/cookies";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { getClientIp, getClientPlatform, getUserAgent } from "@/lib/request/client-meta";
+import {
+  getClientIp,
+  getClientPlatform,
+  getUserAgent,
+} from "@/lib/request/client-meta";
 import { verifyIosAppAttestAssertion } from "@/lib/security/app-attest";
 import { verifyAndroidPlayIntegrity } from "@/lib/security/play-integrity";
 import { verifyTurnstile } from "@/lib/security/turnstile";
@@ -40,6 +50,48 @@ function isIosClient(req: Request): boolean {
   return getClientPlatform(req) === "ios";
 }
 
+function sanitizeJsonText(raw: string): string {
+  return raw.replace(/^\uFEFF/, "").trim();
+}
+
+async function parseJsonBody<T>(
+  req: Request
+): Promise<
+  | {
+      ok: true;
+      body: T;
+      rawText: string;
+      rawBodyBuffer: Buffer;
+    }
+  | {
+      ok: false;
+    }
+> {
+  const rawText = await req.text();
+  const normalized = sanitizeJsonText(rawText);
+  const rawBodyBuffer = Buffer.from(normalized, "utf8");
+
+  if (!normalized) {
+    return {
+      ok: true,
+      body: {} as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      body: JSON.parse(normalized) as T,
+      rawText: normalized,
+      rawBodyBuffer,
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function isRateLimitAllowed(
   key: string,
   windowSeconds: number,
@@ -59,12 +111,14 @@ async function isRateLimitAllowed(
     .maybeSingle();
 
   if (!row) {
-    const { error: insertError } = await supabaseAdmin.from("rate_limits").insert({
-      key,
-      window_start: windowStartIso,
-      window_seconds: windowSeconds,
-      count: 1,
-    });
+    const { error: insertError } = await supabaseAdmin
+      .from("rate_limits")
+      .insert({
+        key,
+        window_start: windowStartIso,
+        window_seconds: windowSeconds,
+        count: 1,
+      });
 
     if (insertError) return true;
     return true;
@@ -102,22 +156,36 @@ async function audit(
 
 export async function POST(req: Request) {
   try {
-    const rawText = await req.text();
-    const rawBodyBuffer = Buffer.from(rawText, "utf8");
+    const parsed = await parseJsonBody<DeleteAccountBody>(req);
 
-    let body: DeleteAccountBody = {};
-
-    try {
-      body = rawText ? (JSON.parse(rawText) as DeleteAccountBody) : {};
-    } catch {
+    if (!parsed.ok) {
       return badRequest("Invalid request body");
     }
 
+    const { body, rawText, rawBodyBuffer } = parsed;
     const { turnstileToken, integrityToken, integrityRequestHash } = body;
 
     const ip = getClientIp(req) || "unknown";
     const androidClient = isAndroidClient(req);
     const iosClient = isIosClient(req);
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("DELETE_ACCOUNT_REQUEST_DEBUG", {
+        contentType: req.headers.get("content-type"),
+        rawBodyLength: rawText.length,
+        bodyKeys:
+          body && typeof body === "object" ? Object.keys(body) : [],
+        hasTurnstileToken:
+          typeof turnstileToken === "string" && turnstileToken.length > 0,
+        hasIntegrityToken:
+          typeof integrityToken === "string" && integrityToken.length > 0,
+        hasIntegrityRequestHash:
+          typeof integrityRequestHash === "string" &&
+          integrityRequestHash.length > 0,
+        androidClient,
+        iosClient,
+      });
+    }
 
     const ipAllowed = await isRateLimitAllowed(`ip:${ip}:delete_account`, 60, 10);
     if (!ipAllowed) {
