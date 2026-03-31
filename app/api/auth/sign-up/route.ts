@@ -161,7 +161,7 @@ export async function POST(req: Request) {
       return badRequest("Invalid request body");
     }
 
-    const { body, rawText, rawBodyBuffer } = parsed;
+    const { body, rawBodyBuffer } = parsed;
 
     const {
       email: emailRaw,
@@ -170,19 +170,6 @@ export async function POST(req: Request) {
       integrityToken,
       integrityRequestHash,
     } = body;
-
-    if (process.env.NODE_ENV === "development") {
-      console.log("SIGN_UP_REQUEST_DEBUG", {
-        contentType: req.headers.get("content-type"),
-        rawBodyLength: rawText.length,
-        bodyKeys:
-          body && typeof body === "object" ? Object.keys(body) : [],
-        hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
-        hasPassword: typeof password === "string" && password.length > 0,
-        androidClient: isAndroidClient(req),
-        iosClient: isIosClient(req),
-      });
-    }
 
     if (typeof emailRaw !== "string" || !emailRaw.trim()) {
       return badRequest("Missing email");

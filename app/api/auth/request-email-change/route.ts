@@ -209,30 +209,10 @@ export async function POST(req: Request) {
       return badRequest("Invalid JSON body");
     }
 
-    const { body, rawText, rawBodyBuffer } = parsed;
+    const { body, rawBodyBuffer } = parsed;
 
     const { newEmail, turnstileToken, integrityToken, integrityRequestHash } =
       body;
-
-    if (process.env.NODE_ENV === "development") {
-      console.log("REQUEST_EMAIL_CHANGE_DEBUG", {
-        contentType: req.headers.get("content-type"),
-        rawBodyLength: rawText.length,
-        bodyKeys:
-          body && typeof body === "object" ? Object.keys(body) : [],
-        hasNewEmail:
-          typeof newEmail === "string" && newEmail.trim().length > 0,
-        hasTurnstileToken:
-          typeof turnstileToken === "string" && turnstileToken.length > 0,
-        hasIntegrityToken:
-          typeof integrityToken === "string" && integrityToken.length > 0,
-        hasIntegrityRequestHash:
-          typeof integrityRequestHash === "string" &&
-          integrityRequestHash.length > 0,
-        androidClient: isAndroidClient(req),
-        iosClient: isIosClient(req),
-      });
-    }
 
     if (typeof newEmail !== "string" || !newEmail.trim()) {
       return badRequest("Missing newEmail");

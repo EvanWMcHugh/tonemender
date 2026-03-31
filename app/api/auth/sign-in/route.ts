@@ -70,13 +70,6 @@ function sanitizeJsonText(raw: string): string {
   return raw.replace(/^\uFEFF/, "").trim();
 }
 
-function debugBadRequest(reason: string, extra: Record<string, unknown> = {}) {
-  console.log("SIGN_IN_BAD_REQUEST_REASON", {
-    reason,
-    ...extra,
-  });
-}
-
 async function isRateLimitAllowed(
   key: string,
   windowSeconds: number,
@@ -149,12 +142,6 @@ export async function POST(req: Request) {
     try {
       body = rawText ? (JSON.parse(rawText) as SignInBody) : {};
     } catch {
-      debugBadRequest("Invalid request body", {
-        contentType: req.headers.get("content-type"),
-        clientPlatform: req.headers.get("x-client-platform"),
-        rawLength: rawText.length,
-        rawText,
-      });
       return badRequest("Invalid request body");
     }
 
@@ -165,40 +152,11 @@ export async function POST(req: Request) {
     const integrityRequestHash = body.integrityRequestHash;
     const deviceName = body.deviceName;
 
-    console.log("SIGN_IN_DEBUG_HEADERS", {
-      contentType: req.headers.get("content-type"),
-      clientPlatform: req.headers.get("x-client-platform"),
-      legacyClientPlatform: req.headers.get("x-tonemender-client"),
-    });
-
-    console.log("SIGN_IN_DEBUG_RAW", {
-      rawText,
-      rawLength: rawText.length,
-    });
-
-    console.log("SIGN_IN_DEBUG_BODY", {
-      bodyKeys: Object.keys(body),
-      emailType: typeof emailRaw,
-      hasEmail: typeof emailRaw === "string" && emailRaw.trim().length > 0,
-      passwordType: typeof password,
-      hasPassword: typeof password === "string" && password.length > 0,
-      hasCaptchaToken:
-        typeof captchaToken === "string" && captchaToken.length > 0,
-      hasIntegrityToken:
-        typeof integrityToken === "string" && integrityToken.length > 0,
-      hasIntegrityRequestHash:
-        typeof integrityRequestHash === "string" &&
-        integrityRequestHash.length > 0,
-      deviceNameType: typeof deviceName,
-    });
-
     if (typeof emailRaw !== "string" || !emailRaw.trim()) {
-      debugBadRequest("Missing email", { body });
       return badRequest("Missing email");
     }
 
     if (typeof password !== "string" || !password) {
-      debugBadRequest("Missing password", { body });
       return badRequest("Missing password");
     }
 
@@ -222,12 +180,9 @@ export async function POST(req: Request) {
       return tooManyRequests("Too many attempts. Try again soon.");
     }
 
+    // Android integrity
     if (androidClient && !isReviewer) {
       if (typeof integrityToken !== "string" || !integrityToken) {
-        debugBadRequest("Integrity verification required", {
-          body,
-          androidClient,
-        });
         return badRequest("Integrity verification required");
       }
 
@@ -235,10 +190,6 @@ export async function POST(req: Request) {
         typeof integrityRequestHash !== "string" ||
         !integrityRequestHash
       ) {
-        debugBadRequest("Integrity request hash required", {
-          body,
-          androidClient,
-        });
         return badRequest("Integrity request hash required");
       }
 
@@ -260,26 +211,19 @@ export async function POST(req: Request) {
             ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload:
-              process.env.NODE_ENV === "development"
-                ? integrity.payload ?? null
-                : undefined,
           },
           { status: 403 }
         );
       }
-    } else if (iosClient && !isReviewer) {
+    }
+
+    // iOS integrity
+    else if (iosClient && !isReviewer) {
       const keyId = req.headers.get("x-app-attest-key-id");
       const assertion = req.headers.get("x-app-attest-assertion");
       const challengeId = req.headers.get("x-app-attest-challenge-id");
 
       if (!keyId || !assertion || !challengeId) {
-        debugBadRequest("Integrity verification required", {
-          iosClient,
-          hasKeyId: Boolean(keyId),
-          hasAssertion: Boolean(assertion),
-          hasChallengeId: Boolean(challengeId),
-        });
         return badRequest("Integrity verification required");
       }
 
@@ -304,17 +248,15 @@ export async function POST(req: Request) {
             ok: false,
             error: integrity.publicMessage,
             reason: integrity.reason,
-            payload:
-              process.env.NODE_ENV === "development"
-                ? integrity.payload ?? null
-                : undefined,
           },
           { status: 403 }
         );
       }
-    } else if (!isReviewer) {
+    }
+
+    // Web captcha
+    else if (!isReviewer) {
       if (typeof captchaToken !== "string" || !captchaToken) {
-        debugBadRequest("Captcha verification required", { body });
         return badRequest("Captcha verification required");
       }
 
@@ -334,38 +276,14 @@ export async function POST(req: Request) {
       .eq("email", email)
       .maybeSingle();
 
-    if (error) {
-      return serverError("Server error");
-    }
-
-    if (!user) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", null, req, {
-        email,
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-
-      return unauthorized("Invalid email or password");
-    }
+    if (error) return serverError("Server error");
+    if (!user) return unauthorized("Invalid email or password");
 
     if (user.disabled_at || user.deleted_at) {
-      await audit("SIGN_IN_BLOCKED_ACCOUNT", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-
       return forbidden("Account unavailable");
     }
 
     if (!user.email_verified_at) {
-      await audit("SIGN_IN_UNVERIFIED", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-
       return jsonNoStore(
         {
           ok: false,
@@ -376,27 +294,8 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!user.password_hash || typeof user.password_hash !== "string") {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-
-      return unauthorized("Invalid email or password");
-    }
-
     const passwordOk = await bcrypt.compare(password, user.password_hash);
-
-    if (!passwordOk) {
-      await audit("SIGN_IN_BAD_CREDENTIALS", String(user.id), req, {
-        androidClient,
-        iosClient,
-        isReviewer,
-      });
-
-      return unauthorized("Invalid email or password");
-    }
+    if (!passwordOk) return unauthorized("Invalid email or password");
 
     const rawSessionToken = generateToken(32);
     const sessionTokenHash = sha256Hex(rawSessionToken);
@@ -405,7 +304,7 @@ export async function POST(req: Request) {
     const nowIso = new Date().toISOString();
     const expiresAt = new Date(Date.now() + maxAgeSeconds * 1000).toISOString();
 
-    const { error: sessionError } = await supabaseAdmin.from("sessions").insert({
+    await supabaseAdmin.from("sessions").insert({
       user_id: user.id,
       session_token_hash: sessionTokenHash,
       expires_at: expiresAt,
@@ -415,17 +314,6 @@ export async function POST(req: Request) {
       device_name:
         typeof deviceName === "string" ? deviceName.slice(0, 200) : null,
     });
-
-    if (sessionError) {
-      return serverError("Failed to create session");
-    }
-
-    try {
-      await supabaseAdmin
-        .from("users")
-        .update({ last_login_at: nowIso })
-        .eq("id", user.id);
-    } catch {}
 
     await audit("SIGN_IN_OK", String(user.id), req, {
       androidClient,
@@ -471,9 +359,7 @@ export async function POST(req: Request) {
     return res;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-
     console.error("SIGN_IN_ERROR", { message });
-
     return serverError("Server error");
   }
 }

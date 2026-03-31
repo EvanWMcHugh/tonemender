@@ -363,14 +363,6 @@ export async function verifyAndroidPlayIntegrity({
       };
     }
 
-    console.log("PLAY_INTEGRITY_RESULT", {
-      packageName: payload.requestDetails?.requestPackageName,
-      requestHash: payload.requestDetails?.requestHash,
-      appVerdict: payload.appIntegrity?.appRecognitionVerdict,
-      deviceVerdicts: payload.deviceIntegrity?.deviceRecognitionVerdict,
-      accountDetails: payload.accountDetails,
-    });
-
     return {
       ok: true,
       reason: "ok",

@@ -147,28 +147,9 @@ export async function POST(req: Request) {
       return jsonNoStore({ ok: true });
     }
 
-    const { body, rawText, rawBodyBuffer } = parsed;
+    const { body, rawBodyBuffer } = parsed;
 
     const { email, turnstileToken, integrityToken, integrityRequestHash } = body;
-
-    if (process.env.NODE_ENV === "development") {
-      console.log("RESEND_VERIFY_REQUEST_DEBUG", {
-        contentType: req.headers.get("content-type"),
-        rawBodyLength: rawText.length,
-        bodyKeys:
-          body && typeof body === "object" ? Object.keys(body) : [],
-        hasEmail: typeof email === "string" && email.trim().length > 0,
-        hasTurnstileToken:
-          typeof turnstileToken === "string" && turnstileToken.length > 0,
-        hasIntegrityToken:
-          typeof integrityToken === "string" && integrityToken.length > 0,
-        hasIntegrityRequestHash:
-          typeof integrityRequestHash === "string" &&
-          integrityRequestHash.length > 0,
-        androidClient: isAndroidClient(req),
-        iosClient: isIosClient(req),
-      });
-    }
 
     if (typeof email !== "string" || !email.trim()) {
       return jsonNoStore({ ok: true });
