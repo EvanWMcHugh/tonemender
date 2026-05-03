@@ -17,6 +17,7 @@
     "@react-email/render": "^2.0.4",
     "@supabase/supabase-js": "^2.86.0",
     "bcryptjs": "^3.0.3",
+    "encoding": "^0.1.13",
     "framer-motion": "^12.23.25",
     "googleapis": "^171.4.0",
     "html2canvas": "^1.4.1",
@@ -31,10 +32,11 @@
     "stripe": "^20.0.0"
   },
   "devDependencies": {
-    "@types/node": "24.10.1",
+    "@types/node": "^20.19.39",
     "@types/react": "18.2.79",
     "@types/react-dom": "18.2.25",
     "autoprefixer": "^10.4.22",
+    "baseline-browser-mapping": "^2.10.27",
     "eslint": "^8.57.0",
     "eslint-config-next": "13.4.19",
     "postcss": "^8.5.6",
@@ -43,6 +45,6 @@
   },
   "engines": {
     "node": "20.x"
-},
+  },
   "packageManager": "npm@11.8.0"
 }
