@@ -36,21 +36,37 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
 
   const certDir = path.join(process.cwd(), "certs");
 
+  console.error("APPLE_CERT_DEBUG", {
+    cwd: process.cwd(),
+    certDir,
+  });
+
   const files = [
-  "AppleRootCA-G2.cer",
-  "AppleRootCA-G3.cer",
-  "AppleIncRootCertificate.cer",
-];
+    "AppleRootCA-G2.cer",
+    "AppleRootCA-G3.cer",
+    "AppleIncRootCertificate.cer",
+  ];
 
   const buffers: Buffer[] = [];
 
   for (const file of files) {
+    const fullPath = path.join(certDir, file);
+
     try {
-      const fullPath = path.join(certDir, file);
       const data = await fs.readFile(fullPath);
+
+      console.error("APPLE_CERT_FILE_FOUND", {
+        file,
+        fullPath,
+        size: data.length,
+      });
+
       buffers.push(data);
-    } catch {
-      // Ignore missing optional cert files.
+    } catch (error) {
+      console.error("APPLE_CERT_FILE_MISSING", {
+        file,
+        fullPath,
+      });
     }
   }
 
