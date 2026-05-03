@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import ConfirmClient from "./ConfirmClient";
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function ConfirmPage() {
-  return <ConfirmClient />;
+  return (
+    <Suspense fallback={null}>
+      <ConfirmClient />
+    </Suspense>
+  );
 }
