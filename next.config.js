@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     outputFileTracingIncludes: {
-      "/api/billing/apple/sync": ["./certs/**/*"],
+      "/*": ["./certs/**/*"],
     },
   },
 };
