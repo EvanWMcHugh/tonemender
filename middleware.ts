@@ -27,7 +27,11 @@ function isAlwaysAllowed(pathname: string): boolean {
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     pathname === "/robots.txt" ||
-    pathname.startsWith("/sitemap") ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/manifest.webmanifest" ||
+    pathname === "/icon.png" ||
+    pathname === "/apple-icon.png" ||
+    pathname === "/opengraph-image.png" ||
     pathname.startsWith("/assets") ||
     pathname.startsWith("/images")
   );
@@ -45,7 +49,11 @@ export function middleware(req: NextRequest) {
   if (!session) {
     const url = req.nextUrl.clone();
     url.pathname = "/landing";
-    url.searchParams.set("next", `${pathname}${search}`);
+
+    if (pathname !== "/") {
+      url.searchParams.set("next", `${pathname}${search}`);
+    }
+
     return NextResponse.redirect(url);
   }
 
