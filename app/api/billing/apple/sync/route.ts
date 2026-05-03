@@ -15,8 +15,8 @@ import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 
 export const runtime = "nodejs";
 
-const MONTHLY_PRODUCT_ID = "tonemender_pro_monthly";
-const YEARLY_PRODUCT_ID = "tonemender_pro_yearly";
+const MONTHLY_PRODUCT_ID = "com.tonemender.pro.monthly.v4";
+const YEARLY_PRODUCT_ID = "com.tonemender.pro.yearly.v4";
 
 const bundleId = process.env.APPLE_BUNDLE_ID;
 const envRaw = process.env.APPLE_IAP_ENVIRONMENT ?? "Sandbox";
