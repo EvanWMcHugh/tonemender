@@ -18,25 +18,16 @@ export const runtime = "nodejs";
 const MONTHLY_PRODUCT_ID = "com.tonemender.pro.monthly.v4";
 const YEARLY_PRODUCT_ID = "com.tonemender.pro.yearly.v4";
 
-const bundleId = process.env.APPLE_BUNDLE_ID;
-const envRaw = process.env.APPLE_IAP_ENVIRONMENT ?? "Sandbox";
-const appAppleIdRaw = process.env.APPLE_APPLE_ID;
-
-const environment =
-  envRaw.toLowerCase() === "production"
-    ? Environment.PRODUCTION
-    : Environment.SANDBOX;
-
 type SyncBody = {
   signedTransaction?: unknown;
 };
 
 function requireEnv(name: string, value: string | undefined): string {
-  if (!value) {
+  if (!value?.trim()) {
     throw new Error(`Missing required env var: ${name}`);
   }
 
-  return value;
+  return value.trim();
 }
 
 async function loadAppleRootCertificates(): Promise<Buffer[]> {
@@ -46,11 +37,10 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
   const certDir = path.join(process.cwd(), "certs");
 
   const files = [
-    "AppleRootCA-G2.cer",
-    "AppleRootCA-G3.cer",
-    "AppleIncRootCertificate.cer",
-    "AppleComputerRootCertificate.cer",
-  ];
+  "AppleRootCA-G2.cer",
+  "AppleRootCA-G3.cer",
+  "AppleIncRootCertificate.cer",
+];
 
   const buffers: Buffer[] = [];
 
@@ -71,22 +61,52 @@ async function loadAppleRootCertificates(): Promise<Buffer[]> {
   return buffers;
 }
 
+function getAppleEnvironment(envRaw: string): Environment {
+  const normalized = envRaw.trim().toLowerCase();
+
+  if (normalized === "production") {
+    return Environment.PRODUCTION;
+  }
+
+  if (normalized === "sandbox") {
+    return Environment.SANDBOX;
+  }
+
+  throw new Error("APPLE_IAP_ENVIRONMENT must be either production or sandbox.");
+}
+
 async function makeVerifier(): Promise<SignedDataVerifier> {
-  const resolvedBundleId = requireEnv("APPLE_BUNDLE_ID", bundleId);
+  const bundleId = requireEnv("APPLE_BUNDLE_ID", process.env.APPLE_BUNDLE_ID);
+  const envRaw = requireEnv(
+    "APPLE_IAP_ENVIRONMENT",
+    process.env.APPLE_IAP_ENVIRONMENT
+  );
+
+  const environment = getAppleEnvironment(envRaw);
   const roots = await loadAppleRootCertificates();
 
-  const appAppleId =
-    environment === Environment.PRODUCTION && appAppleIdRaw
-      ? Number.parseInt(appAppleIdRaw, 10)
-      : undefined;
+  let appAppleId: number | undefined;
 
-  return new SignedDataVerifier(
-    roots,
-    true,
-    environment,
-    resolvedBundleId,
-    appAppleId
+if (environment === Environment.PRODUCTION) {
+  const parsedAppAppleId = Number.parseInt(
+    requireEnv("APPLE_APP_STORE_ID", process.env.APPLE_APP_STORE_ID),
+    10
   );
+
+  if (!Number.isInteger(parsedAppAppleId) || parsedAppAppleId <= 0) {
+    throw new Error("APPLE_APP_STORE_ID must be a valid App Store numeric ID.");
+  }
+
+  appAppleId = parsedAppAppleId;
+}
+
+return new SignedDataVerifier(
+  roots,
+  true,
+  environment,
+  bundleId,
+  appAppleId
+);
 }
 
 function resolvePlanType(
@@ -155,6 +175,10 @@ export async function POST(req: Request) {
 
     if (!productId || !planType) {
       return badRequest("Unknown subscription product.");
+    }
+
+    if (!transactionId) {
+      return badRequest("Missing Apple transaction ID.");
     }
 
     const active =
