@@ -6,6 +6,24 @@ import {
 } from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
+
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, unknown> = {}
+) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
 
 export const runtime = "nodejs";
 
@@ -166,8 +184,19 @@ export async function POST(req: Request) {
       console.error("MESSAGES_SAVE_FAILED", {
         message: error.message,
       });
+
+      await audit("MESSAGE_SAVE_FAILED", authUser.id, req, {
+        code: error.code,
+        message: error.message,
+      });
+
       return serverError("Failed to save draft");
     }
+
+    await audit("MESSAGE_SAVED", authUser.id, req, {
+      message_id: data.id,
+      tone,
+    });
 
     return jsonNoStore({
       ok: true,

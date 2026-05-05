@@ -48,6 +48,40 @@ async function audit(
   } catch {}
 }
 
+async function billingAudit(
+  userId: string | null,
+  event: string,
+  meta: Record<string, unknown> = {}
+): Promise<void> {
+  try {
+    await supabaseAdmin.from("billing_audit").insert({
+      user_id: userId,
+      provider: "stripe",
+      event,
+      meta,
+    });
+  } catch {}
+}
+
+async function stripeEventLog(
+  event: Stripe.Event,
+  processed: boolean,
+  meta: Record<string, unknown> = {}
+): Promise<void> {
+  try {
+    await supabaseAdmin.from("stripe_event_log").insert({
+      stripe_event_id: event.id,
+      event_type: event.type,
+      processed,
+      meta: {
+        livemode: event.livemode,
+        created: event.created,
+        ...meta,
+      },
+    });
+  } catch {}
+}
+
 function asId(value: unknown): string | null {
   if (!value) return null;
 
@@ -162,8 +196,14 @@ export async function POST(req: Request) {
     const shouldProcess = await markEventProcessedOnce(event);
 
     if (!shouldProcess) {
+      await stripeEventLog(event, false, {
+        reason: "duplicate_event",
+      });
+
       return jsonNoStore({ ok: true, received: true });
     }
+
+    await stripeEventLog(event, true);
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
@@ -207,6 +247,13 @@ export async function POST(req: Request) {
         eventId: event.id,
         customerId,
         subscriptionId,
+      });
+
+      await billingAudit(userId, "STRIPE_CHECKOUT_COMPLETED", {
+        eventId: event.id,
+        customerId,
+        subscriptionId,
+        planType: metadata?.planType ?? null,
       });
     }
 
@@ -266,6 +313,16 @@ export async function POST(req: Request) {
         stripePriceId,
         planType,
       });
+
+      await billingAudit(userId, kind, {
+        eventId: event.id,
+        customerId,
+        subscriptionId,
+        status: sub.status,
+        stripePriceId,
+        planType,
+        isPro: isActiveStatus(sub.status),
+      });
     };
 
     if (event.type === "customer.subscription.created") {
@@ -305,6 +362,14 @@ export async function POST(req: Request) {
         eventId: event.id,
         customerId,
         subscriptionId: sub.id,
+      });
+
+      await billingAudit(userId, "STRIPE_SUB_DELETED", {
+        eventId: event.id,
+        customerId,
+        subscriptionId: sub.id,
+        status: sub.status,
+        isPro: false,
       });
     }
 

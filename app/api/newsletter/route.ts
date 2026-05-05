@@ -9,6 +9,22 @@ import { sendEmail } from "@/lib/email/send-email";
 import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 import { generateToken, sha256Hex } from "@/lib/security/crypto";
 
+async function audit(
+  event: string,
+  req: Request,
+  meta: Record<string, unknown> = {}
+) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: null,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
 export const runtime = "nodejs";
 
 type NewsletterBody = {
@@ -123,6 +139,12 @@ export async function POST(req: Request) {
       console.error("NEWSLETTER_LOOKUP_FAILED", {
         message: existingError.message,
       });
+
+      await audit("NEWSLETTER_LOOKUP_FAILED", req, {
+        email,
+        message: existingError.message,
+      });
+
       return serverError("Failed to save subscription");
     }
 
@@ -137,12 +159,18 @@ export async function POST(req: Request) {
         });
 
       if (insertError) {
-        console.error("NEWSLETTER_INSERT_FAILED", {
-          message: insertError.message,
-        });
-        return serverError("Failed to save subscription");
-      }
+      console.error("NEWSLETTER_INSERT_FAILED", {
+        message: insertError.message,
+      });
+
+      await audit("NEWSLETTER_INSERT_FAILED", req, {
+        email,
+        message: insertError.message,
+      });
+
+      return serverError("Failed to save subscription");
     }
+  }
 
     await supabaseAdmin
       .from("auth_tokens")
@@ -210,8 +238,17 @@ export async function POST(req: Request) {
         .eq("purpose", "newsletter_confirm")
         .is("consumed_at", null);
 
+      await audit("NEWSLETTER_EMAIL_SEND_FAILED", req, {
+        email,
+      });
+
       return serverError("Failed to send confirmation email");
     }
+
+    await audit("NEWSLETTER_SUBSCRIBED", req, {
+      email,
+      alreadyExisting: Boolean(existingSubscriber),
+    });
 
     return jsonNoStore({ ok: true });
   } catch (err) {

@@ -304,7 +304,7 @@ export async function POST(req: Request) {
     const nowIso = new Date().toISOString();
     const expiresAt = new Date(Date.now() + maxAgeSeconds * 1000).toISOString();
 
-    await supabaseAdmin.from("sessions").insert({
+    const { error: sessionInsertError } = await supabaseAdmin.from("sessions").insert({
       user_id: user.id,
       session_token_hash: sessionTokenHash,
       expires_at: expiresAt,
@@ -314,6 +314,19 @@ export async function POST(req: Request) {
       device_name:
         typeof deviceName === "string" ? deviceName.slice(0, 200) : null,
     });
+
+    if (sessionInsertError) {
+      console.error("SIGN_IN_SESSION_INSERT_FAILED", {
+        code: sessionInsertError.code,
+        message: sessionInsertError.message,
+      });
+
+      await audit("SIGN_IN_SESSION_INSERT_FAILED", String(user.id), req, {
+        code: sessionInsertError.code,
+      });
+
+      return serverError("Failed to create session");
+    }
 
     await audit("SIGN_IN_OK", String(user.id), req, {
       androidClient,

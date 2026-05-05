@@ -57,20 +57,32 @@ function laDayBoundsUtcIso(date = new Date()): readonly [string, string] {
 }
 
 async function getUsedToday(userId: string): Promise<number> {
-  const [startIso, endIso] = laDayBoundsUtcIso(new Date());
+  const day = formatLA_YYYY_MM_DD(new Date());
 
-  const { count, error } = await supabaseAdmin
-    .from("rewrite_usage")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("created_at", startIso)
-    .lt("created_at", endIso);
+  const { data: user, error: userError } = await supabaseAdmin
+    .from("users")
+    .select("email")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (userError || !user?.email) {
+    throw new Error("Usage check failed");
+  }
+
+  const normalizedEmail = String(user.email).trim().toLowerCase();
+
+  const { data, error } = await supabaseAdmin
+    .from("free_daily_usage")
+    .select("rewrite_count")
+    .eq("normalized_email", normalizedEmail)
+    .eq("day", day)
+    .maybeSingle();
 
   if (error) {
     throw new Error("Usage check failed");
   }
 
-  return count ?? 0;
+  return Number(data?.rewrite_count ?? 0);
 }
 
 export async function GET(req: Request) {

@@ -153,6 +153,43 @@ export async function POST(req: Request) {
       return serverError("Failed to update user");
     }
 
+    await supabaseAdmin.from("google_subscription_purchases").upsert(
+      {
+        user_id: authUser.id,
+        purchase_token: purchaseToken,
+        product_id: productId,
+        base_plan_id: basePlanId,
+        plan_type: planType,
+        subscription_state: subscriptionState,
+        expiry_time: matchingLineItem.expiryTime ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "purchase_token" }
+    );
+
+    await supabaseAdmin.from("billing_audit").insert({
+      user_id: authUser.id,
+      provider: "google",
+      event: "GOOGLE_PURCHASE_VERIFIED",
+      meta: {
+        productId,
+        basePlanId,
+        planType,
+        subscriptionState,
+        expiryTime: matchingLineItem.expiryTime ?? null,
+      },
+    });
+
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: authUser.id,
+      event: "GOOGLE_PURCHASE_VERIFIED",
+      meta: {
+        productId,
+        basePlanId,
+        planType,
+      },
+    });
+
     return jsonNoStore({
       ok: true,
       message: "Purchase verified",

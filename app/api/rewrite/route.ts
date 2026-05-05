@@ -165,6 +165,23 @@ async function audit(
   } catch {}
 }
 
+async function recordRewriteFailure(
+  userId: string | null,
+  req: Request,
+  reason: string,
+  meta: Record<string, unknown> = {}
+): Promise<void> {
+  try {
+    await supabaseAdmin.from("rewrite_failures").insert({
+      user_id: userId,
+      reason,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
+
 async function isRateLimitAllowed(
   key: string,
   windowSeconds: number,
@@ -278,12 +295,15 @@ async function incrementFreeDailyUsageByEmail(
 }
 
 export async function POST(req: Request) {
+  let authUserId: string | null = null;
+
   try {
     const authUser = await getAuthUserFromRequest(req);
 
     if (!authUser?.id) {
       return unauthorized("Unauthorized");
     }
+    authUserId = authUser.id;
 
     const ip = getClientIp(req) || "unknown";
     const okUserRate = await isRateLimitAllowed(
@@ -398,6 +418,10 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const raw = (completion.choices?.[0]?.message?.content ?? "").trim();
 
     if (!raw) {
+      await recordRewriteFailure(authUser.id, req, "empty_ai_response", {
+        model: "gpt-4o-mini",
+      });
+
       return jsonNoStore(
         { ok: false, error: "AI response was empty. Please try again." },
         { status: 502 }
@@ -409,6 +433,13 @@ EMOTION_IMPACT: <emoji-enhanced 1–2 sentence prediction>
     const clear = extractBlock(raw, "CLEAR");
 
     if (!soft || !calm || !clear) {
+      await recordRewriteFailure(authUser.id, req, "invalid_ai_format", {
+        model: "gpt-4o-mini",
+        hasSoft: Boolean(soft),
+        hasCalm: Boolean(calm),
+        hasClear: Boolean(clear),
+      });
+
       return jsonNoStore(
         { ok: false, error: "AI response format was invalid. Please try again." },
         { status: 502 }
@@ -457,6 +488,10 @@ return jsonNoStore({
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Server error while rewriting message";
+
+    await recordRewriteFailure(authUserId, req, "rewrite_exception", {
+      message,
+    });
 
     if (
       message === "Usage check failed" ||

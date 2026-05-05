@@ -6,12 +6,30 @@ import {
 } from "@/lib/api/responses";
 import { getAuthUserFromRequest } from "@/lib/auth/server-auth";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
+import { getClientIp, getUserAgent } from "@/lib/request/client-meta";
 
 export const runtime = "nodejs";
 
 type DeleteDraftBody = {
   draftId?: unknown;
 };
+
+async function audit(
+  event: string,
+  userId: string | null,
+  req: Request,
+  meta: Record<string, unknown> = {}
+) {
+  try {
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: userId,
+      event,
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta,
+    });
+  } catch {}
+}
 
 export async function POST(req: Request) {
   try {
@@ -50,15 +68,30 @@ export async function POST(req: Request) {
         draftId,
         userId: authUser.id,
       });
+
+      await audit("MESSAGE_DELETE_FAILED", authUser.id, req, {
+        draft_id: draftId,
+        code: error.code,
+        message: error.message,
+      });
+
       return serverError("Failed to delete draft");
     }
 
     if (!data) {
+      await audit("MESSAGE_DELETE_NOT_FOUND", authUser.id, req, {
+        draft_id: draftId,
+      });
+
       return jsonNoStore(
         { ok: false, error: "Draft not found" },
         { status: 404 }
       );
     }
+
+    await audit("MESSAGE_DELETED", authUser.id, req, {
+      draft_id: data.id,
+    });
 
     return jsonNoStore({
       ok: true,

@@ -214,6 +214,35 @@ export async function POST(req: Request) {
       return serverError("Failed to update user plan");
     }
 
+    await supabaseAdmin.from("billing_audit").insert({
+      user_id: authUser.id,
+      provider: "apple",
+      event: "APPLE_SYNC_COMPLETED",
+      meta: {
+        productId,
+        planType,
+        transactionId,
+        originalTransactionId,
+        purchaseDate,
+        expiresDate,
+        revocationDate,
+        active,
+      },
+    });
+
+    await supabaseAdmin.from("audit_log").insert({
+      user_id: authUser.id,
+      event: "APPLE_SYNC_COMPLETED",
+      ip: getClientIp(req),
+      user_agent: getUserAgent(req),
+      meta: {
+        productId,
+        planType,
+        transactionId,
+        active,
+      },
+    });
+
     return jsonNoStore({
       ok: true,
       is_pro: active,
