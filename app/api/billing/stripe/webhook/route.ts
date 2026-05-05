@@ -217,7 +217,16 @@ export async function POST(req: Request) {
       const stripePriceId = sub.items.data?.[0]?.price?.id ?? null;
       const planType = getPlanType(stripePriceId);
 
-      const userId = await findUserIdByCustomerId(customerId);
+      const metadata =
+        sub.metadata && typeof sub.metadata === "object"
+          ? (sub.metadata as Record<string, string>)
+          : null;
+
+      let userId = metadata?.userId ?? null;
+
+      if (!userId) {
+        userId = await findUserIdByCustomerId(customerId);
+      }
 
       if (!userId) {
         await audit(null, "STRIPE_SUB_NO_USER", {

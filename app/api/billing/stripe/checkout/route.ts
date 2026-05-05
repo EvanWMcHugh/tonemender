@@ -148,6 +148,12 @@ export async function POST(req: Request) {
         userId: authUser.id,
         planType,
       },
+      subscription_data: {
+        metadata: {
+          userId: authUser.id,
+          planType,
+        },
+      },
     });
 
     if (!session.url) {
