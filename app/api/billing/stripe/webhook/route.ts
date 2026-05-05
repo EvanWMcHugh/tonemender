@@ -188,6 +188,8 @@ export async function POST(req: Request) {
       const { error: updateError } = await supabaseAdmin
         .from("users")
         .update({
+          is_pro: true,
+          plan_type: metadata?.planType ?? null,
           stripe_customer_id: customerId,
           stripe_subscription_id: subscriptionId,
         })
